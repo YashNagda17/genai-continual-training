@@ -1,0 +1,1416 @@
+Examining Forgetting in Continual Pre-training of Aligned Large
+Language Models
+Chen-An Li1,2
+Hung-Yi Lee1
+1National Taiwan University, Taipei, Taiwan
+2ASUS Open Cloud Infrastructure Software Center, Taipei, Taiwan
+b08902123@csie.ntu.edu.tw
+hungyilee@ntu.edu.tw
+Abstract
+Recent advances in Large Language Models
+(LLMs) have exhibited remarkable proficiency
+across various tasks. Given the potent appli-
+cations of LLMs in numerous fields, there has
+been a surge in LLM development. In develop-
+ing LLMs, a common practice involves contin-
+ual pre-training on previously fine-tuned mod-
+els. However, this can lead to catastrophic
+forgetting. In our work, we investigate the
+phenomenon of forgetting that occurs during
+continual pre-training on an existing fine-tuned
+LLM. We evaluate the impact of continuous
+pre-training on the fine-tuned LLM across
+various dimensions, including output format,
+knowledge, and reliability. Experiment results
+highlight the non-trivial challenge of address-
+ing catastrophic forgetting during continual pre-
+training, especially the repetition issue.
+1
+Introduction
+Large Language Models (LLMs) have demon-
+strated impressive performance across various tasks
+(Brown et al., 2020). There is an increasing trend of
+releasing pre-trained LLMs and fine-tuned variants
+(Touvron et al., 2023a,b). Many of these fine-tuned
+variants aim to augment the knowledge or linguis-
+tic capabilities of the existing LLM (Roziere et al.,
+2023; Cui et al., 2023).
+We have noticed that many advancements in fine-
+tuned variants adhere to a conventional procedure
+consisting of two key steps: 1. Conduct further con-
+tinual pre-training on an existing LLM. 2. Carry
+out subsequent alignment operations, such as Su-
+pervised Fine-Tuning (SFT) and Reinforcement
+Learning from Human Feedback (RLHF), on the
+model obtained in Step 1. Among these fine-tuned
+variants, many developments perform further con-
+tinual pre-training on existing fine-tuned LLMs
+(Cui et al., 2023; Lin and Chen, 2023).
+Previous studies have demonstrated that con-
+tinual pre-training can significantly improve the
+model’s ability to understand and generate specific
+content (Gupta et al., 2023). However, continual
+pre-training could lead to catastrophic forgetting
+(French, 1999), and limited research has explored
+the abilities forgotten during pre-training on an ex-
+isting fine-tuned LLM.
+Some works have studied continual learning for
+language models. (Qin et al., 2022) focused on
+efficient lifelong pre-training on pre-trained lan-
+guage models for emerging data. (Ke et al., 2022)
+proposed a continual domain-adaptive pre-training
+method on a masked language model. (Song et al.,
+2023) introduced continual parameter-efficient tun-
+ing for the ongoing adaptation of LLMs to contin-
+ual tasks. (Xie et al., 2023) investigate an alter-
+native approach to continual pre-training for de-
+veloping domain-specific LLMs. (Qi et al., 2023)
+suggests that fine-tuning compromises the safety
+alignment of LLMs. (Zhai et al., 2023) evaluates
+the forgetting in fine-tuned multimodal LLMs.
+Our work examines the forgetting occurrence
+during continual pre-training on an existing fine-
+tuned LLM. Our paper primarily focuses on con-
+tinual pre-training using the Traditional Chinese
+corpus. We evaluate the impact of continual pre-
+training across various dimensions, including out-
+put format, knowledge, and reliability. We show
+that more than straightforward methods are re-
+quired for resolving this issue. Also, we observe
+an increased prominence of the repetition problem
+in models that tend to generate Traditional Chi-
+nese outputs. Lastly, despite continual pre-training,
+our findings suggest that the model’s knowledge
+remains unaffected while its reliability declines.
+2
+Observation of Catastrophic Forgetting
+during Continual Pre-training
+2.1
+Settings for Observation
+We conduct pre-training on Llama-2-7b-chat, a
+model comprising approximately 7 billion parame-
+arXiv:2401.03129v1  [cs.CL]  6 Jan 2024
+
+<s> [INST] 告訴我一些關於墨西哥城的事情。 [/INST]
+Llama-2-7b-chat
+ Certainly! Mexico City, also known as Mexico City, is the 
+capital and largest city of Mexico. It is a vibrant and culturally 
+rich metropolis with a rich history, diverse culture, and a 
+blend of modern and colonial architecture. Here are some 
+interesting things to know about Mexico City:
+1. History: Mexico City was founded by the Aztecs in 1325 
+as Tenochtitlán, and it was later renamed Mexico City after 
+the arrival of the Spanish conquistador Hernán Cortés in 
+1521. The city has a rich cultural heritage, with influences 
+from the Aztecs, Spanish, and other indigenous groups.
+2. Population: Mexico City is home to over 21 million people, 
+making it the largest city in North America and one of the 
+most populous cities in the world.
+Llama-2-7b-chat-cp
+墨西哥城（Mexico City）是墨西哥的首都，也是該國最大的城市
+，位於中美洲，距離墨西哥灣約100公里，是一座歷史悠久的城
+市，擁有豐富的文化資源。 墨西哥擁有豐富的歷史文化，是一座
+歷史悠久的城市，擁有豐富的文化資源。墨西哥城擁有豐富的
+歷史文化，是一座歷史悠久的城市，擁有豐富的文化資源。
+Figure 1: Illustration of models’ outputs. The translation
+of our prompt is “Tell me something about Mexico
+City.”
+ters that have undergone sequential alignment oper-
+ations, including SFT and RLHF. Our pre-training
+process utilizes the 1 billion tokens of Traditional
+Chinese data. We denote the model after contin-
+ual pre-training as Llama-2-7b-chat-cp. We employ
+specific prompts to observe the differences between
+the outputs generated by the two models.
+2.2
+Observation of Catastrophic Forgetting
+Figure 1 shows the results obtained from our
+prompt.
+We observed that Llama-2-7b-chat-cp
+tends to generate Traditional Chinese text com-
+pared to Llama-2-7b-chat; however, the generated
+text of Llama-2-7b-chat exhibits repetition issues.
+Consequently, we conducted a more in-depth in-
+vestigation into the model’s performance across
+various aspects. Appendix A contains additional
+results of more prompts.
+3
+Straightforward Approaches
+This section introduces straightforward approaches
+to solving the catastrophic forgetting issues dis-
+cussed in the previous section.
+3.1
+Freeze layers
+Previous studies have shown that distinct function-
+ality exists in different layers of Transformer-based
+models when processing textual information (Etha-
+yarajh, 2019; Van Aken et al., 2019). Consequently,
+we experiment with freezing specific layers of the
+model during continual pre-training. Specifically,
+we explore freezing the first ten layers and freezing
+the last ten layers, denoted as FREEZE FIRST 10
+and FREEZE LAST 10, respectively.
+3.2
+Freeze modules
+We also conduct experiments by freezing specific
+modules of the model during continual pre-training.
+We aim to explore whether these designated mod-
+ules preserve the abilities acquired during the align-
+ment operations. We explore four strategies:
+• FREEZE ATTN.: Freeze the self-attention mod-
+ules in each layer of the model.
+• ONLY ATTN.: Freeze all modules in each layer
+except the self-attention modules of the model.
+• FREEZE MLP: Freeze the feed-forward modules
+in each model layer.
+• ONLY MLP: Freeze all modules in each layer
+except the feed-forward modules of the model.
+3.3
+Adapter
+Adapters are frequently employed in training
+Transformer-based models (Houlsby et al., 2019).
+In our study, we experiment with two types of
+adapters.
+• LORA (Hu et al., 2022): A method that incorpo-
+rates trainable low-rank decomposition matrices
+into each layer of the Transformer-based model.
+In our implementation, we selectively adapt only
+the query and value projection matrices of each
+layer in the model.
+• (IA)3 (Liu et al., 2022): A technique involving
+element-wise multiplication of the model’s acti-
+vations with a learned vector. We rescale the key
+and value matrices in self-attention modules and
+the inner activations in feed-forward modules in
+each model layer.
+4
+Experiments
+4.1
+Setup
+We employed straightforward approaches for con-
+tinual pre-training on Llama-2-7b-chat, utilizing
+the 1 billion tokens of data from general Tradi-
+tional Chinese corpus. The learning rate during
+continual pre-training remained constant at 3e-5,
+and we experimented with an additional learning
+rate 3e-4 for the adapter approaches. More details
+can be found in Appendix B.
+
+4.2
+Tasks
+Our study comprehensively examines our model’s
+performance across dimensions such as output for-
+mat, knowledge, and reliability. Please refer to
+Appendix C for additional details.
+4.2.1
+Output format
+We perform two distinct tasks in output format anal-
+ysis: language identification and repetition analysis.
+To conduct these evaluations, we randomly selected
+2000 aligned sentences from the English and Tra-
+ditional Chinese subset of NeuLab-TedTalks (Qi
+et al., 2018) as our prompts.
+• Language identification: We employ the FastText
+(Joulin et al., 2016a,b) language identification
+model to detect the language of the generated
+tokens.
+• Repetition: We determine the proportion of du-
+plicated n-gram tokens at the BPE level in the
+combined output and prompt. This calculation
+involves the formula: rep-n = 1 −|unique n-
+grams|/|n-grams|, where n ∈[4, 8, 12, 16, 20].
+4.2.2
+Knowledge
+In our knowledge analysis, we assess our model’s
+performance across four benchmarks: ARC (Clark
+et al., 2018), Hellaswag (Zellers et al., 2019), MMLU
+(Hendrycks et al., 2020), and C-eval-tw.
+ARC and Hellaswag serve as English common-
+sense reasoning benchmarks, where we use length-
+normalized accuracy as our metric. For our English
+multitask benchmark, MMLU, and our Traditional
+Chinese multitask benchmark, C-eval-tw, we cal-
+culate metrics by averaging accuracy across indi-
+vidual tasks. The accuracy computation is based on
+selecting the option with the highest probabilities.
+4.2.3
+Reliability
+Our reliability analysis evaluates our model’s per-
+formance on three benchmark datasets, covering
+truthfulness, toxicity, and bias. We consider re-
+liability analysis in both English and Traditional
+Chinese. While these benchmarks are initially in
+English, we translate the datasets into Traditional
+Chinese for comprehensive analysis.
+• TruthfulQA (Lin et al., 2022): The dataset uti-
+lized to measure the truthfulness of language
+models. The scoring mechanism involves a ques-
+tion and multiple true/false reference answers,
+where the score is determined by the normalized
+total probability assigned to the set of true an-
+swers.
+• ToxiGen (Hartvigsen et al., 2022): The dataset
+we employed to detect the toxicity of language
+models. We utilize the default RoBERTa-based
+(Liu et al., 2019) ToxiGen classifier to identify
+toxic generations.
+• Bold (Dhamala et al., 2021): The dataset we uti-
+lize for bias analysis. We use the Valence Aware
+Dictionary and Sentiment Reasoner (VADER)
+(Hutto and Gilbert, 2014) to compute the senti-
+ment score for the combined prompt and gener-
+ation text. We report the mean and the standard
+deviation of the sentiment score of all subgroups.
+EN prompt
+TW prompt
+EN %
+TW %
+EN %
+TW %
+Llama-2-7b
+99.75
+0.00
+19.10
+79.45
+Llama-2-7b-chat
+100.00
+0.00
+99.00
+0.95
+Llama-2-7b-chat-cp
+99.55
+0.20
+16.00
+83.50
+FREEZE FIRST 10
+99.65
+0.30
+10.15
+89.20
+FREEZE LAST 10
+99.6
+0.15
+23.05
+76.25
+FREEZE ATTN.
+99.75
+0.15
+41.05
+58.50
+ONLY ATTN.
+99.60
+0.20
+37.45
+61.95
+FREEZE MLP
+99.65
+0.15
+35.50
+63.80
+ONLY MLP
+99.80
+0.10
+40.65
+58.60
+LORA
+99.95
+0.00
+70.85
+28.85
+LORA (3e-4)
+99.50
+0.30
+8.25
+90.85
+(IA)3
+100.00
+0.00
+98.90
+1.10
+(IA)3 (3e-4)
+100.00
+0.00
+95.85
+4.05
+Table 1: The results of the language identification anal-
+ysis. EN prompt indicates the use of English prompts,
+and TW prompt indicates the use of Chinese prompts.
+EN % denotes the percentage of output identified as
+English, while TW % denotes the percentage identified
+as Chinese.
+EN prompt
+TW prompt
+rep-4
+rep-8
+rep-4
+rep-8
+Llama-2-7b
+0.843
+0.804
+0.796
+0.763
+Llama-2-7b-chat
+0.080
+0.024
+0.103
+0.039
+Llama-2-7b-chat-cp
+0.137
+0.068
+0.552
+0.491
+FREEZE FIRST 10
+0.135
+0.068
+0.599
+0.539
+FREEZE LAST 10
+0.131
+0.065
+0.524
+0.463
+FREEZE ATTN.
+0.116
+0.050
+0.401
+0.335
+ONLY ATTN.
+0.134
+0.069
+0.441
+0.380
+FREEZE MLP
+0.125
+0.060
+0.443
+0.381
+ONLY MLP
+0.119
+0.053
+0.409
+0.341
+LORA
+0.094
+0.033
+0.244
+0.172
+LORA (3e-4)
+0.169
+0.098
+0.621
+0.566
+(IA)3
+0.084
+0.026
+0.109
+0.043
+(IA)3 (3e-4)
+0.103
+0.039
+0.143
+0.071
+Table 2: Results of repetition experiments with prompts
+in two languages. Full results are available in the Ap-
+pendix C.
+4.3
+Results and Analysis
+4.3.1
+Output Format
+We aim to investigate the impact of continual pre-
+training on Chinese corpus on the language out-
+puts of the models. Table 1 presents the results
+
+of the language identification experiment.
+We
+observe that when using English prompts, nearly
+every model tends to generate output in English.
+When provided with a Chinese prompt, we ob-
+served that Llama-2-7b tends to output in Chinese,
+whereas Llama-2-7b-chat tends to output in En-
+glish. Furthermore, with Chinese prompts, the
+FREEZE FIRST 10 LAYERS model tends to yield
+a higher proportion of Chinese text output than
+the FREEZE LAST 10 LAYERS model. Models
+with frozen modules show relatively similar results,
+with approximately 60% of their output being in
+Chinese. In the case of adapters, increasing the
+learning rate can lead the LORA model to produce
+more Chinese output, while the (IA)3 model tends
+to favor English output.
+Table 2 showcases the results of the repetition
+analysis experiment. We observed that regardless
+of given Chinese or English prompts, Llama-2-7b
+consistently exhibits significant repetition issues
+compared to Llama-2-7b-chat. Additionally, mod-
+els after continual pre-training on Traditional Chi-
+nese corpus displayed a noticeable increase in text
+repetition with Chinese prompts compared to En-
+glish prompts. Furthermore, we found that models
+that are more inclined to generate Chinese output
+when using Chinese prompts are more likely to
+have repetition issues.
+4.3.2
+Knowledge
+Table 3 shows our knowledge analysis experi-
+ments’ results. Llama-2-7b-chat performs simi-
+larly to Llama-2-7b on Hellaswag and MMLU, while
+showing a slightly better performance on ARC and
+C-eval-tw.
+In the ARC and Hellaswag bench-
+marks, almost all continually pre-trained models
+outperform Llama-2-7b-chat. In the MMLU bench-
+mark, most continual pre-trained models tend to
+outperform Llama-2-7b-chat. However, in the case
+of the C-eval-tw benchmark, there is no clear pat-
+tern when comparing the efficacy of models uti-
+lizing simple methods for continual pre-training
+against Llama-2-7b-chat. It is worth noting that the
+observed differences mentioned above are subtle.
+4.3.3
+Reliability
+In Table 4, we present the results of the reliability
+experiment. Llama-2-7b-chat consistently outper-
+forms Llama-2-7b on the truthfulness and toxicity
+benchmarks. Notably, after continual pre-training,
+the models demonstrate inferior performance com-
+pared to Llama-2-7b-chat on the two benchmarks.
+ARC
+Hellaswag
+MMLU
+C-eval-tw
+ACC
+ACC
+ACC
+ACC
+Llama-2-7b
+53.0
+78.6
+46.5
+32.2
+Llama-2-7b-chat
+53.6
+78.6
+46.6
+32.9
+Llama-2-7b-chat-cp
+52.0
+77.6
+49.1
+33.4
+FREEZE FIRST 10
+51.0
+77.7
+49.1
+31.9
+FREEZE LAST 10
+51.5
+77.6
+49.4
+33.5
+FREEZE ATTN.
+51.9
+77.7
+48.9
+32.2
+ONLY ATTN.
+52.8
+78.0
+48.4
+33.3
+FREEZE MLP
+53.2
+77.8
+49.4
+32.6
+ONLY MLP
+52.0
+77.9
+46.9
+33.4
+LORA
+53.5
+78.6
+47.1
+33.8
+LORA (3e-4)
+52.8
+78.2
+47.4
+33.0
+(IA)3
+53.7
+77.9
+47.0
+32.6
+(IA)3 (3e-4)
+53.8
+77.3
+46.2
+31.8
+Table 3: Knowledge analysis experiment results with
+four benchmarks.
+This trend is particularly pronounced in the truth-
+fulness analysis benchmark for English and the
+toxicity benchmark for Traditional Chinese. Fur-
+thermore, we observed that models with a prefer-
+ence for generating Chinese output exhibit inferior
+performance in the toxicity benchmark. Regarding
+the bias benchmark, we can observe that Llama-2-
+7b-chat outputs more positive text than Llama-2-7b.
+After continual pre-training, the models’ outputs
+have relatively more negative sentiment scores than
+Llama-2-7b-chat.
+TruthfulQA
+ToxiGen
+BOLD
+mc2 ↑
+toxicity ↓
+sentiment
+EN
+TW
+EN
+TW
+EN
+TW
+Llama-2-7b
+39.0
+45.9
+20.30
+24.80
+0.41±0.17
+0.23±0.13
+Llama-2-7b-chat
+44.6
+49.7
+0.03
+0.22
+0.66±0.24
+0.69±0.19
+Llama-2-7b-chat-cp
+40.2
+48.5
+0.05
+5.74
+0.52±0.20
+0.34±0.14
+FREEZE FIRST 10
+41.7
+48.5
+0.08
+7.12
+0.55±0.22
+0.34±0.12
+FREEZE LAST 10
+40.4
+48.8
+0.01
+4.69
+0.58±0.21
+0.37±0.15
+FREEZE ATTN.
+41.6
+48.8
+0.04
+3.15
+0.57±0.21
+0.42±0.16
+ONLY ATTN.
+40.8
+48.6
+0.04
+3.27
+0.59±0.24
+0.43±0.15
+FREEZE MLP
+40.9
+48.8
+0.0
+3.31
+0.60±0.22
+0.42±0.14
+ONLY MLP
+41.3
+48.8
+0.04
+3.39
+0.58±0.21
+0.43±0.16
+LORA
+43.6
+49.1
+0.03
+0.79
+0.64±0.22
+0.63±0.17
+LORA (3e-4)
+42.5
+48.9
+0.07
+7.97
+0.57±0.22
+0.35±0.10
+(IA)3
+44.2
+49.8
+0.0
+0.17
+0.66±0.24
+0.69±0.19
+(IA)3 (3e-4)
+43.0
+49.9
+0.0
+0.11
+0.66±0.23
+0.68±0.18
+Table 4: Reliability analysis experiment results on three
+benchmarks, including truthfulness, bias, and toxicity
+aspects. EN denotes the origin dataset in English, while
+TW denotes the translated dataset in Traditional Chi-
+nese.
+5
+Conclusion
+This work shows that catastrophic forgetting during
+continual pre-training is a non-trivial challenge and
+cannot be resolved through straightforward meth-
+ods. Additionally, we find that the repetition prob-
+lem becomes more pronounced when the model,
+after continual pre-training, is inclined to produce
+
+Traditional Chinese outputs. Moreover, after con-
+tinual pre-training, the model’s knowledge remains
+unaffected mainly; however, its reliability declines.
+Limitations
+One notable limitation arises from the resource-
+intensive nature of continual pre-training LLMs,
+making reproducing all the straightforward con-
+tinual pre-training methods outlined in this work
+challenging. Another significant limitation is that
+we only conducted continual pre-training using a
+Traditional Chinese corpus. However, we are also
+interested in extending our investigation to include
+pre-training on resources in other languages, and
+our methodology is easily adaptable to these set-
+tings.
+Ethics Statement
+The continual pre-training of LLMs can compro-
+mise the models’ safety alignment, leading to the
+generation of text that may contain biased and toxic
+information. Exploring methods to mitigate com-
+promising the safety alignment could be a prospec-
+tive avenue for future research.
+Acknowledgements
+We extend our appreciation to the ASUS Open
+Cloud Infrastructure Software Center for gener-
+ously providing valuable resources. Special thanks
+to Steve Chung-Cheng Chen, Tsung-Ying Yang,
+Jen-Hao Cheng, Hsiao-Tsung Hung, Szu-Hsien
+Lee, and Dau-Cheng Lyu for their participation in
+insightful discussions.
+References
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot
+learners. Advances in neural information processing
+systems, 33:1877–1901.
+Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot,
+Ashish Sabharwal, Carissa Schoenick, and Oyvind
+Tafjord. 2018. Think you have solved question an-
+swering? try arc, the ai2 reasoning challenge. arXiv
+preprint arXiv:1803.05457.
+Yiming Cui, Ziqing Yang, and Xin Yao. 2023. Efficient
+and effective text encoding for chinese llama and
+alpaca. arXiv preprint arXiv:2304.08177.
+Jwala Dhamala, Tony Sun, Varun Kumar, Satyapriya
+Krishna, Yada Pruksachatkun, Kai-Wei Chang, and
+Rahul Gupta. 2021. Bold: Dataset and metrics for
+measuring biases in open-ended language genera-
+tion. In Proceedings of the 2021 ACM conference
+on fairness, accountability, and transparency, pages
+862–872.
+Kawin Ethayarajh. 2019. How contextual are contextu-
+alized word representations? Comparing the geom-
+etry of BERT, ELMo, and GPT-2 embeddings. In
+Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the
+9th International Joint Conference on Natural Lan-
+guage Processing (EMNLP-IJCNLP), pages 55–65,
+Hong Kong, China. Association for Computational
+Linguistics.
+Robert M French. 1999. Catastrophic forgetting in con-
+nectionist networks. Trends in cognitive sciences,
+3(4):128–135.
+Leo Gao, Jonathan Tow, Stella Biderman, Sid Black,
+Anthony DiPofi, Charles Foster, Laurence Golding,
+Jeffrey Hsu, Kyle McDonell, Niklas Muennighoff,
+Jason Phang, Laria Reynolds, Eric Tang, Anish Thite,
+Ben Wang, Kevin Wang, and Andy Zou. 2021. A
+framework for few-shot language model evaluation.
+Kshitij Gupta, Benjamin Thérien, Adam Ibrahim,
+Mats Leon Richter, Quentin Gregory Anthony, Eu-
+gene Belilovsky, Irina Rish, and Timothée Lesort.
+2023. Continual pre-training of large language mod-
+els: How to re-warm your model? In Workshop on Ef-
+ficient Systems for Foundation Models @ ICML2023.
+Thomas Hartvigsen, Saadia Gabriel, Hamid Palangi,
+Maarten Sap, Dipankar Ray, and Ece Kamar. 2022.
+ToxiGen: A large-scale machine-generated dataset
+for adversarial and implicit hate speech detection.
+In Proceedings of the 60th Annual Meeting of the
+Association for Computational Linguistics (Volume
+1: Long Papers), pages 3309–3326, Dublin, Ireland.
+Association for Computational Linguistics.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+2020. Measuring massive multitask language under-
+standing. arXiv preprint arXiv:2009.03300.
+Saghar Hosseini, Hamid Palangi, and Ahmed Hassan
+Awadallah. 2023. An empirical study of metrics to
+measure representational harms in pre-trained lan-
+guage models.
+In Proceedings of the 3rd Work-
+shop on Trustworthy Natural Language Processing
+(TrustNLP 2023), pages 121–134, Toronto, Canada.
+Association for Computational Linguistics.
+Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski,
+Bruna Morrone, Quentin De Laroussilhe, Andrea
+Gesmundo, Mona Attariyan, and Sylvain Gelly. 2019.
+Parameter-efficient transfer learning for nlp. In In-
+ternational Conference on Machine Learning, pages
+2790–2799. PMLR.
+Edward J Hu, yelong shen, Phillip Wallis, Zeyuan Allen-
+Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu
+Chen. 2022. LoRA: Low-rank adaptation of large
+
+language models. In International Conference on
+Learning Representations.
+Yuzhen Huang, Yuzhuo Bai, Zhihao Zhu, Junlei
+Zhang, Jinghan Zhang, Tangjun Su, Junteng Liu,
+Chuancheng Lv, Yikai Zhang, Jiayi Lei, et al. 2023.
+C-eval: A multi-level multi-discipline chinese eval-
+uation suite for foundation models. arXiv preprint
+arXiv:2305.08322.
+Clayton Hutto and Eric Gilbert. 2014. Vader: A parsi-
+monious rule-based model for sentiment analysis of
+social media text. In Proceedings of the international
+AAAI conference on web and social media, volume 8,
+pages 216–225.
+Armand Joulin, Edouard Grave, Piotr Bojanowski,
+Matthijs Douze, Hérve Jégou, and Tomas Mikolov.
+2016a. Fasttext.zip: Compressing text classification
+models. arXiv preprint arXiv:1612.03651.
+Armand Joulin, Edouard Grave, Piotr Bojanowski, and
+Tomas Mikolov. 2016b. Bag of tricks for efficient
+text classification. arXiv preprint arXiv:1607.01759.
+Zixuan Ke, Yijia Shao, Haowei Lin, Tatsuya Konishi,
+Gyuhak Kim, and Bing Liu. 2022. Continual pre-
+training of language models. In The Eleventh Inter-
+national Conference on Learning Representations.
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying
+Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E.
+Gonzalez, Hao Zhang, and Ion Stoica. 2023. Effi-
+cient memory management for large language model
+serving with pagedattention. In Proceedings of the
+ACM SIGOPS 29th Symposium on Operating Systems
+Principles.
+Stephanie Lin, Jacob Hilton, and Owain Evans. 2022.
+TruthfulQA: Measuring how models mimic human
+falsehoods. In Proceedings of the 60th Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 3214–3252, Dublin,
+Ireland. Association for Computational Linguistics.
+Yen-Ting Lin and Yun-Nung Chen. 2023.
+Taiwan
+llm: Bridging the linguistic divide with a culturally
+aligned language model.
+Haokun Liu, Derek Tam, Mohammed Muqeeth, Jay Mo-
+hta, Tenghao Huang, Mohit Bansal, and Colin A Raf-
+fel. 2022. Few-shot parameter-efficient fine-tuning
+is better and cheaper than in-context learning. Ad-
+vances in Neural Information Processing Systems,
+35:1950–1965.
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Man-
+dar Joshi, Danqi Chen, Omer Levy, Mike Lewis,
+Luke Zettlemoyer, and Veselin Stoyanov. 2019.
+Roberta: A robustly optimized bert pretraining ap-
+proach. arXiv preprint arXiv:1907.11692.
+Xiangyu Qi, Yi Zeng, Tinghao Xie, Pin-Yu Chen, Ruoxi
+Jia, Prateek Mittal, and Peter Henderson. 2023. Fine-
+tuning aligned language models compromises safety,
+even when users do not intend to! arXiv preprint
+arXiv:2310.03693.
+Ye Qi, Devendra Sachan, Matthieu Felix, Sarguna Pad-
+manabhan, and Graham Neubig. 2018. When and
+why are pre-trained word embeddings useful for neu-
+ral machine translation? In Proceedings of the 2018
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, Volume 2 (Short Papers),
+pages 529–535, New Orleans, Louisiana. Associa-
+tion for Computational Linguistics.
+Yujia Qin, Jiajie Zhang, Yankai Lin, Zhiyuan Liu, Peng
+Li, Maosong Sun, and Jie Zhou. 2022. ELLE: Ef-
+ficient lifelong pre-training for emerging data. In
+Findings of the Association for Computational Lin-
+guistics: ACL 2022, pages 2789–2810, Dublin, Ire-
+land. Association for Computational Linguistics.
+Jeff Rasley, Samyam Rajbhandari, Olatunji Ruwase, and
+Yuxiong He. 2020. Deepspeed: System optimiza-
+tions enable training deep learning models with over
+100 billion parameters. In Proceedings of the 26th
+ACM SIGKDD International Conference on Knowl-
+edge Discovery & Data Mining, pages 3505–3506.
+Baptiste Roziere, Jonas Gehring, Fabian Gloeckle, Sten
+Sootla, Itai Gat, Xiaoqing Ellen Tan, Yossi Adi,
+Jingyu Liu, Tal Remez, Jérémy Rapin, et al. 2023.
+Code llama: Open foundation models for code. arXiv
+preprint arXiv:2308.12950.
+Chenyang Song, Xu Han, Zheni Zeng, Kuai Li, Chen
+Chen, Zhiyuan Liu, Maosong Sun, and Tao Yang.
+2023. Conpet: Continual parameter-efficient tun-
+ing for large language models.
+arXiv preprint
+arXiv:2309.14763.
+Jörg Tiedemann. 2012. Parallel data, tools and inter-
+faces in opus. In Proceedings of the Eight Inter-
+national Conference on Language Resources and
+Evaluation (LREC’12), Istanbul, Turkey. European
+Language Resources Association (ELRA).
+Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier
+Martinet, Marie-Anne Lachaux, Timothée Lacroix,
+Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023a.
+Llama:
+Open and effi-
+cient foundation language models. arXiv preprint
+arXiv:2302.13971.
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Al-
+bert, Amjad Almahairi, Yasmine Babaei, Nikolay
+Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti
+Bhosale, et al. 2023b.
+Llama 2: Open founda-
+tion and fine-tuned chat models.
+arXiv preprint
+arXiv:2307.09288.
+Betty Van Aken, Benjamin Winter, Alexander Löser,
+and Felix A Gers. 2019. How does bert answer ques-
+tions? a layer-wise analysis of transformer repre-
+sentations. In Proceedings of the 28th ACM inter-
+national conference on information and knowledge
+management, pages 1823–1832.
+Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V Le,
+Mohammad Norouzi, Wolfgang Macherey, Maxim
+Krikun, Yuan Cao, Qin Gao, Klaus Macherey, et al.
+
+2016. Google’s neural machine translation system:
+Bridging the gap between human and machine trans-
+lation. arXiv preprint arXiv:1609.08144.
+Yong Xie, Karan Aggarwal, and Aitzaz Ahmad. 2023.
+Efficient continual pre-training for building domain
+specific large language models.
+arXiv preprint
+arXiv:2311.08545.
+Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali
+Farhadi, and Yejin Choi. 2019. HellaSwag: Can a ma-
+chine really finish your sentence? In Proceedings of
+the 57th Annual Meeting of the Association for Com-
+putational Linguistics, pages 4791–4800, Florence,
+Italy. Association for Computational Linguistics.
+Yuexiang Zhai, Shengbang Tong, Xiao Li, Mu Cai, Qing
+Qu, Yong Jae Lee, and Yi Ma. 2023. Investigating the
+catastrophic forgetting in multimodal large language
+models. arXiv preprint arXiv:2309.10313.
+A
+Prompting Results
+We employ vLLM (Kwon et al., 2023) to op-
+timize efficiency, configuring the model with a
+max_tokens setting of 256. We utilize nuclear sam-
+pling, setting the temperature to 0.1 and top_p to
+0.9. Observing Figure 2 and Figure 2, it becomes
+apparent that when employing Chinese prompts,
+Llama-2-7b-chat-cp exhibits more repetition issues
+than Llama-2-7b-chat.
+B
+Additional Details about Experiment
+Setup
+Our source code is available at https://github.
+com/lca0503/Llama_tw.
+We adopted straight-
+forward approaches for continual pre-training on
+Llama-2-7b-chat1, utilizing the 1 billion tokens of
+data from general Traditional Chinese corpus. We
+gathered our Traditional Chinese corpus from di-
+verse sources, including websites and news pages.
+We utilize DeepSpeed (Rasley et al., 2020) to
+improve memory efficiency during continual pre-
+training. The continual pre-training of all models
+is conducted with a global batch size equivalent to
+4 million tokens. This process occurs on 64 V100
+GPUs, and we configure the gradient accumulation
+step to be 16. The learning rate during continual
+pre-training remained constant at 3e-5, and we ex-
+perimented with an additional learning rate 3e-4
+for the adapter approaches. Details regarding the
+trainable parameters for various straightforward
+approaches can be found in Table 5.
+1https://huggingface.co/meta-llama/
+Llama-2-7b-chat-hf
+<s> [INST] Explain the difference between Java and Python. [/INST]
+Llama-2-7b-chat
+ Java and Python are two popular programming languages that 
+have their own unique features, syntax, and use cases. Here 
+are some of the main differences between the two languages:              
+1. Syntax: Python's syntax is simpler and more concise than 
+Java's. Python uses indentation to define blocks of code instead 
+of curly braces, and it has fewer required lines of code for 
+common tasks. Java's syntax is more verbose, with a focus on 
+readability and explicitness.                                                                     
+2. Type System: Java is a statically-typed language, which 
+means that the data type of a variable is determined at compile 
+time. Python is dynamically-typed, which means that the data 
+type of a variable is determined at runtime.                                             
+3. Object-oriented programming: Both languages support 
+object-oriented programming (OOP), but Java is more 
+comprehensive and strict in enforcing OOP principles, while 
+Python is more flexible and forgiving.                                                      
+4. Memory Management: Java has automatic memory 
+management through its garbage collector, which frees the 
+developer from worrying about memory allocation and 
+deallocation. Python also has automatic memory management, 
+but it is not as efficient as Java's garbage collector.
+Llama-2-7b-chat-cp
+  Java and Python are two popular programming languages that 
+have gained widespread acceptance in the software 
+development industry. While both languages have their own 
+strengths and weaknesses, there are some key differences 
+between them. Here are some of the main differences:
+1. Syntax: Python's syntax is simpler and more concise than 
+Java's. Python uses indentation to define code blocks, while 
+Java uses curly braces. Python also has fewer required lines of 
+code than Java, making it easier to learn and use.
+2. Memory Management: Java is a statically-typed language, 
+which means that it manages memory automatically. Python, on 
+the other hand, is dynamically-typed, which means that it does 
+not manage memory automatically. This means that Python 
+requires more code to manage memory, but it also allows for 
+more flexibility in coding.
+3. Object-oriented programming: Both Java and Python are 
+object-oriented programming languages, but Java is more strict 
+in enforcing OOP principles. Python allows for more flexibility in 
+defining classes and objects.
+Figure 2: Illustration of the models outputs.
+<s> [INST] 氣候變化是如何影響生態系統的？ [/INST]
+Llama-2-7b-chat
+   Climate change can have significant impacts on ecosystems 
+around the world. Here are some of the ways in which climate 
+change can affect ecosystems:                                                                
+1. Temperature changes: Rising temperatures can alter the 
+distribution and abundance of plants and animals, disrupting food 
+webs and ecosystem processes.                                   
+2. Changes in precipitation patterns: Shifts in precipitation 
+patterns, such as more frequent droughts or heavy rainfall 
+events, can alter the distribution of water resources and affect the 
+growth and survival of plants and animals.                                               
+3. Sea-level rise: Rising sea levels can flood coastal ecosystems, 
+including mangroves, salt marshes, and coral reefs, leading to 
+the loss of habitat and biodiversity.                     
+4. Ocean acidification: As the ocean absorbs more carbon 
+dioxide from the atmosphere, it becomes more acidic, which can 
+affect the growth and survival of marine organisms, particularly 
+those with calcium carbonate shells, such as corals and shellfish.
+Llama-2-7b-chat-cp
+ 氣候變化對生態系統的影響主要有以下幾種方面的影響： 1. 氣候變化
+對生態系統的影響主要有以下幾種方面的影響： 1. 氣候變化對生態系
+統的影響主要有以下幾種方面的影響： 1. 氣候變化對生態系統的影響
+主要有以下幾種方面的影響： 1. 氣候變化對生態系統的影響主要有以
+下幾種方面的影響：
+Figure 3: Illustration of models’ outputs. The translation
+of our prompt is “How does climate change impact
+ecosystems?”
+
+Trainable params
+All params
+Trainable %
+Llama-2-7b-chat-cp
+6,738,415,616
+6,738,415,616
+100.000
+FREEZE FIRST 10
+4,714,582,016
+6,738,415,616
+69.966
+FREEZE LAST 10
+4,714,582,016
+6,738,415,616
+69.966
+FREEZE ATTN.
+4,590,931,968
+6,738,415,616
+68.131
+ONLY ATTN.
+2,147,483,648
+6,738,415,616
+31.869
+FREEZE MLP
+2,409,893,888
+6,738,415,616
+35.764
+ONLY MLP
+4,328,521,728
+6,738,415,616
+64.236
+LORA
+4,194,304
+6,742,609,920
+0.062
+(IA)3
+614,400
+6,739,030,016
+0.009
+Table 5: Trainable parameters for various straightforward approaches.
+rep-4
+rep-8
+rep-12
+rep-16
+rep-20
+0.141
+0.056
+0.037
+0.030
+0.025
+Table 6: The proportion of duplicated n-gram tokens of
+our Traditional Chinese corpus.
+Here, we delve into our adapter settings. For
+LORA (Hu et al., 2022), we selectively adapt only
+the query and value projection matrices of each
+layer in the model. We set the network rank to
+8 and the alpha to 32. In the case of (IA)3 (Liu
+et al., 2022), we rescale the key and value matrices
+in self-attention modules and the inner activations
+in feed-forward modules in each model layer via
+learned vectors. This is achieved through element-
+wise multiplication with these vectors.
+C
+Additional Details about Experiment
+Tasks
+C.1
+Output format Analysis
+We perform two tasks in output format analysis:
+language identification and repetition analysis. We
+utilized vLLM (Kwon et al., 2023) to enhance effi-
+ciency. Expressly, for models that have undergone
+alignment operations, such as Supervised Fine-
+Tuning (SFT) and Reinforcement Learning from
+Human Feedback (RLHF), we set up our prompt
+as “[INST] <context> [/INST]”. We configure the
+model with a max_tokens setting of 512 and utilize
+nuclear sampling, setting the temperature to 0.1
+and top_p to 0.9.
+To conduct output format analysis, we utilize the
+following dataset:
+• NeuLab-TedTalks2 (Qi et al., 2018): A com-
+mon corpus of TED talks, translated into numer-
+ous low-resource languages by a global commu-
+nity of volunteers. We randomly selected 2000
+aligned sentences from the English and Tradi-
+tional Chinese subsets for our output format ex-
+periments. We download the corpus from OPUS
+(Tiedemann, 2012).
+2https://opus.nlpl.eu/NeuLab-TedTalks-v1.php
+For language identification analysis, we utilize
+the FastText (Joulin et al., 2016a,b) language iden-
+tification model to detect the language of the gen-
+erated tokens. As for repetition analysis, we assess
+the proportion of duplicated n-gram tokens at the
+BPE level within the combination of the generated
+output and the prompt.
+Table 6 presents the repetition statistics for our
+Traditional Chinese corpus, and Table 7 presents
+the full results of the repetition analysis experi-
+ment. Notably, despite the pre-trained corpus con-
+taining relatively few repetitive tokens, the model
+pre-trained on this corpus exhibited a rise in text
+repetition, particularly evident when prompted with
+Traditional Chinese.
+C.2
+Knowledge Analysis
+In our knowledge analysis,
+we assess our
+model’s performance across four benchmarks:
+ARC, Hellaswag, MMLU, and C-eval-tw.
+We
+employ EleutherAI/lm-evaluation-harness3 (Gao
+et al., 2021) to assess the model performance on
+these benchmarks. These benchmarks consist of
+multiple-choice questions. The accuracy compu-
+tation is based on selecting the option with the
+highest probabilities.
+• ARC4 (Clark et al., 2018): A collection of natural,
+grade-school science questions. We conducted
+our evaluation on the Challenge Set within the
+ARC dataset. We conducted this benchmark us-
+ing a 25-shot prompt, evaluating performance
+based on length-normalized accuracy.
+• Hellaswag5 (Zellers et al., 2019): An evaluation
+of commonsense inference, presenting a task that
+is straightforward for humans but poses a chal-
+lenge for state-of-the-art models. We conducted
+this benchmark using a 10-shot prompt, evalu-
+ating performance based on length-normalized
+3https://github.com/EleutherAI/
+lm-evaluation-harness
+4https://allenai.org/data/arc
+5https://rowanzellers.com/hellaswag
+
+EN prompt
+TW prompt
+rep-4
+rep-8
+rep-12
+rep-16
+rep-20
+rep-4
+rep-8
+rep-12
+rep-16
+rep-20
+Llama-2-7b
+0.843
+0.804
+0.778
+0.760
+0.747
+0.796
+0.763
+0.743
+0.728
+0.716
+Llama-2-7b-chat
+0.080
+0.024
+0.012
+0.007
+0.005
+0.103
+0.039
+0.020
+0.012
+0.008
+Llama-2-7b-chat-cp
+0.137
+0.068
+0.046
+0.035
+0.029
+0.552
+0.491
+0.459
+0.437
+0.422
+FREEZE FIRST 10
+0.135
+0.068
+0.048
+0.038
+0.032
+0.599
+0.539
+0.506
+0.483
+0.466
+FREEZE LAST 10
+0.131
+0.065
+0.044
+0.034
+0.028
+0.524
+0.463
+0.432
+0.412
+0.397
+FREEZE ATTN.
+0.116
+0.050
+0.031
+0.023
+0.018
+0.401
+0.335
+0.303
+0.282
+0.269
+ONLY ATTN.
+0.134
+0.069
+0.048
+0.038
+0.032
+0.441
+0.380
+0.350
+0.331
+0.318
+FREEZE MLP
+0.125
+0.060
+0.041
+0.032
+0.027
+0.443
+0.381
+0.350
+0.330
+0.316
+ONLY MLP
+0.119
+0.053
+0.033
+0.024
+0.019
+0.409
+0.341
+0.308
+0.287
+0.273
+LORA
+0.094
+0.033
+0.017
+0.011
+0.008
+0.244
+0.172
+0.144
+0.128
+0.118
+LORA (3e-4)
+0.169
+0.098
+0.072
+0.059
+0.050
+0.621
+0.566
+0.537
+0.518
+0.502
+(IA)3
+0.084
+0.026
+0.013
+0.008
+0.007
+0.109
+0.043
+0.023
+0.014
+0.010
+(IA)3 (3e-4)
+0.103
+0.039
+0.023
+0.017
+0.013
+0.143
+0.071
+0.047
+0.035
+0.029
+Table 7: Complete results of repetition experiments with prompts in two languages.
+accuracy.
+• MMLU6 (Hendrycks et al., 2020): A test for a text
+model’s multitasking accuracy, covering 57 tasks
+from elementary math to U.S. history, computer
+science, law, and beyond. We conducted this
+benchmark using a 5-shot prompt, calculating
+metrics by averaging accuracy across individual
+tasks.
+• C-eval-tw: C-eval7 (Huang et al., 2023) serves
+as a test to evaluate the advanced knowledge and
+reasoning abilities of foundational models in a
+Chinese context. The test was initially in Simpli-
+fied Chinese, and we translated it into Traditional
+Chinese using the Google Translate (Wu et al.,
+2016) API in the deep-translator8 package. We
+conducted this benchmark using a 0-shot prompt,
+calculating metrics by averaging accuracy across
+individual tasks.
+C.3
+Reliability Analysis
+In our reliability analysis, we check the per-
+formance of our model across three benchmark
+datasets, including truthfulness, toxicity, and bias.
+We conduct this analysis in both English and Tra-
+ditional Chinese. While these benchmarks are in
+English, we use the Google Translate API in the
+deep-translator package to evaluate the datasets
+in Traditional Chinese, ensuring a comprehensive
+analysis.
+• TruthfulQA9 (Lin et al., 2022): A dataset uti-
+lized to measure the truthfulness of language
+models. This dataset comprises questions de-
+signed to elicit false responses from individuals
+with erroneous beliefs or misconceptions. In
+6https://github.com/hendrycks/test
+7https://cevalbenchmark.com
+8https://github.com/nidhaloff/deep-translator
+9https://github.com/sylinrl/TruthfulQA
+this analysis, we also employ EleutherAI/lm-
+evaluation-harness to conduct this benchmark.
+We conduct the benchmark using a 6-shot prompt.
+The scoring mechanism involves a question and
+multiple true/false reference answers, where the
+score is calculated by the normalized total proba-
+bility assigned to the set of true answers.
+• ToxiGen10 (Hartvigsen et al., 2022): The dataset
+we employed to detect the toxicity of language
+models.
+The dataset is a machine-generated
+dataset comprising toxic and benign statements
+related to 13 distinct minority groups. We adopt
+a refined dataset11 (Hosseini et al., 2023), which
+mitigates noise by excluding prompts where
+annotators disagree on the target demographic
+group. We take these statements as our prompts.
+We utilize vLLM to enhance efficiency.
+For
+models that have undergone alignment opera-
+tions, we set up our prompt as “[INST] <con-
+text> [/INST]”. We configure the model with a
+max_tokens setting of 512 and utilize nuclear
+sampling, setting the temperature to 0.1 and
+top_p to 0.9. We utilize the default RoBERTa-
+based classifier ToxiGen (Liu et al., 2019) for
+identifying toxic generations. As the classifier is
+designed to handle English text, we address this
+constraint by translating the model’s output into
+English using the Google Translator API before
+evaluating.
+• Bold12 (Dhamala et al., 2021): The dataset we
+utilize for bias analysis.
+This biased dataset
+consists of Wikipedia prompts across five do-
+mains: race, gender, religion, political ideology,
+and profession. We also utilize vLLM to en-
+hance efficiency. We exclude prompts that be-
+10https://github.com/microsoft/TOXIGEN
+11https://github.com/microsoft/SafeNLP
+12https://github.com/amazon-science/bold
+
+long to the religious ideology subgroups Hin-
+duism and Atheism due to their limited number
+of prompts. For models that have undergone
+alignment operations, we set up our prompt as
+“[INST] <context> [/INST]”. We configure the
+model with a max_tokens setting of 512 and uti-
+lize nuclear sampling, setting the temperature to
+0.1 and top_p to 0.9. We use the Valence Aware
+Dictionary and Sentiment Reasoner (VADER)
+(Hutto and Gilbert, 2014) to compute the senti-
+ment score for the combined prompt and genera-
+tion text. Additionally, we translate the model’s
+output into English using the Google Translator
+API before employing VADER to calculate the
+sentiment score.

@@ -1,0 +1,765 @@
+{
+  "id": "https://openalex.org/W4390722747",
+  "doi": "https://doi.org/10.48550/arxiv.2401.03129",
+  "title": "Examining Forgetting in Continual Pre-training of Aligned Large Language Models",
+  "display_name": "Examining Forgetting in Continual Pre-training of Aligned Large Language Models",
+  "publication_year": 2024,
+  "publication_date": "2024-01-06",
+  "ids": {
+    "openalex": "https://openalex.org/W4390722747",
+    "doi": "https://doi.org/10.48550/arxiv.2401.03129"
+  },
+  "language": "en",
+  "primary_location": {
+    "id": "pmh:oai:arXiv.org:2401.03129",
+    "is_oa": true,
+    "landing_page_url": "http://arxiv.org/abs/2401.03129",
+    "pdf_url": "https://arxiv.org/pdf/2401.03129",
+    "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "issn": [
+        "2331-8422"
+      ],
+      "is_oa": true,
+      "is_in_doaj": false,
+      "is_core": false,
+      "host_organization": "https://openalex.org/I205783295",
+      "host_organization_name": "Cornell University",
+      "host_organization_lineage": [
+        "https://openalex.org/I205783295"
+      ],
+      "host_organization_lineage_names": [],
+      "type": "repository"
+    },
+    "license": "cc-by-sa",
+    "license_id": "https://openalex.org/licenses/cc-by-sa",
+    "version": "submittedVersion",
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": "text"
+  },
+  "type": "preprint",
+  "indexed_in": [
+    "arxiv",
+    "datacite"
+  ],
+  "open_access": {
+    "is_oa": true,
+    "oa_status": "green",
+    "oa_url": "https://arxiv.org/pdf/2401.03129",
+    "any_repository_has_fulltext": true
+  },
+  "authorships": [
+    {
+      "author_position": "first",
+      "author": {
+        "id": "https://openalex.org/A5029645824",
+        "display_name": "Chen-An Li",
+        "orcid": null
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Li, Chen-An",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "last",
+      "author": {
+        "id": "https://openalex.org/A5040508737",
+        "display_name": "Hung-yi Lee",
+        "orcid": "https://orcid.org/0000-0002-9654-5747"
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Lee, Hung-Yi",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    }
+  ],
+  "institutions": [],
+  "countries_distinct_count": 0,
+  "institutions_distinct_count": 0,
+  "corresponding_author_ids": [],
+  "corresponding_institution_ids": [],
+  "apc_list": null,
+  "apc_paid": null,
+  "fwci": null,
+  "has_fulltext": true,
+  "cited_by_count": 4,
+  "citation_normalized_percentile": null,
+  "cited_by_percentile_year": null,
+  "biblio": {
+    "volume": null,
+    "issue": null,
+    "first_page": null,
+    "last_page": null
+  },
+  "is_retracted": false,
+  "is_paratext": false,
+  "is_xpac": false,
+  "primary_topic": {
+    "id": "https://openalex.org/T10028",
+    "display_name": "Topic Modeling",
+    "score": 0.9990000128746033,
+    "subfield": {
+      "id": "https://openalex.org/subfields/1702",
+      "display_name": "Artificial Intelligence"
+    },
+    "field": {
+      "id": "https://openalex.org/fields/17",
+      "display_name": "Computer Science"
+    },
+    "domain": {
+      "id": "https://openalex.org/domains/3",
+      "display_name": "Physical Sciences"
+    }
+  },
+  "topics": [
+    {
+      "id": "https://openalex.org/T10028",
+      "display_name": "Topic Modeling",
+      "score": 0.9990000128746033,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1702",
+        "display_name": "Artificial Intelligence"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    },
+    {
+      "id": "https://openalex.org/T10181",
+      "display_name": "Natural Language Processing Techniques",
+      "score": 0.9959999918937683,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1702",
+        "display_name": "Artificial Intelligence"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    },
+    {
+      "id": "https://openalex.org/T11714",
+      "display_name": "Multimodal Machine Learning Applications",
+      "score": 0.9657999873161316,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1707",
+        "display_name": "Computer Vision and Pattern Recognition"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    }
+  ],
+  "keywords": [
+    {
+      "id": "https://openalex.org/keywords/forgetting",
+      "display_name": "Forgetting",
+      "score": 0.941537618637085
+    },
+    {
+      "id": "https://openalex.org/keywords/training",
+      "display_name": "Training (meteorology)",
+      "score": 0.6359372138977051
+    },
+    {
+      "id": "https://openalex.org/keywords/repetition",
+      "display_name": "Repetition (rhetorical device)",
+      "score": 0.6015434861183167
+    },
+    {
+      "id": "https://openalex.org/keywords/reliability",
+      "display_name": "Reliability (semiconductor)",
+      "score": 0.5366081595420837
+    },
+    {
+      "id": "https://openalex.org/keywords/work",
+      "display_name": "Work (physics)",
+      "score": 0.4453340172767639
+    },
+    {
+      "id": "https://openalex.org/keywords/computer-science",
+      "display_name": "Computer science",
+      "score": 0.4402361214160919
+    },
+    {
+      "id": "https://openalex.org/keywords/cognitive-psychology",
+      "display_name": "Cognitive psychology",
+      "score": 0.3242182731628418
+    },
+    {
+      "id": "https://openalex.org/keywords/psychology",
+      "display_name": "Psychology",
+      "score": 0.26832741498947144
+    },
+    {
+      "id": "https://openalex.org/keywords/engineering",
+      "display_name": "Engineering",
+      "score": 0.16050976514816284
+    },
+    {
+      "id": "https://openalex.org/keywords/linguistics",
+      "display_name": "Linguistics",
+      "score": 0.10312041640281677
+    },
+    {
+      "id": "https://openalex.org/keywords/geography",
+      "display_name": "Geography",
+      "score": 0.06431746482849121
+    }
+  ],
+  "concepts": [
+    {
+      "id": "https://openalex.org/C7149132",
+      "wikidata": "https://www.wikidata.org/wiki/Q1377840",
+      "display_name": "Forgetting",
+      "level": 2,
+      "score": 0.941537618637085
+    },
+    {
+      "id": "https://openalex.org/C2777211547",
+      "wikidata": "https://www.wikidata.org/wiki/Q17141490",
+      "display_name": "Training (meteorology)",
+      "level": 2,
+      "score": 0.6359372138977051
+    },
+    {
+      "id": "https://openalex.org/C2776141515",
+      "wikidata": "https://www.wikidata.org/wiki/Q1274479",
+      "display_name": "Repetition (rhetorical device)",
+      "level": 2,
+      "score": 0.6015434861183167
+    },
+    {
+      "id": "https://openalex.org/C43214815",
+      "wikidata": "https://www.wikidata.org/wiki/Q7310987",
+      "display_name": "Reliability (semiconductor)",
+      "level": 3,
+      "score": 0.5366081595420837
+    },
+    {
+      "id": "https://openalex.org/C18762648",
+      "wikidata": "https://www.wikidata.org/wiki/Q42213",
+      "display_name": "Work (physics)",
+      "level": 2,
+      "score": 0.4453340172767639
+    },
+    {
+      "id": "https://openalex.org/C41008148",
+      "wikidata": "https://www.wikidata.org/wiki/Q21198",
+      "display_name": "Computer science",
+      "level": 0,
+      "score": 0.4402361214160919
+    },
+    {
+      "id": "https://openalex.org/C180747234",
+      "wikidata": "https://www.wikidata.org/wiki/Q23373",
+      "display_name": "Cognitive psychology",
+      "level": 1,
+      "score": 0.3242182731628418
+    },
+    {
+      "id": "https://openalex.org/C15744967",
+      "wikidata": "https://www.wikidata.org/wiki/Q9418",
+      "display_name": "Psychology",
+      "level": 0,
+      "score": 0.26832741498947144
+    },
+    {
+      "id": "https://openalex.org/C127413603",
+      "wikidata": "https://www.wikidata.org/wiki/Q11023",
+      "display_name": "Engineering",
+      "level": 0,
+      "score": 0.16050976514816284
+    },
+    {
+      "id": "https://openalex.org/C41895202",
+      "wikidata": "https://www.wikidata.org/wiki/Q8162",
+      "display_name": "Linguistics",
+      "level": 1,
+      "score": 0.10312041640281677
+    },
+    {
+      "id": "https://openalex.org/C205649164",
+      "wikidata": "https://www.wikidata.org/wiki/Q1071",
+      "display_name": "Geography",
+      "level": 0,
+      "score": 0.06431746482849121
+    },
+    {
+      "id": "https://openalex.org/C78519656",
+      "wikidata": "https://www.wikidata.org/wiki/Q101333",
+      "display_name": "Mechanical engineering",
+      "level": 1,
+      "score": 0.0
+    },
+    {
+      "id": "https://openalex.org/C62520636",
+      "wikidata": "https://www.wikidata.org/wiki/Q944",
+      "display_name": "Quantum mechanics",
+      "level": 1,
+      "score": 0.0
+    },
+    {
+      "id": "https://openalex.org/C138885662",
+      "wikidata": "https://www.wikidata.org/wiki/Q5891",
+      "display_name": "Philosophy",
+      "level": 0,
+      "score": 0.0
+    },
+    {
+      "id": "https://openalex.org/C121332964",
+      "wikidata": "https://www.wikidata.org/wiki/Q413",
+      "display_name": "Physics",
+      "level": 0,
+      "score": 0.0
+    },
+    {
+      "id": "https://openalex.org/C163258240",
+      "wikidata": "https://www.wikidata.org/wiki/Q25342",
+      "display_name": "Power (physics)",
+      "level": 2,
+      "score": 0.0
+    },
+    {
+      "id": "https://openalex.org/C153294291",
+      "wikidata": "https://www.wikidata.org/wiki/Q25261",
+      "display_name": "Meteorology",
+      "level": 1,
+      "score": 0.0
+    }
+  ],
+  "mesh": [],
+  "locations_count": 2,
+  "locations": [
+    {
+      "id": "pmh:oai:arXiv.org:2401.03129",
+      "is_oa": true,
+      "landing_page_url": "http://arxiv.org/abs/2401.03129",
+      "pdf_url": "https://arxiv.org/pdf/2401.03129",
+      "source": {
+        "id": "https://openalex.org/S4306400194",
+        "display_name": "arXiv (Cornell University)",
+        "issn_l": "2331-8422",
+        "issn": [
+          "2331-8422"
+        ],
+        "is_oa": true,
+        "is_in_doaj": false,
+        "is_core": false,
+        "host_organization": "https://openalex.org/I205783295",
+        "host_organization_name": "Cornell University",
+        "host_organization_lineage": [
+          "https://openalex.org/I205783295"
+        ],
+        "host_organization_lineage_names": [],
+        "type": "repository"
+      },
+      "license": "cc-by-sa",
+      "license_id": "https://openalex.org/licenses/cc-by-sa",
+      "version": "submittedVersion",
+      "is_accepted": false,
+      "is_published": false,
+      "raw_source_name": null,
+      "raw_type": "text"
+    },
+    {
+      "id": "doi:10.48550/arxiv.2401.03129",
+      "is_oa": true,
+      "landing_page_url": "https://doi.org/10.48550/arxiv.2401.03129",
+      "pdf_url": null,
+      "source": {
+        "id": "https://openalex.org/S4306400194",
+        "display_name": "arXiv (Cornell University)",
+        "issn_l": "2331-8422",
+        "issn": [
+          "2331-8422"
+        ],
+        "is_oa": true,
+        "is_in_doaj": false,
+        "is_core": false,
+        "host_organization": "https://openalex.org/I205783295",
+        "host_organization_name": "Cornell University",
+        "host_organization_lineage": [
+          "https://openalex.org/I205783295"
+        ],
+        "host_organization_lineage_names": [],
+        "type": "repository"
+      },
+      "license": null,
+      "license_id": null,
+      "version": null,
+      "is_accepted": false,
+      "is_published": null,
+      "raw_source_name": null,
+      "raw_type": "Preprint"
+    }
+  ],
+  "best_oa_location": {
+    "id": "pmh:oai:arXiv.org:2401.03129",
+    "is_oa": true,
+    "landing_page_url": "http://arxiv.org/abs/2401.03129",
+    "pdf_url": "https://arxiv.org/pdf/2401.03129",
+    "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "issn": [
+        "2331-8422"
+      ],
+      "is_oa": true,
+      "is_in_doaj": false,
+      "is_core": false,
+      "host_organization": "https://openalex.org/I205783295",
+      "host_organization_name": "Cornell University",
+      "host_organization_lineage": [
+        "https://openalex.org/I205783295"
+      ],
+      "host_organization_lineage_names": [],
+      "type": "repository"
+    },
+    "license": "cc-by-sa",
+    "license_id": "https://openalex.org/licenses/cc-by-sa",
+    "version": "submittedVersion",
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": "text"
+  },
+  "sustainable_development_goals": [
+    {
+      "score": 0.41999998688697815,
+      "display_name": "Quality Education",
+      "id": "https://metadata.un.org/sdg/4"
+    }
+  ],
+  "x_sdgs": [],
+  "study_designs": [],
+  "awards": [],
+  "funders": [],
+  "has_content": {
+    "pdf": true,
+    "grobid_xml": true
+  },
+  "content_urls": {
+    "pdf": "https://content.openalex.org/works/W4390722747.pdf",
+    "grobid_xml": "https://content.openalex.org/works/W4390722747.grobid-xml"
+  },
+  "referenced_works_count": 0,
+  "referenced_works": [],
+  "related_works": [
+    "https://openalex.org/W4289718052",
+    "https://openalex.org/W2164121020",
+    "https://openalex.org/W2145559838",
+    "https://openalex.org/W2905319430",
+    "https://openalex.org/W3116498279",
+    "https://openalex.org/W4287549553",
+    "https://openalex.org/W4310285384",
+    "https://openalex.org/W3183027292",
+    "https://openalex.org/W4248896073",
+    "https://openalex.org/W2974871044"
+  ],
+  "abstract_inverted_index": {
+    "Recent": [
+      0
+    ],
+    "advances": [
+      1
+    ],
+    "in": [
+      2,
+      20,
+      28
+    ],
+    "Large": [
+      3
+    ],
+    "Language": [
+      4
+    ],
+    "Models": [
+      5
+    ],
+    "(LLMs)": [
+      6
+    ],
+    "have": [
+      7
+    ],
+    "exhibited": [
+      8
+    ],
+    "remarkable": [
+      9
+    ],
+    "proficiency": [
+      10
+    ],
+    "across": [
+      11,
+      81
+    ],
+    "various": [
+      12,
+      82
+    ],
+    "tasks.": [
+      13
+    ],
+    "Given": [
+      14
+    ],
+    "the": [
+      15,
+      56,
+      72,
+      78,
+      93,
+      104
+    ],
+    "potent": [
+      16
+    ],
+    "applications": [
+      17
+    ],
+    "of": [
+      18,
+      58,
+      74,
+      96
+    ],
+    "LLMs": [
+      19
+    ],
+    "numerous": [
+      21
+    ],
+    "fields,": [
+      22
+    ],
+    "there": [
+      23
+    ],
+    "has": [
+      24
+    ],
+    "been": [
+      25
+    ],
+    "a": [
+      26,
+      34
+    ],
+    "surge": [
+      27
+    ],
+    "LLM": [
+      29,
+      80
+    ],
+    "development.": [
+      30
+    ],
+    "In": [
+      31,
+      51
+    ],
+    "developing": [
+      32
+    ],
+    "LLMs,": [
+      33
+    ],
+    "common": [
+      35
+    ],
+    "practice": [
+      36
+    ],
+    "involves": [
+      37
+    ],
+    "continual": [
+      38,
+      63,
+      101
+    ],
+    "pre-training": [
+      39,
+      64,
+      76
+    ],
+    "on": [
+      40,
+      65,
+      77
+    ],
+    "previously": [
+      41
+    ],
+    "fine-tuned": [
+      42,
+      68,
+      79
+    ],
+    "models.": [
+      43
+    ],
+    "However,": [
+      44
+    ],
+    "this": [
+      45
+    ],
+    "can": [
+      46
+    ],
+    "lead": [
+      47
+    ],
+    "to": [
+      48
+    ],
+    "catastrophic": [
+      49,
+      98
+    ],
+    "forgetting.": [
+      50
+    ],
+    "our": [
+      52
+    ],
+    "work,": [
+      53
+    ],
+    "we": [
+      54
+    ],
+    "investigate": [
+      55
+    ],
+    "phenomenon": [
+      57
+    ],
+    "forgetting": [
+      59,
+      99
+    ],
+    "that": [
+      60
+    ],
+    "occurs": [
+      61
+    ],
+    "during": [
+      62,
+      100
+    ],
+    "an": [
+      66
+    ],
+    "existing": [
+      67
+    ],
+    "LLM.": [
+      69
+    ],
+    "We": [
+      70
+    ],
+    "evaluate": [
+      71
+    ],
+    "impact": [
+      73
+    ],
+    "continuous": [
+      75
+    ],
+    "dimensions,": [
+      83
+    ],
+    "including": [
+      84
+    ],
+    "output": [
+      85
+    ],
+    "format,": [
+      86
+    ],
+    "knowledge,": [
+      87
+    ],
+    "and": [
+      88
+    ],
+    "reliability.": [
+      89
+    ],
+    "Experiment": [
+      90
+    ],
+    "results": [
+      91
+    ],
+    "highlight": [
+      92
+    ],
+    "non-trivial": [
+      94
+    ],
+    "challenge": [
+      95
+    ],
+    "addressing": [
+      97
+    ],
+    "pre-training,": [
+      102
+    ],
+    "especially": [
+      103
+    ],
+    "repetition": [
+      105
+    ],
+    "issue.": [
+      106
+    ]
+  },
+  "counts_by_year": [
+    {
+      "year": 2025,
+      "cited_by_count": 4
+    }
+  ],
+  "updated_date": "2026-08-26T07:47:46.906454",
+  "created_date": "2024-01-13T00:00:00"
+}

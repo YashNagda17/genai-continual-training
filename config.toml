@@ -1,0 +1,11 @@
+web_search = "live"
+approval_policy = "on-request"
+
+# Allow Codex to read/write files inside the current workspace
+sandbox_mode = "workspace-write"
+network_access = true
+
+# Enable command execution
+[features]
+shell_tool = true
+unified_exec = true

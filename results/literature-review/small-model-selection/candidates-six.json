@@ -1,0 +1,59 @@
+{
+  "count": 6,
+  "items": [
+    {
+      "id": "S01",
+      "short_name": "ER",
+      "url": "https://arxiv.org/abs/1902.10486",
+      "pdf_url": "https://arxiv.org/pdf/1902.10486",
+      "text_path": "sources/S01.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    },
+    {
+      "id": "S02",
+      "short_name": "iCaRL",
+      "url": "https://openaccess.thecvf.com/content_cvpr_2017/html/Rebuffi_iCaRL_Incremental_Classifier_CVPR_2017_paper.html",
+      "pdf_url": "https://openaccess.thecvf.com/content_cvpr_2017/papers/Rebuffi_iCaRL_Incremental_Classifier_CVPR_2017_paper.pdf",
+      "text_path": "sources/S02.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    },
+    {
+      "id": "S03",
+      "short_name": "GSS",
+      "url": "https://proceedings.neurips.cc/paper/2019/hash/e562cd9c0768d5464b64cf61da7fc6bb-Abstract.html",
+      "pdf_url": "https://papers.neurips.cc/paper/9354-gradient-based-sample-selection-for-online-continual-learning.pdf",
+      "text_path": "sources/S03.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    },
+    {
+      "id": "S04",
+      "short_name": "MIR",
+      "url": "https://arxiv.org/abs/1908.04742",
+      "pdf_url": "https://arxiv.org/pdf/1908.04742",
+      "text_path": "sources/S04.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    },
+    {
+      "id": "S05",
+      "short_name": "ASER",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/view/17159",
+      "pdf_url": "https://arxiv.org/pdf/2009.00093",
+      "text_path": "sources/S05.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    },
+    {
+      "id": "S06",
+      "short_name": "Data Diet",
+      "url": "https://papers.neurips.cc/paper/2021/hash/ac56f8fe9eea3e4a365f29f0f1957c55-Abstract.html",
+      "pdf_url": "https://papers.nips.cc/paper_files/paper/2021/file/ac56f8fe9eea3e4a365f29f0f1957c55-Paper.pdf",
+      "text_path": "sources/S06.txt",
+      "accessed": "2026-09-30",
+      "reading_status": "targeted full-text reading complete"
+    }
+  ]
+}

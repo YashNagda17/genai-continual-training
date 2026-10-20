@@ -1,0 +1,1360 @@
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+REVISITING REPLAY AND GRADIENT ALIGNMENT FOR
+CONTINUAL PRE-TRAINING OF LARGE LANGUAGE MODELS
+Istabrak Abbes1,2,3∗Gopeshh Subbaraj1,2∗Matthew Riemer1,2,4
+Nizar Islah1,2
+Benjamin Th´erien1,2
+Tsuguchika Tabaru5
+Hiroaki Kingetsu5
+Sarath Chandar2,3,6
+Irina Rish1,2
+1Universit´e de Montr´eal
+2Mila – Quebec AI Institute
+3Chandar Research Lab
+4IBM Research
+5Fujitsu Research
+6Polytechnique Montr´eal
+{istabrak.abbes, gopeshh.subbaraj}@mila.quebec
+ABSTRACT
+Training large language models (LLMs) typically involves pre-training on massive corpora, only
+to restart the process entirely when new data becomes available. A more efficient and resource-
+conserving approach would be continual pre-training, where models are updated with new data
+rather than retraining from scratch. However, the introduction of new data often causes distribu-
+tion shifts, leading to performance degradation on previously learned tasks. In this paper, we take
+a deeper look at two popular proposals for addressing this distribution shift within the continual
+learning literature: experience replay and gradient alignment. We consider continual pre-training of
+models within the Llama family of architectures at a large scale across languages with 100 billion
+tokens of training data in each language, finding that both replay and gradient alignment lead to
+more stable learning without forgetting. This conclusion holds both as we vary the model scale and
+as we vary the number and diversity of tasks. Moreover, we are the first to demonstrate the effective-
+ness of gradient alignment techniques in the context of LLM pre-training and propose an efficient
+implementation of meta-experience replay (MER) (Riemer et al., 2019a) that imbues experience re-
+play with the benefits of gradient alignment despite negligible compute and memory overhead. Our
+scaling analysis across model sizes and replay rates indicates that small rates of replaying old exam-
+ples are definitely a more valuable use of compute than investing in model size, but that it is more
+compute efficient to scale the size of the model than invest in high rates of replaying old examples.
+1
+INTRODUCTION
+Large Language Models (LLMs) need regular updates to be current with new information and domains, posing a
+problem for organizations looking to maintain LLMs without repeatedly performing expensive retraining from scratch.
+Performing updates to a model that has already received pre-training on a new distribution is the classic problem of
+continual learning (Ring, 1994) or lifelong learning (Thrun, 1994). Unfortunately, achieving good performance in
+these non-i.i.d. settings is famously difficult because of the stability-plasticity dilemma (Carpenter & Grossberg,
+1987), formalizing the inherent tension between achieving performance improvements on new data and maintaining
+performance on old data. In this paper, we are concerned with the setting termed continual pre-training (Ke et al., 2023;
+Gupta et al., 2023; Ibrahim et al., 2024; Roth et al., 2024; Chen et al., 2024; Fujii et al., 2024; Li & Lee, 2024; Zhou
+et al., 2024) in which a pre-trainined LLM is continually trained on a large amount of new data (i.e. 100 billion tokens).
+We should draw a strong distinction between this setting and other settings such as fine-tuning or instruction tuning,
+which are generally characterized by training on much smaller datasets for a much smaller number of gradient steps.
+This is an important difference because the risk of experiencing the problem of catastrophic forgetting (McCloskey &
+Cohen, 1989), in which much of a model’s old knowledge is overwritten as it is trying to learn new knowledge, grows
+as the number of training steps on the new distribution are increased. This makes effective continual pre-training
+very difficult to achieve and less common in practice – despite the profound opportunity it would present for many
+organizations in managing their compute costs and carbon footprint if it were successful.
+One of the most generally applicable and successful approaches for stabilizing continual learning is experience replay
+(Lin, 1992; Murre, 1992; Robins, 1995). The main idea is to store a buffer of past experiences that are interleaved with
+incoming experiences to stabilize learning. While the distribution of incoming data may be non-nonstationary, the
+network can optimize for the stationary distribution over examples seen so far with replay. As such, replay provides
+∗Equal contribution (Alphabetical Order)
+1
+arXiv:2508.01908v1  [cs.LG]  3 Aug 2025
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Figure 1: Continual pre-training of Llama models on English, French, German, Arabic and Japanese sequentially
+using meta-experience replay, which combines replay with gradient alignment through Reptile meta-optimization.
+a general solution to the stability-plasticity dilemma by allowing neural networks to retain more past information in
+exchange for compute. While the benefits of replay are well established in the literature, it is less clear whether replay
+is always the most efficient way of investing in compute. In our experiments, we directly compare replay with models
+that invest the same amount of computation in more parameters, finding evidence that replay can be a wiser investment.
+In our paper, we are mostly concerned with the amount of compute in floating point operations (FLOPs) or VRAM in
+bytes that a given model utilizes as we believe these are the main constraints in scaling LLM pre-training. Much of
+the continual learning literature focuses on the size of the buffer used for replay (Lopez-Paz & Ranzato, 2017; Riemer
+et al., 2017b; 2019a; Chaudhry et al., 2019a;b). However, it is possible to efficiently implement storage of this buffer
+on disk, so we do not consider any restrictions on the replay buffer size in our experiments over 500 billion tokens.
+That said, if we want to utilize compute in the most efficient way possible to address the stability-plasticity dilemma,
+it is tempting to consider improvements to replay that can enhance the efficiency of learning. One prominent research
+direction looking to achieve just that is papers on promoting gradient alignment during continual learning. The idea
+is that at any instant in time during gradient based learning, training on one data point will experience transfer to
+the other data point if the dot product between the gradients with respect to both points is positive and experience
+interference to or forgetting of the other data point if the dot product between the gradients with respect to both points
+is negative. As such, approaches including Gradient Episodic Memory (GEM) (Lopez-Paz & Ranzato, 2017), its
+efficient approximation (Chaudhry et al., 2019a), and PCGrad (Yu et al., 2020) consider a constrained optimization
+procedure in which learning is allowed on new data only if it doesn’t interfere with past data. This idea was generalized
+by Riemer et al. (2019a) as a regularized learning objective driven by optimization based meta-learning (Finn et al.,
+2017; Nichol et al., 2018) whereby learning is regularized to also maximize the dot product between gradients such that
+not only is interference minimized, but transfer is also maximized. Another advantage of the meta-learning perspective
+is that the network can learn to shift its distribution of gradient dot products over the course of learning rather than
+performing adhoc gradient projections only associated with a single batch (Riemer et al., 2019a). In our paper, we are
+the first to adapt the meta-experience replay approach of Riemer et al. (2019a) for efficient use the context of modern
+LLMs. This is the first showcase of gradient alignment approaches in the context of continual pre-training with LLMs.
+In this paper, we focus on a realistic scenario of sequential domain adaptation: a model is first pretrained on an English
+corpus, then continually pretrained on French and German corpora, each for 100 billion tokens. In a second setting,
+we extend this to five tasks—English, French, German, Arabic, and Japanese—each comprising 100 billion tokens,
+to evaluate continual pre-training dynamics across a more diverse set of languages. We evaluate the models on both
+retention of earlier knowledge and overall ability on a broad knowledge benchmark. Our study uses the Spectra open
+LLM suite (Kaushal et al., 2024), which provides a range of model sizes within the Llama family of architectures,
+allowing us to analyze how model scale impacts continual learning dynamics. Concretely, we make the following key
+contributions to the community:
+2
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+• Promoting Gradient Alignment in LLMs. In the meta-experience replay approach of Riemer et al. (2019a),
+the use of Reptile-based meta-learning was motivated as a computationally efficient way of promoting gra-
+dient alignment during deep continual learning. However, to the best of our knowledge, gradient alignment
+approaches for continual learning have not been evaluated in the context of modern LLM models. We are the
+first to establish that these approaches still lead to benefits in this scaled up setting and provide an updated
+practical implementation of meta-experience replay geared towards maximizing computational efficiency.
+• More Compute, More Benefits. Our empirical analysis consistently reveals the interesting insight that
+providing more compute for replay by using old data as an increasing proportion of each incoming batch
+leads to more stable learning for both experience replay and meta-experience replay. Indeed, we find that this
+tradeoff could sometimes be preferable to using larger models that leverage more compute at inference time.
+Our scaling analysis reveals that adding a 25% replay rate is more efficient than investing in model size, but
+that a 50% replay rate does not further increase performance as efficiently as investing in model size would.
+2
+RELATED WORK
+The goal of Continual Pre-Training (CPT) for LLMs is to perform incremental training of pre-existing models on
+new datasets to enable an expansion of knowledge while still preserving the LLM’s original competencies. We refer
+readers to pre-existing reviews on the landscape of continual learning approaches for an in-depth overview (De Lange
+et al., 2021; Khetarpal et al., 2022; Shi et al., 2024). Here we will just focus on approaches most related to our study.
+Replay Buffer Maintenance. There has been considerable focus on efficient management of replay buffers in the
+continual learning literature. For example, in RL it is typical to use a recency based FIFO strategy for maintaining a
+buffer (Mnih et al., 2015) because old data is assumed to be outdated (based on old policies). However, in continual
+supervised learning, where the agents performance is not assumed to influence the data distribution, it is more common
+to use reservoir sampling, which has the appealing property of sampling uniformly over past data points encountered
+(Vitter, 1985; Riemer et al., 2019a). Moreover, when the buffer memory capacity is truly tiny, prior studies have found
+benefits in further considering clustering (Chaudhry et al., 2019b), prototypes (Rebuffi et al., 2017) or even scalable
+memory efficient approximate buffers (Riemer et al., 2017a; 2019b; Bashivan et al., 2019) to make the most use of the
+available storage. When considering the CPT setting experienced with modern LLMs, it is typical that disk-space is
+plentiful, but that RAM is severely limited (especially on GPUs). As such, in this work we focus on efficiently storing
+and loading replay examples on disk rather than maintaining a limited number in memory.
+Modular Architectures. Architectures that exploit modular structure such as sparse mixtures of experts (MoE) or
+routing models have established benefits in the field of continual learning (Jacobs et al., 1991; Miikkulainen, 1993;
+Jordan & Jacobs, 1994; Davis & Arel, 2013; Shazeer et al., 2017; Fernando et al., 2017). As discussed by Rosenbaum
+et al. (2019b), modular architectures with dynamic composition (Rosenbaum et al., 2018; Cases et al., 2019; Chang
+et al., 2019; Rosenbaum et al., 2019a; Thomas, 2011; Kostas et al., 2020; Zini et al., 2020) have the ability to effect the
+dynamics of transfer and forgetting by allowing the model to directly orthogonalize weight updates when routing expe-
+riences to different modules. Gururangan et al. (2021) introduced a domain-adaptive continual pre-training approach
+based on a growing MoE architecture. Jin et al. (2021) extended this idea by continually pre-training RoBERTa-base
+over a sequence of domain-incremental research paper streams and chronologically ordered tweet streams. Other
+approaches have sought to mitigate catastrophic forgetting while adapting LLMs to evolving data distributions. Fer-
+nandez et al. (2024) proposed layer-specific pre-training and adaptive learning rates to preserve knowledge when
+continually pre-training a GPT2-L model on temporally changing Wikipedia snapshots. Chen et al. (2023) explored
+lifelong learning from a sequence of online pre-training corpus distributions using a progressively growing MoE ar-
+chitecture. Moreover, recent work by Th´erien et al. (2025) explored the influence of the MoE router in effecting the
+dynamics of continual pre-training. As considerable work has already been focused on modular architectures, and the
+benefits are largely considered unrelated to replay, we omitted these algorithms in our scaling experiments.
+CPT over Multilingual Data. Several studies have also explored continual pre-training for multilingual adaptation.
+Duwal et al. (2024) investigated the adaptation of the Llama3-8B model to Nepali using quantized low-rank adaptation
+techniques. Gogoulou et al. (2024) extended this work to three morphologically similar North European languages,
+scaling models up to 1.3B parameters. However, a comprehensive analysis of forgetting and the use of popular
+techniques used in continual learning has not been explored in continually pre-training LLMs across diverse scales.
+In this paper, we dive deeper into this direction. Specifically, we consider the popular ”one-pass” setting from the
+literature in which each task is only visited once. As highlighted by (Riemer et al., 2022), this setting is very difficult
+as it is impossible to achieve high frequency updates without introducing considerable myopic optimization bias – a
+problem that gets even worse when the Transformer context length is increased (Riemer et al., 2024).
+3
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+3
+OUR METHOD: EFFICIENT META-EXPERIENCE REPLAY (MER)
+In this section, we detail the efficient Meta-Experience Replay (MER) implementation that we consider in this work.
+First, we discuss the details of our implementation of replay itself. We will then go on to discuss the implementation
+of MER that is achieved by integrating this replay mechanism with Reptile-based meta-optimization.
+3.1
+EXPERIENCE REPLAY
+Efficient Replay. Experience replay seeks to address the stability-plasticity dilemma by maintaining a memory buffer
+M that is updated at each step Mt+1 ←Mt ∪{x}. A naive approach that optimizes directly over the memory buffer
+following the gradient with expected value Ex∼Mt∇θtL(x) converges to the true unbiased gradient of the long-term
+steady-state distribution of data points if p(x|t) follows a Markov chain.1 Despite this theoretically appealing property,
+optimizing directly over the distribution of data in M is a very computationally inefficient way to integrate new data.
+To see why, consider that the probability of sampling any data point in M is 1/|M|, implying that the probability
+of training on any new data point goes down as |M| grows. In this paper, we are interested in exploring practical
+strategies at scale with a bounded amount of computation per step. As such, in Algorithm 1 we outline a scalable
+alternative with a controllable amount of compute overhead, which corresponds to the weighting of past experiences
+in the stability-plasticity tradeoff. During training, each training step involves a mixed batch. A fraction, α, of the
+batch is filled with randomly drawn samples from M and the rest of the batch is filled with incoming data directly
+from p(x|t). We consider α ∈{0, 0.25, 0.5} (0%, 25%, and 50% replay) in our experiments. Note that 50% replay
+corresponds to 2× more FLOPs per gradient step than 0% replay if the model size |θ| is held constant.
+Buffers Stored on Disk. In this work, we employ an ”infinite” replay buffer to store training examples from pre-
+vious tasks. Unlike traditional replay buffers that store experiences in RAM, our implementation uses disk storage
+to maintain a potentially infinite number of samples, limited only by available disk space. To enable scalable and
+memory-efficient replay in continual pre-training, our disk-backed replay buffer is implemented with asynchronous
+prefetching and caching, fully compatible with the Megatron/NeoX framework (Andonian et al. (2023)). Unlike tradi-
+tional in-memory buffers, our system splits the total token budget across multiple on-disk files and uses a background
+thread to populate a cache-aware prefetch queue. This design ensures low-latency access to replay samples without ex-
+hausting GPU or host RAM. Samples are stored in raw byte format with offset-based indexing, and metadata tracking
+allows for full state persistence across training runs. The prefetch queue caches data in memory after it is read from
+disk, ensuring that batches are readily available when needed and reducing the impact of I/O latency during training.
+This mechanism is particularly suited for large-scale language model pre-training, where maintaining a diverse replay
+pool is critical but memory is limited. Our implementation also supports random overwriting when capacity is reached,
+enabling continuous replacement of samples. Full pseudocode is provided in Algorithm 3, and further implementation
+details can be found in the repository: https://github.com/chandar-lab/continual-pretraining.
+3.2
+META-EXPERIENCE REPLAY
+Objective. Following the meta-experience replay approach of Riemer et al. (2019a), we implement gradient alignment
+leveraging the first order gradient-based meta-learning approach called Reptile (Nichol et al., 2018) (or ”Lookahead”
+(Zhang et al., 2019)). Reptile involves a very simple and computationally efficient procedure in which parameters are
+updated based on a simple interpolation with past parameters every k batches. Nichol et al. (2018) established the
+surprising theoretical result in their original paper that Reptile approximately optimizes for the following objective
+over a set of k batches B1, ..., Bk where β is the learning rate (which is assumed to be small):
+arg min
+θt
+EB1,...,Bk[2
+k
+X
+i=1
+[L(Bi) −
+i−1
+X
+j=1
+β ∂L(Bi)
+∂θt
+· ∂L(Bj)
+∂θt
+]],
+(1)
+Implementation. In our implementation of meta-experience replay, the sequence of batches mirrors those from α%
+replay. We make the small addition of an interpolation every k steps θt ←θt−k + ϵ(θt −θt−k) where ϵ is the learning
+rate of the Reptile meta-update. In our experiments, we set k = 500 and ϵ = 0.1. We have simplified the discussion
+of the update rule for clarity in the main text. See a detailed description of this procedure in Algorithm 2. Note that
+the addition of Reptile updates adds negligible overhead, both in terms of compute and memory requirements. By
+optimizing for this regularized objective, as demonstrated in (Riemer et al., 2019a), Reptile enables the model to learn
+parameters that promote transfer and avoid interference across updates to the extent that the model can generalize. We
+consider a fairly large value of k in order to promote stronger regularization in our experiments. By learning to align
+1See (Khetarpal et al., 2022) for a discussion of the more general case that arises in RL and continual RL in which the non-
+stationarity also depends on the behavior of the model itself.
+4
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+gradients, meta-experience replay can make more efficient use of its compute spent on data from the replay buffer if
+the model can learn general knowledge about the nature of old data.
+4
+EXPERIMENTAL SETUP
+Our MER continual pre-training approach augments standard LLM training with two components: a replay buffer
+that stores samples from previous datasets, and gradient alignment induced by a Reptile-based meta-update applied
+periodically after a number of training batches. This section details the model architecture we leverage, the specific
+sequential training process we explore, and how replay and Reptile are implemented in our experiments.
+4.1
+MODEL ARCHITECTURE
+In this work, we adopt the Spectra LLM suite (Kaushal et al., 2024) as our base models which uses the llama ar-
+chitecture. Spectra models are Transformer-based autoregressive language models of varying sizes. In particular,
+we use four model variants from the Spectra suite: 99M, 560M, 1B and 6B parameters. Using a consistent model
+family throughout our experiments allows us to attribute differences in performance solely to model scale rather than
+architecture.2
+4.2
+CONTINUAL PRE-TRAINING PROCESS
+The training sequence has three stages (as shown in Figure 1): For Task A, we use a subset of the DCLM baseline
+dataset provided by DataComp-LM (Li et al., 2024): this is a high-quality English text corpus derived from the
+CommonCrawl. We sampled 100B tokens out of the 240T token standardized corpus. Tasks B and C are French and
+German respectively drawn from a subset of the 166 language Open Super-large Crawled Aggregated coRpus also
+known as the OSCAR Dataset (unlabeled CommonCrawl extractions) (Su´arez et al., 2019; 2020; Abadji et al., 2022)
+with 100B tokens each, to represent learning new languages. In an extended setting, we evaluate continual pre-training
+across five language tasks: English, French, German, Arabic, and Japanese, each with 100 billion tokens. The Arabic
+data is sourced from Aloui et al. (2024), while the Japanese data is constructed from a large-scale CommonCrawl-
+derived corpus Hattori (2024). We deliberately choose distinct languages to create a challenging continual learning
+scenario. After the initial pre-training phase on English, the model must learn French as a different distribution and
+then German, without forgetting English. In the extended five-task setting, Arabic and Japanese further increase
+the distributional diversity, requiring the model to adapt to significantly different linguistic structures while retaining
+performance on previously learned languages. There is minimal overlap in content between these datasets, and each is
+sufficiently large to train new knowledge, thus posing a high risk of catastrophic forgetting of earlier languages if no
+countermeasures are applied. Table 1 details the dataset composition used in our setup. We use a consistent training
+recipe across tasks: each 100B token task is processed for a fixed number of steps. We use the AdamW optimizer with
+a learning rate following established experiments for the spectra model suite (Kaushal et al., 2024). We use a cosine
+learning rate schedule with a linear warmup of 357 steps as shown in Figure 8 and a cosine decay phase after that
+along with an effective batch size of 4096. We train for one epoch over each task’s data ensuring the model sees 100B
+tokens per stage. There is no gradient or optimizer resetting between tasks – the training seamlessly continues.
+4.3
+EVALUATION METRICS
+We consider the following evaluation metrics for assessing continual pre-training performance in LLMs:
+Forgetting Score:
+The degradation in performance on previously encountered tasks as new tasks are introduced.
+This is critical in continual pre-training, where catastrophic forgetting can impair long-term knowledge retention. We
+measure forgetting using the increase in validation loss relative to the best past performance achieved on that task:
+forgetting scorecurrent task = min
+past validation loss −validation losscurrent task
+Retained Loss:
+The average cross-entropy loss on the validation set of all tasks at the end of training. This metric is
+similar to forgetting score in that it is a measure of the stability of the model, but it is better suited to scaling analysis
+as it is constrained to positive values. We use forgetting score in our other experiments as it is more interpretable.
+2We denote the 1.1B Spectra model as 1B, and the 5.7B Spectra model as 6B for brevity throughout this paper.
+5
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Learned Loss:
+The average cross-entropy loss on the validation set of each task directly after training on that task.
+This metric focuses instead on the plasticity of the model in that it measures the average quality of the model’s ability
+to adapt to new tasks. Notice that loss of performance due to forgetting does not influence this metric at all.
+Downstream Performance:
+We evaluate generalization ability by testing on a range of downstream benchmarks
+(e.g., HellaSwag (Zellers et al., 2019), PiQA (Bisk et al., 2019), and PubMedQA (Jin et al., 2019)), which provide
+insight into the LLM’s ability to generalize to new tasks and domains despite not being specifically trained on them.
+4.4
+CPT METHODS AND BASELINES
+We conduct experiments for each Spectra model size (99M, 560M, 1B and 6B parameters) under a range of settings:
+• Sequential Baseline (No Replay, No Reptile): Simple sequential training on A →B →C with no special
+measures. This is expected to highlight catastrophic forgetting, especially on A (English) after tasks B and C.
+• Replay only: CPT with a replay buffer and without any gradient alignment i.e., no Reptile based updates
+(ϵ = 0). We test replay ratios α = {25%, 50%} to assess different levels of replay compute investment.
+• Reptile only: Continual training with only gradient alignment but no replay. This isolates the effect of
+Reptile-based updates without any stored data.
+• Replay + Reptile (MER): Our full method, combining the replay buffer with replay ratios α = {25%, 50%}
+along with gradient alignment induced by Reptile-based meta-updates.
+• Joint Training Baseline: Model trained on the joint A+B+C dataset in an i.i.d. setting together from scratch.
+(a) Training loss on current task
+(b) Validation loss on union of validation sets across tasks
+Figure 2: Cross-entropy loss curves for the 560M parameter Spectra model with varying levels of replay. Note: In
+Figure 2b the validation set is a union of the validation sets from all three tasks.
+5
+RESULTS
+We conducted a series of experiments to address several key questions about CPT in this section:
+• Q1: Impact of Experience Replay in CPT: What is the effect of experience replay and how does varying
+replay proportions affect the model’s stability and plasticity across model sizes?
+• Q2: Gradient Alignment & Replay Synergy: Does gradient alignment synergize with experience replay to
+reduce forgetting, promote plasticity, and improve downstream performance?
+• Q3: Generalization via Alignment: Does combining gradient alignment with replay lead to improved
+generalization across tasks, as evidenced by validation loss trends across tasks?
+• Q4: Computational Scaling of Replay & Gradient Alignment: When given a budget of FLOPs per in-
+coming token is it wiser to invest resources in increased replay, gradient alignment, or increased model size?
+6
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+5.1
+IMPACT OF EXPERIENCE REPLAY IN CPT
+Experience replay helps neural networks remember old information, but this requires more computation. Our exper-
+iments compare models that use replay to those that simply use more parameters to achieve the same computational
+cost. We found strong evidence that replay can be a more efficient way to maintain performance.
+Figure 2 presents training and validation loss curves for a 560M parameter model continually pretrained with varying
+levels of replay (0%, 25%, and 50%). As illustrated in Figure 2b, the 560M model trained without replay (red line)
+shows the worst performance, with a validation loss reaching approximately 3.3 at the end of training, which means
+it forgot a lot. In contrast, the 560M model with 50% replay (blue line) performed the best, with a validation loss
+stabilizing around 3.0. The 560M model with 25% replay (green line) had intermediate results. This clear trend shows
+that more replay helps the model remember what it learned earlier, leading to better overall performance. Figure 3
+directly compares the 560M model with replay to a 1B model trained without replay. While the 1B model achieves a
+validation loss close to the 560M model with 50% replay, the 560M model needs way fewer parameters. Because the
+1B model has nearly twice the parameters of the 560M parameter model, this shows that replay can be more efficient at
+retaining old knowledge. Experience replay appears to be a more efficient way to continually pretrain models, giving
+similar results to a bigger model but with smaller inference costs. We observe similar training and validation curves
+for the experiment conducted on a large-scale model with 6B parameters, further supporting the scalability of replay.
+5.2
+SYNERGY OF GRADIENT ALIGNMENT AND REPLAY
+This section shows how gradient alignment, implemented via Reptile-style updates, complements experience replay
+to further mitigate forgetting and improve downstream performance.
+This reduction is quantified in the forgetting bar plot in Figure 4a. Here, we observe a consistent trend across all
+model sizes: 50% replay with Reptile consistently achieves the lowest average forgetting score. Figure 4a reveals
+a significant decrease in forgetting for 50% replay with Reptile compared to replay or Reptile alone. We have also
+extended our analysis to a larger model with 6B parameters, where the effectiveness of the 50% replay with Rep-
+tile in mitigating forgetting remains consistent. Furthermore, results from the pre-training experiments with the 1B
+parameter model—extended from 3 tasks to 5 tasks—show similar trends (see 4b), reinforcing the robustness of our
+approach under increased task scaling. As the number of tasks increases, most methods exhibit higher average forget-
+ting, highlighting the scalability challenge in continual learning. While sequential and Reptile-only training degrade
+significantly with more tasks, replay-based strategies, particularly 50% replay with Reptile, maintain strong perfor-
+mance, even achieving negative forgetting, which suggests enhanced retention or backward transfer. This indicates
+their suitability for longer, more complex continual learning sequences.
+Table 3 provides a quantitative assessment of downstream task performance on Hellaswag, Piqa, and Pubmedqa. For
+the 560M parameter models, adding 25% replay, while reducing forgetting, achieves downstream task performance
+comparable to 560M joint model. However, Table 3 highlights a crucial synergy: combining replay with Reptile sig-
+nificantly boosts downstream task performance. Specifically, the 560M model using 25% replay and Reptile achieves
+an average score of 67.5, outperforming the 560M model trained jointly (67.33), as well as the 560M model with only
+replay (66.4) and the 560M model with only Reptile (65.4). This strongly suggests that gradient alignment and re-
+play provide complementary benefits, allowing the model to both retain previously learned knowledge and generalize
+effectively to new tasks. The trend observed with the 560M models is also apparent in the 99M models (Table 3),
+although the absolute performance gains are smaller. Conversely, the 1B models, likely due to their increased capacity
+and already strong performance, do not show a substantial average improvement from the combined approach. How-
+ever, examining the individual task scores for the 1B models reveals nuanced benefits. For the 1B models, both replay
+and Reptile individually improve the Hellaswag, Piqa, and Pubmedqa scores. For example, the Reptile gives the best
+Pubmedqa performance. This supports the notion that even for larger models, gradient alignment and replay can con-
+tribute to improved performance on specific downstream tasks. The benefits are most evident in the 6B models. The
+joint training baseline average is only 72.6, while 25% replay with Reptile yields 76.8, and 50% replay with Reptile
+achieves the best overall result of 77.1. This is quite unexpected and suggests that strong CPT models can benefit from
+a form of curriculum learning once they overcome optimization instability. These results confirm that even at high
+model capacities, combining replay with gradient alignment yields consistent and measurable improvements.
+5.3
+GENERALIZATION VIA ALIGNMENT
+In this section, we show that gradient alignment is a key attribute for promoting generalization across different tasks
+during continual pre-training. As brought up in Section 5.2, we discuss such generalization results in more detail here.
+Figure 5 displays task-specific validation loss curves for the 560M models, offering direct visual evidence of Reptile’s
+7
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+impact on generalization. For both OSCAR-Fr and OSCAR-De, the addition of Reptile (green) pulls the validation
+loss curve much closer to the joint training baseline (black dotted line) compared to the model with only 25% replay
+(blue). This demonstrates Reptile’s ability to balance learning new knowledge with minimal forgetting.
+Table 2 also presents a quantitative confirmation of gradient alignment’s impact on generalization. Through the average
+validation loss values at the end of training in the table we observe that Reptile-style updates serve as a critical attribute
+for enhancing generalization during continual pre-training.
+Figure 3: Comparison of cross-entropy validation loss curves for the Spectra 560M model with replay to the Spectra
+1B model without replay. Note: In Figure 3 the validation set is a union of the validation sets from all three tasks.
+(a) Final average forgetting score for different model configurations across four model sizes: 99M, 560M, 1B, and 6B parameters
+(b) Final average forgetting score for different configurations of the 1B model while varying the number of tasks from 3 to 5
+Figure 4: Final Average Forgetting Scores Across Scale
+8
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Figure 5: Task-specific cross-entropy validation loss curves for a 560M model during CPT where we evaluate 25%
+replay and 25% replay with Reptile against the final loss of the joint training baseline.
+5.4
+COMPUTATIONAL SCALING ANALYSIS
+We provide our main scaling analysis in Figures 6 and 7. In Figure 6 we provide an analysis of the stability of each
+model through measurements of the retained performance across tasks at the end of training. Meanwhile, in Figure 7
+we provide an analysis of the plasticity of each model through measurements of the performance on each task directly
+once training on it is complete. What we plot here are inverse power law best fit lines of the raw data provided in
+Table 2 and Table 4. These results are further contextualized by the results in Figures 9 and 10 for scaling with respect
+to model size, demonstrating that models of the same size consistently get better stability and plasticity performance
+with more replay than they do with less. However, Figures 6 and 7 highlight that it would be better to invest compute
+in growing the model size for large models with 25% replay than it is to invest the compute in increasing the replay
+rate. This can be somewhat expected based on the fact that 25% replay leads to a 1.33× increase in FLOPs per
+token over the sequential model whereas 50% replay leads to a 2× increase. One of the remarkable things about the
+results in Figures 6 and 7 are the nearly free gains in both stability and plasticity performance that come from the
+integration of Reptile. In our experiments, Reptile only added a computational overhead of three times the model size
+in FLOPs every 500 batches, which is negligible relative to the cost of gradient updates. If anything, it seems like 25%
+replay with Reptile integrated is becoming better with model size even faster than 25% replay without Reptile. This
+is preliminary evidence of the very exciting possibility that improvements at small scales related to meta-learning can
+lead to even bigger improvements than those experienced by vanilla learning with large scales of compute.
+Figure 6: Stability Scaling Analysis: Retained Loss vs. Compute per Token. We consider the average retained loss
+across tasks at the end of training for each model and plot the results of an inverse power law fit for each model family.
+9
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Figure 7: Plasticity Scaling Analysis: Learned Loss vs. Compute per Token. We consider the average learned loss
+across tasks during training for each model and plot the results of an inverse power law fit for each model family.
+6
+DISCUSSION
+Our experiments demonstrate that experience replay effectively mitigates forgetting in LLM pre-training while offering
+a resource-efficient alternative to model scaling. Our results also provide strong evidence that gradient alignment,
+implemented here via Reptile, and experience replay are not mutually exclusive but rather synergistic approaches for
+continual pre-training. The combination of both leads to a MER model that not only better retains previously learned
+knowledge but also demonstrates enhanced plasticity, and generalizes more effectively to downstream tasks.
+Limitations:
+Our study is largely limited to three tasks in a fixed sequence. Real-world continual learning for LLMs
+might involve many more stages, possibly with revisiting domains. To explore this, we also evaluate one model
+scale on a five-task sequence and observe that the synergistic benefits of our approach persist, suggesting its potential
+scalability. However, further validation is needed. Another limitation is evaluation scope: a deeper evaluation such as
+directly measuring knowledge changes, or testing multilingual QA throughout learning would provide greater insight
+about the evolution of factual knowledge, which is largely opaque based on our experiments.
+7
+CONCLUSION
+In this work, we demonstrate for the first time that experience replay and gradient alignment, implemented through
+Reptile-style updates, are synergistic and compute efficient techniques for continual pre-training of large language
+models. Although larger models inherently benefit from increased scale, replay remains valuable, allowing for a more
+efficient balance between training resources, the model’s stability with respect to previous acquired knowledge and
+the model’s plasticity with respect to new knowledge. Moreover, gradient alignment seems to result in a consistent
+performance boost in both stability and plasticity with negligible compute overhead across model scales. A combined
+approach, leveraging both replay and gradient alignment, leads to models that not only better retain knowledge but
+also demonstrate an improved ability to adapt to new tasks and generalize more effectively to downstream tasks. While
+replay remains popular in the literature, we hope our work inspires more focus on the potential additional benefits of
+gradient alignment as the field looks to build efficient approaches for continual pre-training of foundation models.
+8
+ACKNOWLEDGMENT
+This research was supported in part by the Oak Ridge Leadership Computing Facility at Oak Ridge National Labo-
+ratory, through computing resources on the Frontier supercomputer, provided under the ALCC 2024 program award
+10
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+“Scalable Foundation Models for Transferable Generalist AI.” Oak Ridge National Laboratory is supported by the
+U.S. Department of Energy, Office of Science, under Contract No. DE-AC05-00OR22725. We extend special thanks
+to Jens Glaser for valuable assistance with the Summit supercomputer. We would also like to thank Darshil Doshi
+and Quentin Antony for their contributions throughout the project. This work was further supported by the Canada
+Excellence Research Chairs (CERC) Program, Fujitsu Corporation, and the Canadian Institute for Advanced Research
+(CIFAR).
+REFERENCES
+Julien Abadji, Pedro Ortiz Suarez, Laurent Romary, and Benoˆıt Sagot. Towards a cleaner document-oriented multilin-
+gual crawled corpus, 2022. URL https://arxiv.org/abs/2201.06642.
+Manel Aloui, Hasna Chouikhi, Ghaith Chaabane, Haithem Kchaou, and Chehir Dhaouadi. 101 billion arabic words
+dataset, 2024. URL https://arxiv.org/abs/2405.01590.
+Alex Andonian, Quentin Anthony, Stella Biderman, Sid Black, Preetham Gali, Leo Gao, Eric Hallahan, Josh Levy-
+Kramer, Connor Leahy, Lucas Nestler, Kip Parker, Michael Pieler, Jason Phang, Shivanshu Purohit, Hailey
+Schoelkopf, Dashiell Stander, Tri Songz, Curt Tigges, Benjamin Th´erien, Phil Wang, and Samuel Weinbach. GPT-
+NeoX: Large Scale Autoregressive Language Modeling in PyTorch, 9 2023. URL https://www.github.
+com/eleutherai/gpt-neox.
+Pouya Bashivan, Martin Schrimpf, Robert Ajemian, Irina Rish, Matthew Riemer, and Yuhai Tu. Continual learning
+with self-organizing maps. arXiv preprint arXiv:1904.09330, 2019.
+Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. Piqa: Reasoning about physical com-
+monsense in natural language, 2019. URL https://arxiv.org/abs/1911.11641.
+Gail A Carpenter and Stephen Grossberg. A massively parallel architecture for a self-organizing neural pattern recog-
+nition machine. Computer vision, graphics, and image processing, 37(1):54–115, 1987.
+Ignacio Cases, Clemens Rosenbaum, Matthew Riemer, Atticus Geiger, Tim Klinger, Alex Tamkin, Olivia Li, Sandhini
+Agarwal, Joshua D Greene, Dan Jurafsky, et al. Recursive routing networks: Learning to compose modules for
+language understanding. In Proceedings of the 2019 Conference of the North American Chapter of the Association
+for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 3631–3648,
+2019.
+Michael B Chang, Abhishek Gupta, Sergey Levine, and Thomas L Griffiths. Automatically composing representation
+transformations as a means for generalization. 2019.
+Arslan Chaudhry, Marc’Aurelio Ranzato, Marcus Rohrbach, and Mohamed Elhoseiny. Efficient lifelong learning with
+a-gem. International Conference on Learning Representations, 2019a.
+Arslan Chaudhry, Marcus Rohrbach, Mohamed Elhoseiny, Thalaiyasingam Ajanthan, Puneet K. Dokania, Philip H. S.
+Torr, and Marc’Aurelio Ranzato.
+On tiny episodic memories in continual learning, 2019b.
+URL https://
+arxiv.org/abs/1902.10486.
+Jie Chen, Zhipeng Chen, Jiapeng Wang, Kun Zhou, Yutao Zhu, Jinhao Jiang, Yingqian Min, Wayne Xin Zhao,
+Zhicheng Dou, Jiaxin Mao, Yankai Lin, Ruihua Song, Jun Xu, Xu Chen, Rui Yan, Zhewei Wei, Di Hu, Wen-
+bing Huang, and Ji-Rong Wen. Towards effective and efficient continual pre-training of large language models,
+2024. URL https://arxiv.org/abs/2407.18743.
+Wuyang Chen, Yanqi Zhou, Nan Du, Yanping Huang, James Laudon, Zhifeng Chen, and Claire Cui. Lifelong language
+pretraining with distribution-specialized experts. In International Conference on Machine Learning, pp. 5383–5395.
+PMLR, 2023.
+Andrew Davis and Itamar Arel. Low-rank approximations for conditional feedforward computation in deep neural
+networks. arXiv preprint arXiv:1312.4461, 2013.
+Matthias De Lange, Rahaf Aljundi, Marc Masana, Sarah Parisot, Xu Jia, Aleˇs Leonardis, Gregory Slabaugh, and Tinne
+Tuytelaars. A continual learning survey: Defying forgetting in classification tasks. IEEE transactions on pattern
+analysis and machine intelligence, 44(7):3366–3385, 2021.
+11
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Sharad Duwal, Suraj Prasai, and Suresh Manandhar. Domain-adaptative continual learning for low-resource tasks:
+Evaluation on nepali, 2024. URL https://arxiv.org/abs/2412.13860.
+Jared Fernandez, Yonatan Bisk, and Emma Strubell. Gradient localization improves lifelong pretraining of language
+models, 2024. URL https://arxiv.org/abs/2411.04448.
+Chrisantha Fernando, Dylan Banarse, Charles Blundell, Yori Zwols, David Ha, Andrei A Rusu, Alexander Pritzel,
+and Daan Wierstra.
+Pathnet: Evolution channels gradient descent in super neural networks.
+arXiv preprint
+arXiv:1701.08734, 2017.
+Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-agnostic meta-learning for fast adaptation of deep networks.
+In International conference on machine learning, pp. 1126–1135. PMLR, 2017.
+Kazuki Fujii, Taishi Nakamura, Mengsay Loem, Hiroki Iida, Masanari Ohi, Kakeru Hattori, Hirai Shota, Sakae
+Mizuki, Rio Yokota, and Naoaki Okazaki.
+Continual pre-training for cross-lingual llm adaptation: Enhancing
+japanese language capabilities. arXiv preprint arXiv:2404.17790, 2024.
+Evangelia Gogoulou, Timoth´ee Lesort, Magnus Boman, and Joakim Nivre. Continual learning under language shift,
+2024. URL https://arxiv.org/abs/2311.01200.
+Kshitij Gupta, Benjamin Th´erien, Adam Ibrahim, Mats L. Richter, Quentin Anthony, Eugene Belilovsky, Irina Rish,
+and Timoth´ee Lesort. Continual pre-training of large language models: How to (re)warm your model?, 2023. URL
+https://arxiv.org/abs/2308.04014.
+Suchin Gururangan, Mike Lewis, Ari Holtzman, Noah A Smith, and Luke Zettlemoyer. Demix layers: Disentangling
+domains for modular language modeling. arXiv preprint arXiv:2108.05036, 2021.
+Kyo
+Hattori.
+Building
+a
+large-scale
+japanese
+corpus
+from
+common
+crawl
+and
+its
+preprocess-
+ing.
+Online;
+ABEJA
+Tech
+Blog,
+May
+2024.
+https://tech-blog.abeja.asia/entry/
+abeja-nedo-project-part2-202405.
+Adam Ibrahim, Benjamin Th´erien, Kshitij Gupta, Mats L Richter, Quentin Anthony, Timoth´ee Lesort, Eugene
+Belilovsky, and Irina Rish. Simple and scalable strategies to continually pre-train large language models. arXiv
+preprint arXiv:2403.08763, 2024.
+Robert A Jacobs, Michael I Jordan, Steven J Nowlan, and Geoffrey E Hinton. Adaptive mixtures of local experts.
+Neural computation, 3(1):79–87, 1991.
+Qiao Jin, Bhuwan Dhingra, Zhengping Liu, William W. Cohen, and Xinghua Lu. Pubmedqa: A dataset for biomedical
+research question answering, 2019. URL https://arxiv.org/abs/1909.06146.
+Xisen Jin, Dejiao Zhang, Henghui Zhu, Wei Xiao, Shang-Wen Li, Xiaokai Wei, Andrew Arnold, and Xiang Ren.
+Lifelong pretraining: Continually adapting language models to emerging corpora. arXiv preprint arXiv:2110.08534,
+2021.
+Michael I Jordan and Robert A Jacobs. Hierarchical mixtures of experts and the em algorithm. Neural computation,
+6(2):181–214, 1994.
+Ayush Kaushal, Tejas Vaidhya, Arnab Kumar Mondal, Tejas Pandey, Aaryan Bhagat, and Irina Rish. Spectra: Sur-
+prising effectiveness of pretraining ternary language models at scale, 2024. URL https://arxiv.org/abs/
+2407.12327.
+Zixuan Ke, Yijia Shao, Haowei Lin, Tatsuya Konishi, Gyuhak Kim, and Bing Liu. Continual pre-training of language
+models. arXiv preprint arXiv:2302.03241, 2023.
+Khimya Khetarpal, Matthew Riemer, Irina Rish, and Doina Precup. Towards continual reinforcement learning: A
+review and perspectives. Journal of Artificial Intelligence Research, 75:1401–1476, 2022.
+James Kostas, Chris Nota, and Philip Thomas. Asynchronous coagent networks. In Hal Daum´e III and Aarti Singh
+(eds.), Proceedings of the 37th International Conference on Machine Learning, volume 119 of Proceedings of
+Machine Learning Research, pp. 5426–5435. PMLR, 13–18 Jul 2020. URL https://proceedings.mlr.
+press/v119/kostas20a.html.
+Chen-An Li and Hung-Yi Lee. Examining forgetting in continual pre-training of aligned large language models. arXiv
+preprint arXiv:2401.03129, 2024.
+12
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Jeffrey Li, Alex Fang, Georgios Smyrnis, Maor Ivgi, Matt Jordan, Samir Gadre, Hritik Bansal, Etash Guha, Sedrick
+Keh, Kushal Arora, Saurabh Garg, Rui Xin, Niklas Muennighoff, Reinhard Heckel, Jean Mercat, Mayee Chen,
+Suchin Gururangan, Mitchell Wortsman, Alon Albalak, Yonatan Bitton, Marianna Nezhurina, Amro Abbas, Cheng-
+Yu Hsieh, Dhruba Ghosh, Josh Gardner, Maciej Kilian, Hanlin Zhang, Rulin Shao, Sarah Pratt, Sunny Sanyal,
+Gabriel Ilharco, Giannis Daras, Kalyani Marathe, Aaron Gokaslan, Jieyu Zhang, Khyathi Chandu, Thao Nguyen,
+Igor Vasiljevic, Sham Kakade, Shuran Song, Sujay Sanghavi, Fartash Faghri, Sewoong Oh, Luke Zettlemoyer, Kyle
+Lo, Alaaeldin El-Nouby, Hadi Pouransari, Alexander Toshev, Stephanie Wang, Dirk Groeneveld, Luca Soldaini,
+Pang Wei Koh, Jenia Jitsev, Thomas Kollar, Alexandros G. Dimakis, Yair Carmon, Achal Dave, Ludwig Schmidt,
+and Vaishaal Shankar. Datacomp-lm: In search of the next generation of training sets for language models, 2024.
+URL https://arxiv.org/abs/2406.11794.
+Long-Ji Lin. Self-improving reactive agents based on reinforcement learning, planning and teaching. Machine learn-
+ing, 8(3-4):293–321, 1992.
+David Lopez-Paz and Marc’Aurelio Ranzato. Gradient episodic memory for continuum learning. NIPS, 2017.
+Michael McCloskey and Neal J Cohen. Catastrophic interference in connectionist networks: The sequential learning
+problem. Psychology of learning and motivation, 24:109–165, 1989.
+Risto Miikkulainen. Subsymbolic natural language processing - an integrated model of scripts, lexicon, and memory.
+Neural network modeling and connectionism. MIT Press, 1993. ISBN 978-0-262-13290-9.
+Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G Bellemare, Alex Graves,
+Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al. Human-level control through deep reinforcement
+learning. Nature, 518(7540):529–533, 2015.
+Jacob MJ Murre. Learning and categorization in modular neural networks. Lawrence Erlbaum Associates, Inc, 1992.
+Alex Nichol, Joshua Achiam, and John Schulman. On first-order meta-learning algorithms, 2018. URL https:
+//arxiv.org/abs/1803.02999.
+Sylvestre-Alvise Rebuffi, Alexander Kolesnikov, Georg Sperl, and Christoph H Lampert. icarl: Incremental classifier
+and representation learning. In Proceedings of the IEEE conference on Computer Vision and Pattern Recognition,
+pp. 2001–2010, 2017.
+Matthew Riemer, Michele Franceschini, Djallel Bouneffouf, and Tim Klinger. Generative knowledge distillation for
+general purpose function compression. NIPS 2017 Workshop on Teaching Machines, Robots, and Humans, 5:30,
+2017a.
+Matthew Riemer, Tim Klinger, Michele Franceschini, and Djallel Bouneffouf. Scalable recollections for continual
+lifelong learning. arXiv preprint arXiv:1711.06761, 2017b.
+Matthew Riemer, Ignacio Cases, Robert Ajemian, Miao Liu, Irina Rish, Yuhai Tu, and Gerald Tesauro. Learning
+to learn without forgetting by maximizing transfer and minimizing interference. In International Conference on
+Learning Representations, 2019a.
+Matthew Riemer, Tim Klinger, Djallel Bouneffouf, and Michele Franceschini. Scalable recollections for continual
+lifelong learning. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 33, pp. 1352–1359,
+2019b.
+Matthew Riemer, Sharath Chandra Raparthy, Ignacio Cases, Gopeshh Subbaraj, Maximilian Puelma Touzel, and Irina
+Rish. Continual learning in environments with polynomial mixing times. Advances in Neural Information Process-
+ing Systems, 2022.
+Matthew Riemer, Khimya Khetarpal, Janarthanan Rajendran, and Sarath Chandar.
+Balancing context length and
+mixing times for reinforcement learning at scale. In The Thirty-eighth Annual Conference on Neural Information
+Processing Systems, 2024.
+Mark Bishop Ring. Continual learning in reinforcement environments. PhD thesis, University of Texas at Austin
+Austin, Texas 78712, 1994.
+Anthony Robins. Catastrophic forgetting, rehearsal and pseudorehearsal. Connection Science, 7(2):123–146, 1995.
+13
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Clemens Rosenbaum, Tim Klinger, and Matthew Riemer. Routing networks: Adaptive selection of non-linear func-
+tions for multi-task learning. In International Conference on Learning Representations. International Conference
+on Learning Representations, ICLR, 2018.
+Clemens Rosenbaum, Ignacio Cases, Matthew Riemer, Atticus Geiger, Lauri Karttunen, Joshua D Greene, Dan Juraf-
+sky, and Christopher Potts. Dispatched routing networks. Technical report, 2019a.
+Clemens Rosenbaum, Ignacio Cases, Matthew Riemer, and Tim Klinger. Routing networks and the challenges of
+modular and compositional computation. arXiv preprint arXiv:1904.12774, 2019b.
+Karsten Roth, Vishaal Udandarao, Sebastian Dziadzio, Ameya Prabhu, Mehdi Cherti, Oriol Vinyals, Olivier H´enaff,
+Samuel Albanie, Matthias Bethge, and Zeynep Akata. A practitioner’s guide to continual multimodal pretraining.
+arXiv preprint arXiv:2408.14471, 2024.
+Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc V. Le, Geoffrey E. Hinton, and Jeff Dean.
+Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. CoRR, abs/1701.06538, 2017.
+URL http://arxiv.org/abs/1701.06538.
+Haizhou Shi, Zihao Xu, Hengyi Wang, Weiyi Qin, Wenyuan Wang, Yibin Wang, Zifeng Wang, Sayna Ebrahimi, and
+Hao Wang. Continual learning of large language models: A comprehensive survey. ACM Computing Surveys, 2024.
+Pedro Javier Ortiz Su´arez, Benoˆıt Sagot, and Laurent Romary. Asynchronous pipeline for processing huge corpora on
+medium to low resource infrastructures. In 7th Workshop on the Challenges in the Management of Large Corpora
+(CMLC-7). Leibniz-Institut f¨ur Deutsche Sprache, 2019.
+Pedro Javier Ortiz Su´arez, Laurent Romary, and Benoˆıt Sagot.
+A monolingual approach to contextualized word
+embeddings for mid-resource languages. arXiv preprint arXiv:2006.06202, 2020.
+Benjamin Th´erien, Charles-´Etienne Joseph, Zain Sarwar, Ashwinee Panda, Anirban Das, Shi-Xiong Zhang, Stephen
+Rawls, Sambit Sahu, Eugene Belilovsky, and Irina Rish. Continual pre-training of moes: How robust is your router?
+arXiv preprint arXiv:2503.05029, 2025.
+Philip S. Thomas.
+Policy gradient coagent networks.
+In J. Shawe-Taylor, R. Zemel, P. Bartlett, F. Pereira,
+and K.Q. Weinberger (eds.), Advances in Neural Information Processing Systems, volume 24. Curran Asso-
+ciates, Inc., 2011. URL https://proceedings.neurips.cc/paper_files/paper/2011/file/
+1e6e0a04d20f50967c64dac2d639a577-Paper.pdf.
+Sebastian Thrun. Lifelong learning perspective for mobile robot control. In Proceedings of the IEEE/RSJ/GI Interna-
+tional Conference on Intelligent Robots and Systems, volume 1, pp. 23–30, 1994.
+Jeffrey S Vitter. Random sampling with a reservoir. ACM Transactions on Mathematical Software (TOMS), 11(1):
+37–57, 1985.
+Tianhe Yu, Saurabh Kumar, Abhishek Gupta, Sergey Levine, Karol Hausman, and Chelsea Finn. Gradient surgery for
+multi-task learning. Advances in neural information processing systems, 33:5824–5836, 2020.
+Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish
+your sentence?, 2019. URL https://arxiv.org/abs/1905.07830.
+Michael Zhang, James Lucas, Jimmy Ba, and Geoffrey E Hinton. Lookahead optimizer: k steps forward, 1 step back.
+Advances in neural information processing systems, 32, 2019.
+Da-Wei Zhou, Hai-Long Sun, Jingyi Ning, Han-Jia Ye, and De-Chuan Zhan. Continual learning with pre-trained
+models: A survey. arXiv preprint arXiv:2401.16386, 2024.
+Modjtaba Shokrian Zini, Mohammad Pedramfar, Matthew Riemer, Ahmadreza Moradipari, and Miao Liu. Coagent
+networks revisited. arXiv preprint arXiv:2001.10474, 2020.
+14
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+A
+APPENDIX
+A.1
+DATASET AND TRAINING SETUP
+To support our continual pre-training experiments, we curated a multilingual corpus with balanced token distribution
+across five languages. Table 1 summarizes the dataset composition. Each language-specific corpus contains 100 billion
+tokens, ensuring a comparable scale of training data across tasks. We utilize a cosine learning rate schedule for stable
+convergence, shown in Figure 8.
+Dataset
+Language
+Tokens (B)
+DCLM-Baseline
+English
+100
+OSCAR-Fr
+French
+100
+OSCAR-De
+German
+100
+ClusterlabAi Dataset
+Arabic
+100
+Abeja-cc-ja
+Japanese
+100
+Table 1: Dataset Composition for Continual Pre-
+training
+Figure 8: Learning rate schedule
+A.2
+RETAINED PERFORMANCE ACROSS TASKS
+Table 2 reports the validation loss observed at the end of training across the first three tasks in the continual pre-training
+sequence (English →French →German). Lower retained loss values indicate better knowledge preservation across
+previously learned tasks.
+A.3
+GENERALIZATION ON DOWNSTREAM TASKS
+Table 3 compares performance across downstream tasks such as HellaSwag, PiQA, and PubMedQA.
+A.4
+PLASTICITY ANALYSIS
+To evaluate the model’s ability to adapt to new data, we record validation loss immediately after training on each
+task. Table 4 reveals that larger models combined with replay and Reptile exhibit the strongest adaptation capabilities
+without sacrificing prior knowledge.
+A.5
+SCALING LAWS AND TRADEOFFS
+Figures 9 and 10 visualize the scaling behavior of retained and learned loss versus model size.
+15
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Training Method
+Validation Loss
+AVG
+D0 DCLM
+D1 French
+D2 German
+99M (No Replay)
+4.70
+2.40
+2.60
+3.23
+99M (25% Replay)
+4.03
+2.28
+2.27
+2.86
+99M (50% Replay)
+3.60
+2.00
+2.36
+2.65
+99M (Reptile Only)
+4.10
+2.35
+2.40
+2.95
+99M (25% Replay + Reptile)
+3.98
+2.13
+2.29
+2.80
+99M (50% Replay + Reptile)
+3.55
+1.87
+2.01
+2.47
+560M (No Replay)
+4.20
+2.10
+2.40
+2.90
+560M (25% Replay)
+3.53
+1.76
+1.91
+2.40
+560M (50% Replay)
+3.12
+1.42
+2.34
+2.29
+560M (Reptile Only)
+4.00
+2.05
+2.30
+2.78
+560M (25% Replay + Reptile)
+3.38
+1.68
+1.98
+2.35
+560M (50% Replay + Reptile)
+2.90
+1.21
+1.60
+2.24
+1B (No Replay)
+3.70
+1.80
+2.00
+2.50
+1B (25% Replay)
+2.78
+1.87
+2.22
+2.29
+1B (50% Replay)
+2.50
+1.41
+2.33
+2.08
+1B (Reptile Only)
+3.00
+1.99
+2.12
+2.37
+1B (25% Replay + Reptile)
+2.62
+1.65
+2.28
+2.18
+1B (50% Replay + Reptile)
+2.50
+1.65
+1.83
+1.99
+6B (No Replay)
+2.00
+1.30
+1.10
+1.47
+6B (25% Replay)
+1.30
+1.05
+0.90
+1.08
+6B (50% Replay)
+1.17
+0.93
+0.80
+0.97
+6B (Reptile Only)
+1.70
+1.21
+1.09
+1.33
+6B (25% Replay + Reptile)
+1.11
+0.86
+0.77
+0.91
+6B (50% Replay + Reptile)
+1.05
+0.80
+0.74
+0.86
+Table 2: Retained validation loss comparison for individual tasks across multiple models during CPT for the DCLM
+→French →German sequence. The AVG column represents the mean performance across the three datasets.
+16
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Model
+Hellaswag (en)
+Piqa
+Pubmedqa
+Average (en)
+Hellaswag (fr)
+99M joint
+30.1
+79.3
+46.3
+51.9
+28.2
+99M sequential
+30.1
+52.3
+43.3
+41.9
+27.5
+99M w/ 25% Replay
+31.1
+71.4
+49.3
+50.6
+27.5
+99M w/ 50% Replay
+40.8
+74.3 ↑
+51.2
+58.8
+27.8
+99M w/ Reptile
+29.9
+67.2
+45.3
+50.8
+27.6
+99M w/ 25% Replay + Reptile
+42.2
+72.8
+48.2
+61.1
+29.4
+99M w/ 50% Replay + Reptile
+42.3 ↑
+73.4
+58.9 ↑
+61.5 ↑
+30.6 ↑
+560M joint
+44.6
+80.3
+57.1 ↑
+60.6
+42.5
+560M sequential
+42.3
+75.6
+56.2
+60.7
+40.1
+560M w/ 25% Replay
+42.6
+80.3
+56.2
+58.0
+41.9
+560M w/ 50% Replay
+43.1
+82.3
+56.8
+59.7
+43.1
+560M w/ Reptile
+42.4
+78.3
+55.6
+60.7
+41.6
+560M w/ 25% Replay + Reptile
+43.0
+82.7
+56.7
+58.8
+42.6
+560M w/ 50% Replay + Reptile
+43.5 ↑
+83.0 ↑
+57.0
+61.2 ↑
+43.2 ↑
+1B Joint
+44.8
+82.6
+59.7
+62.4
+41.5
+1B sequential
+44.3
+79.2
+58.6
+60.7
+38.0
+1B w/ 25% Replay
+44.2
+81.4
+58.9
+61.5
+39.3
+1B w/ 50% Replay
+46.6 ↑
+84.6 ↑
+60.7 ↑
+64.0 ↑
+41.5
+1B w/ Reptile
+43.8
+78.7
+58.2
+60.2
+37.8
+1B w/ 25% Replay + Reptile
+44.6
+79.6
+60.2
+61.5
+41.3
+1B w/ 50% Replay + Reptile
+46.5
+84.2
+60.6
+63.8
+41.8 ↑
+6B joint
+67.8
+86.3
+73.9
+76.0
+55.6
+6B sequential
+55.3
+86.1
+66.5
+69.3
+53.2
+6B w/ 25% Replay
+66.7
+86.8
+73.2
+75.5
+54.7
+6B w/ 50% Replay
+66.9
+86.9
+64.9
+71.0
+55.4
+6B w/ Reptile
+58.1
+86.5
+68.6
+71.1
+54.3
+6B w/ 25% Replay + Reptile
+68.6
+87.1
+74.8
+76.8
+56.1
+6B w/ 50% Replay + Reptile
+68.9 ↑
+87.3 ↑
+75.1 ↑
+77.1 ↑
+56.7 ↑
+Table 3: Accuracy comparison of different models across three datasets. The best-performing values in each model
+size category are highlighted in bold with an upper arrow (↑) indicating that higher values are better. The Average
+column represents the mean performance across the three benchmarks.
+Figure 9: Stability Scaling Analysis: Retained Loss vs. Model Size. We consider the retained loss averaged across
+tasks at the end of training for each model and plot the results of an inverse power law fit for each model family.
+17
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Training Method
+D0 DCLM
+D1 French
+D2 German
+AVG
+99M (No Replay)
+3.60
+2.20
+2.60
+2.80
+99M (25% Replay)
+3.20
+2.10
+2.27
+2.52
+99M (50% Replay)
+3.00
+1.95
+2.36
+2.44
+99M (Reptile Only)
+3.30
+2.20
+2.40
+2.63
+99M (25% Replay + Reptile)
+3.10
+2.00
+2.29
+2.46
+99M (50% Replay + Reptile)
+2.80
+1.80
+2.01
+2.20
+560M (No Replay)
+3.30
+1.90
+2.40
+2.53
+560M (25% Replay)
+2.90
+1.65
+1.91
+2.15
+560M (50% Replay)
+2.55
+1.30
+2.34
+2.06
+560M (Reptile Only)
+3.10
+1.85
+2.30
+2.42
+560M (25% Replay + Reptile)
+2.70
+1.50
+1.98
+2.06
+560M (50% Replay + Reptile)
+2.35
+1.10
+1.60
+1.68
+1B (No Replay)
+3.00
+1.60
+2.00
+2.20
+1B (25% Replay)
+2.50
+1.70
+2.22
+2.14
+1B (50% Replay)
+2.30
+1.35
+2.33
+2.00
+1B (Reptile Only)
+2.80
+1.78
+2.12
+2.23
+1B (25% Replay + Reptile)
+2.55
+1.45
+2.28
+2.09
+1B (50% Replay + Reptile)
+2.20
+1.35
+1.83
+1.79
+6B (No Replay)
+1.90
+1.10
+1.10
+1.37
+6B (25% Replay)
+1.20
+0.90
+0.90
+1.00
+6B (50% Replay)
+1.10
+0.70
+0.80
+0.87
+6B (Reptile Only)
+1.50
+1.00
+1.09
+1.20
+6B (25% Replay + Reptile)
+0.95
+0.68
+0.77
+0.80
+6B (50% Replay + Reptile)
+0.90
+0.65
+0.74
+0.76
+Table 4: Learned validation loss comparison for individual tasks during CPT right after the model is trained on that
+task for the DCLM →French →German sequence. AVG represents the mean performance across the three datasets.
+Figure 10: Plasticity Scaling Analysis: Retained Loss vs. Model Size. We consider the learned loss averaged across
+tasks at the end of training for each model and plot the results of an inverse power law fit for each model family.
+18
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+ADDITIONAL NOTES ON EVALUATION METRICS
+Note on Forgetting Metric for the First Task:
+We acknowledge that the forgetting metric does not provide mean-
+ingful information for the first task (D0) in the continual pre-training sequence. We would like to clarify that the
+forgetting measure only becomes relevant starting from the second task onward, where it captures degradation in
+performance on earlier tasks due to the introduction of new data.
+Furthermore, we emphasize that traditional continual learning metrics such as forgetting are not directly applicable in
+our setting, as our pre-training is unsupervised and does not involve labeled data. As such, we define forgetting as the
+increase in validation loss relative to the best performance observed for each task. This definition, along with a formal
+description, has been added to the Evaluation Metrics section in the paper.
+19
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+B
+ALGORITHMS
+ALGORITHM 1: EXPERIENCE REPLAY
+The basic experience replay mechanism interleaves a fixed proportion of replayed samples with fresh incoming data
+during training. This mechanism is described in Algorithm 1.
+Parameters:
+• p: Data-generating distribution at step t; each sample is drawn as xt ∼p(x | t).
+• θ0: Initial network parameters before any continual-learning updates.
+• N: Total batch size per gradient step.
+• α: Replay ratio; αN elements of every batch come from the memory buffer and (1 −α)N are fresh samples.
+• T: Number of training iterations (for t = 0, . . . , T−1).
+• Mt: Replay memory after step t (initially M0 = {}, then updated via reservoir sampling Mt+1 ←Mt∪{x}).
+• xt: Incoming data point received at training step t.
+• BM: Mini-batch of size αN sampled uniformly from Mt (replay samples).
+• B: Full training batch (size N) obtained by concatenating the newest (1 −α)N examples with BM.
+• θt, θt+1: Model parameters immediately before and after the AdamW update computed on batch B.
+Algorithm 1 Experience Replay
+procedure TRAIN(p, θ0, N, α)
+M0 ←{}
+for t = 0, ..., T −1 do
+// Receive incoming data point:
+xt ∼p(x|t)
+// Update every (1 −α)N steps:
+if t mod (1 −α)N = 0 then
+// Draw batch of size αN from buffer:
+BM ←sample(Mt, α, N)
+// Combine for full batch of size N:
+B ←xt ∪... ∪xt−(1−α)N ∪BM
+// Update parameters with AdamW:
+θt+1 ←AdamW(B, θt, α)
+// Reservoir sampling memory update:
+Mt+1 ←Mt ∪{x}
+end if
+end for
+return θT , MT
+end procedure
+ALGORITHM 2: META-EXPERIENCE REPLAY
+We augment the basic replay procedure with Reptile-style meta-updates, promoting gradient alignment. The complete
+algorithm is shown below.
+Parameters:
+• p: Data-generating distribution at step t; each incoming sample is drawn as xt ∼p(x | t).
+• θ0: Initial model parameters before any continual-training updates.
+• N: Total batch size per gradient step (the combined batch B always has N examples).
+• α: Replay ratio; αN items of every batch come from memory, leaving (1 −α)N fresh examples.
+• k: Number of batches between successive Reptile meta-updates.
+• ϵ: Interpolation coefficient (meta-learning rate) used in the Reptile update θt ←θt−k + ϵ(θt −θt−k).
+• T: Total number of training iterations
+20
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+• Mt: Replay memory after step t; updated via reservoir sampling Mt+1 ←Mt ∪{x}.
+• xt: Incoming data point at step t.
+• BM: Mini-batch of size αN sampled uniformly from Mt for replay.
+• B: Full training batch (size N) formed by concatenating the newest (1 −α)N samples with BM.
+• θt, θt+1: Model parameters immediately before and after the AdamW update on batch B (and θt is periodi-
+cally interpolated via Reptile).
+Algorithm 2 Meta-Experience Replay
+procedure TRAIN(p, θ0, N, α, k, ϵ)
+M0 ←{}
+for t = 0, ..., T −1 do
+// Receive incoming data point:
+xt ∼p(x|t)
+// Update every (1 −α)N steps:
+if t mod (1 −α)N = 0 then
+// Draw batch of size αN from buffer:
+BM ←sample(Mt, α, N)
+// Combine for full batch of size N:
+B ←xt ∪... ∪xt−(1−α)N ∪BM
+// Update parameters with AdamW:
+θt+1 ←AdamW(B, θt, α)
+// Reservoir sampling memory update:
+Mt+1 ←Mt ∪{x}
+// Perform Reptile meta-update after every k batches:
+if t mod (1 −α)Nk = 0 then
+θt ←θt−(1−α)Nk + ϵ(θt −θt−(1−α)Nk)
+end if
+end if
+end for
+return θT , MT
+end procedure
+ALGORITHM 3: DISK-BASED REPLAY BUFFER WITH PREFETCHING
+To handle large-scale datasets efficiently, we implemented a disk-backed replay buffer with prefetching and queue-
+based sampling. This enables continual learning with effectively infinite memory capacity.
+Parameters:
+• B: Buffer consisting of F disk-backed files.
+• T: Total buffer capacity in tokens.
+• S: Size of each file in tokens.
+• L: Sequence length (tokens per sample).
+• D: Data directory path.
+• P: Prefetch queue capacity.
+• X ∈ZN×L: Input tensor batch of N sequences.
+• B: Batch size requested from buffer.
+• β: Proportion of effective batch size to sample from buffer.
+21
+
+Published at 4th Conference on Lifelong Learning Agents (CoLLAs), 2025
+Algorithm 3 ReplayBuffer(T, S, L, D, P)
+1: procedure INIT(T, S, L, D, P)
+2:
+F ←⌊T/S⌋
+▷Number of disk files
+3:
+B ←[empty files] ∈D, sizes ←⃗0 ∈NF
+4:
+if metadata.json exists then
+5:
+LOADMETADATA
+6:
+else
+7:
+CREATEFILES
+8:
+ADD(0 ∈Z1×L)
+▷Initialize metadata
+9:
+end if
+10:
+Launch background thread PREFETCHFILES
+11: end procedure
+12: function ADD(X ∈ZN×L)
+13:
+Find i where sizes[i] + N ≤S; else sample random i
+14:
+Compute offset o ←sizes[i] · L · s (with s: dtype size)
+15:
+Write X to B[i] at offset o
+16:
+Update sizes[i] ←sizes[i] + N, total ←total + N
+17: end function
+18: function PREFETCHFILES
+19:
+while True do
+20:
+if |Q| < P then
+21:
+Sample i such that sizes[i] > 0
+22:
+Read raw bytes from B[i], reshape to X ∈Zsizes[i]×L
+23:
+Q ←Q ∪{(X, i)}
+24:
+else
+25:
+sleep(0.1)
+26:
+end if
+27:
+end while
+28: end function
+29: function GETBATCH(β ∈(0, 1])
+30:
+B ←⌊β · eff batch size⌋
+31:
+if Q = ∅then return ∅
+32:
+else
+33:
+Pop (X, i) from Q, sample I ⊂[1, . . . , |X|], |I| = B
+34:
+return X[I] on device
+35:
+end if
+36: end function
+37: function SAVEMETADATA
+38:
+Serialize (T, S, L, sizes, total, dtype) →JSON
+39: end function
+40: function LOADMETADATA
+41:
+Load from JSON: restore buffer state and tensor properties
+42: end function
+43: function CREATEFILES
+44:
+for i = 1 to F do
+45:
+if B[i] does not exist then create empty file
+46:
+end if
+47:
+end for
+48: end function
+22

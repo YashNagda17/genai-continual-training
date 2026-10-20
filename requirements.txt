@@ -1,0 +1,10 @@
+# Core HTTP + API querying (arXiv, Semantic Scholar, OpenAlex)
+requests
+
+# arXiv API feed parsing
+feedparser
+
+# PDF handling (install at least one; having both is fine)
+pymupdf
+pypdf
+

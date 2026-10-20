@@ -1,0 +1,1234 @@
+{
+  "id": "https://openalex.org/W7162795067",
+  "doi": "https://doi.org/10.48550/arxiv.2605.29495",
+  "title": "On-Policy Replay for Continual Supervised Fine-Tuning",
+  "display_name": "On-Policy Replay for Continual Supervised Fine-Tuning",
+  "publication_year": 2026,
+  "publication_date": "2026-05-28",
+  "ids": {
+    "openalex": "https://openalex.org/W7162795067",
+    "doi": "https://doi.org/10.48550/arxiv.2605.29495"
+  },
+  "language": null,
+  "primary_location": {
+    "id": "pmh:oai:arXiv.org:2605.29495",
+    "is_oa": true,
+    "landing_page_url": "https://arxiv.org/abs/2605.29495",
+    "pdf_url": "https://arxiv.org/pdf/2605.29495",
+    "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "issn": [
+        "2331-8422"
+      ],
+      "is_oa": true,
+      "is_in_doaj": false,
+      "is_core": false,
+      "listed_in": [],
+      "host_organization": "https://openalex.org/I205783295",
+      "host_organization_name": "Cornell University",
+      "host_organization_lineage": [
+        "https://openalex.org/I205783295"
+      ],
+      "host_organization_lineage_names": [],
+      "type": "repository"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "submittedVersion",
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": "text"
+  },
+  "type": "preprint",
+  "indexed_in": [
+    "arxiv",
+    "datacite"
+  ],
+  "open_access": {
+    "is_oa": true,
+    "oa_status": "green",
+    "oa_url": "https://arxiv.org/pdf/2605.29495",
+    "any_repository_has_fulltext": true
+  },
+  "authorships": [
+    {
+      "author_position": "first",
+      "author": {
+        "id": "https://openalex.org/A5137355980",
+        "display_name": "Yan Chen",
+        "orcid": null,
+        "observed_orcids": []
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Chen, Yan",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "middle",
+      "author": {
+        "id": "https://openalex.org/A5051605802",
+        "display_name": "Taojie Zhu",
+        "orcid": "https://orcid.org/0009-0009-2640-412X",
+        "observed_orcids": [
+          "https://orcid.org/0009-0009-2640-412X"
+        ]
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Zhu, Taojie",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "middle",
+      "author": {
+        "id": "https://openalex.org/A5137347806",
+        "display_name": "Meng Zhang",
+        "orcid": "https://orcid.org/0000-0002-8217-042X",
+        "observed_orcids": [
+          "https://orcid.org/0000-0002-8217-042X"
+        ]
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Zhang, Meng",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "middle",
+      "author": {
+        "id": "https://openalex.org/A5137321952",
+        "display_name": "Xin Chen",
+        "orcid": "https://orcid.org/0009-0006-0521-8801",
+        "observed_orcids": [
+          "https://orcid.org/0009-0006-0521-8801"
+        ]
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Chen, Xin",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "middle",
+      "author": {
+        "id": "https://openalex.org/A5124665988",
+        "display_name": "Jiaqi Huang",
+        "orcid": "https://orcid.org/0000-0001-7144-685X",
+        "observed_orcids": [
+          "https://orcid.org/0000-0001-7144-685X"
+        ]
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Huang, Jiaqi",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "middle",
+      "author": {
+        "id": "https://openalex.org/A5113389094",
+        "display_name": "Dongyang Xu",
+        "orcid": "https://orcid.org/0009-0008-9927-8649",
+        "observed_orcids": [
+          "https://orcid.org/0009-0008-9927-8649"
+        ]
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Xu, Dongyang",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    },
+    {
+      "author_position": "last",
+      "author": {
+        "id": "https://openalex.org/A5137331126",
+        "display_name": "Yizhi Wang",
+        "orcid": null,
+        "observed_orcids": []
+      },
+      "institutions": [],
+      "countries": [],
+      "is_corresponding": false,
+      "raw_author_name": "Wang, Yizhi",
+      "raw_affiliation_strings": [],
+      "raw_orcid": null,
+      "affiliations": []
+    }
+  ],
+  "institutions": [],
+  "countries_distinct_count": 0,
+  "institutions_distinct_count": 0,
+  "corresponding_author_ids": [],
+  "corresponding_institution_ids": [],
+  "apc_list": null,
+  "apc_paid": null,
+  "fwci": null,
+  "has_fulltext": true,
+  "cited_by_count": 0,
+  "citation_normalized_percentile": null,
+  "cited_by_percentile_year": null,
+  "biblio": {
+    "volume": null,
+    "issue": null,
+    "first_page": null,
+    "last_page": null
+  },
+  "is_retracted": false,
+  "is_paratext": false,
+  "is_xpac": false,
+  "primary_topic": {
+    "id": "https://openalex.org/T11307",
+    "display_name": "Domain Adaptation and Few-Shot Learning",
+    "score": 0.22100000083446503,
+    "subfield": {
+      "id": "https://openalex.org/subfields/1702",
+      "display_name": "Artificial Intelligence"
+    },
+    "field": {
+      "id": "https://openalex.org/fields/17",
+      "display_name": "Computer Science"
+    },
+    "domain": {
+      "id": "https://openalex.org/domains/3",
+      "display_name": "Physical Sciences"
+    }
+  },
+  "topics": [
+    {
+      "id": "https://openalex.org/T11307",
+      "display_name": "Domain Adaptation and Few-Shot Learning",
+      "score": 0.22100000083446503,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1702",
+        "display_name": "Artificial Intelligence"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    },
+    {
+      "id": "https://openalex.org/T10028",
+      "display_name": "Topic Modeling",
+      "score": 0.14640000462532043,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1702",
+        "display_name": "Artificial Intelligence"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    },
+    {
+      "id": "https://openalex.org/T11714",
+      "display_name": "Multimodal Machine Learning Applications",
+      "score": 0.08820000290870667,
+      "subfield": {
+        "id": "https://openalex.org/subfields/1707",
+        "display_name": "Computer Vision and Pattern Recognition"
+      },
+      "field": {
+        "id": "https://openalex.org/fields/17",
+        "display_name": "Computer Science"
+      },
+      "domain": {
+        "id": "https://openalex.org/domains/3",
+        "display_name": "Physical Sciences"
+      }
+    }
+  ],
+  "keywords": [
+    {
+      "id": "https://openalex.org/keywords/forgetting",
+      "display_name": "Forgetting",
+      "score": 0.6121000051498413
+    },
+    {
+      "id": "https://openalex.org/keywords/schedule",
+      "display_name": "Schedule",
+      "score": 0.43070000410079956
+    },
+    {
+      "id": "https://openalex.org/keywords/task",
+      "display_name": "Task (project management)",
+      "score": 0.39910000562667847
+    },
+    {
+      "id": "https://openalex.org/keywords/signal",
+      "display_name": "SIGNAL (programming language)",
+      "score": 0.3898000121116638
+    },
+    {
+      "id": "https://openalex.org/keywords/heuristics",
+      "display_name": "Heuristics",
+      "score": 0.3889999985694885
+    },
+    {
+      "id": "https://openalex.org/keywords/counterintuitive",
+      "display_name": "Counterintuitive",
+      "score": 0.3431999981403351
+    },
+    {
+      "id": "https://openalex.org/keywords/set",
+      "display_name": "Set (abstract data type)",
+      "score": 0.3400000035762787
+    },
+    {
+      "id": "https://openalex.org/keywords/reset",
+      "display_name": "Reset (finance)",
+      "score": 0.32670000195503235
+    }
+  ],
+  "concepts": [
+    {
+      "id": "https://openalex.org/C41008148",
+      "wikidata": "https://www.wikidata.org/wiki/Q21198",
+      "display_name": "Computer science",
+      "level": 0,
+      "score": 0.7610999941825867
+    },
+    {
+      "id": "https://openalex.org/C7149132",
+      "wikidata": "https://www.wikidata.org/wiki/Q1377840",
+      "display_name": "Forgetting",
+      "level": 2,
+      "score": 0.6121000051498413
+    },
+    {
+      "id": "https://openalex.org/C68387754",
+      "wikidata": "https://www.wikidata.org/wiki/Q7271585",
+      "display_name": "Schedule",
+      "level": 2,
+      "score": 0.43070000410079956
+    },
+    {
+      "id": "https://openalex.org/C2780451532",
+      "wikidata": "https://www.wikidata.org/wiki/Q759676",
+      "display_name": "Task (project management)",
+      "level": 2,
+      "score": 0.39910000562667847
+    },
+    {
+      "id": "https://openalex.org/C2779843651",
+      "wikidata": "https://www.wikidata.org/wiki/Q7390335",
+      "display_name": "SIGNAL (programming language)",
+      "level": 2,
+      "score": 0.3898000121116638
+    },
+    {
+      "id": "https://openalex.org/C127705205",
+      "wikidata": "https://www.wikidata.org/wiki/Q5748245",
+      "display_name": "Heuristics",
+      "level": 2,
+      "score": 0.3889999985694885
+    },
+    {
+      "id": "https://openalex.org/C154945302",
+      "wikidata": "https://www.wikidata.org/wiki/Q11660",
+      "display_name": "Artificial intelligence",
+      "level": 1,
+      "score": 0.35249999165534973
+    },
+    {
+      "id": "https://openalex.org/C101097943",
+      "wikidata": "https://www.wikidata.org/wiki/Q5176983",
+      "display_name": "Counterintuitive",
+      "level": 2,
+      "score": 0.3431999981403351
+    },
+    {
+      "id": "https://openalex.org/C177264268",
+      "wikidata": "https://www.wikidata.org/wiki/Q1514741",
+      "display_name": "Set (abstract data type)",
+      "level": 2,
+      "score": 0.3400000035762787
+    },
+    {
+      "id": "https://openalex.org/C119857082",
+      "wikidata": "https://www.wikidata.org/wiki/Q2539",
+      "display_name": "Machine learning",
+      "level": 1,
+      "score": 0.3294000029563904
+    },
+    {
+      "id": "https://openalex.org/C2779795794",
+      "wikidata": "https://www.wikidata.org/wiki/Q7315343",
+      "display_name": "Reset (finance)",
+      "level": 2,
+      "score": 0.32670000195503235
+    },
+    {
+      "id": "https://openalex.org/C2780154230",
+      "wikidata": "https://www.wikidata.org/wiki/Q513420",
+      "display_name": "Undo",
+      "level": 2,
+      "score": 0.3176000118255615
+    },
+    {
+      "id": "https://openalex.org/C111335779",
+      "wikidata": "https://www.wikidata.org/wiki/Q3454686",
+      "display_name": "Reduction (mathematics)",
+      "level": 2,
+      "score": 0.3147999942302704
+    },
+    {
+      "id": "https://openalex.org/C75291252",
+      "wikidata": "https://www.wikidata.org/wiki/Q1315756",
+      "display_name": "TRACE (psycholinguistics)",
+      "level": 2,
+      "score": 0.295199990272522
+    },
+    {
+      "id": "https://openalex.org/C137293760",
+      "wikidata": "https://www.wikidata.org/wiki/Q3621696",
+      "display_name": "Language model",
+      "level": 2,
+      "score": 0.2768999934196472
+    },
+    {
+      "id": "https://openalex.org/C2780224610",
+      "wikidata": "https://www.wikidata.org/wiki/Q1530061",
+      "display_name": "Credibility",
+      "level": 2,
+      "score": 0.26820001006126404
+    },
+    {
+      "id": "https://openalex.org/C76100544",
+      "wikidata": "https://www.wikidata.org/wiki/Q4118095",
+      "display_name": "Batch distillation",
+      "level": 4,
+      "score": 0.2671000063419342
+    },
+    {
+      "id": "https://openalex.org/C51632099",
+      "wikidata": "https://www.wikidata.org/wiki/Q3985153",
+      "display_name": "Training set",
+      "level": 2,
+      "score": 0.26669999957084656
+    },
+    {
+      "id": "https://openalex.org/C57273362",
+      "wikidata": "https://www.wikidata.org/wiki/Q576722",
+      "display_name": "Decoding methods",
+      "level": 2,
+      "score": 0.26579999923706055
+    },
+    {
+      "id": "https://openalex.org/C28490314",
+      "wikidata": "https://www.wikidata.org/wiki/Q189436",
+      "display_name": "Speech recognition",
+      "level": 1,
+      "score": 0.26429998874664307
+    },
+    {
+      "id": "https://openalex.org/C108010975",
+      "wikidata": "https://www.wikidata.org/wiki/Q500094",
+      "display_name": "Pruning",
+      "level": 2,
+      "score": 0.26429998874664307
+    },
+    {
+      "id": "https://openalex.org/C2778671685",
+      "wikidata": "https://www.wikidata.org/wiki/Q219239",
+      "display_name": "Recipe",
+      "level": 2,
+      "score": 0.25200000405311584
+    }
+  ],
+  "mesh": [],
+  "locations_count": 2,
+  "locations": [
+    {
+      "id": "pmh:oai:arXiv.org:2605.29495",
+      "is_oa": true,
+      "landing_page_url": "https://arxiv.org/abs/2605.29495",
+      "pdf_url": "https://arxiv.org/pdf/2605.29495",
+      "source": {
+        "id": "https://openalex.org/S4306400194",
+        "display_name": "arXiv (Cornell University)",
+        "issn_l": "2331-8422",
+        "issn": [
+          "2331-8422"
+        ],
+        "is_oa": true,
+        "is_in_doaj": false,
+        "is_core": false,
+        "listed_in": [],
+        "host_organization": "https://openalex.org/I205783295",
+        "host_organization_name": "Cornell University",
+        "host_organization_lineage": [
+          "https://openalex.org/I205783295"
+        ],
+        "host_organization_lineage_names": [],
+        "type": "repository"
+      },
+      "license": null,
+      "license_id": null,
+      "version": "submittedVersion",
+      "is_accepted": false,
+      "is_published": false,
+      "raw_source_name": null,
+      "raw_type": "text"
+    },
+    {
+      "id": "doi:10.48550/arxiv.2605.29495",
+      "is_oa": true,
+      "landing_page_url": "https://doi.org/10.48550/arxiv.2605.29495",
+      "pdf_url": null,
+      "source": {
+        "id": "https://openalex.org/S4306400194",
+        "display_name": "arXiv (Cornell University)",
+        "issn_l": "2331-8422",
+        "issn": [
+          "2331-8422"
+        ],
+        "is_oa": true,
+        "is_in_doaj": false,
+        "is_core": false,
+        "listed_in": [],
+        "host_organization": "https://openalex.org/I205783295",
+        "host_organization_name": "Cornell University",
+        "host_organization_lineage": [
+          "https://openalex.org/I205783295"
+        ],
+        "host_organization_lineage_names": [],
+        "type": "repository"
+      },
+      "license": null,
+      "license_id": null,
+      "version": null,
+      "is_accepted": false,
+      "is_published": null,
+      "raw_source_name": null,
+      "raw_type": "Preprint"
+    }
+  ],
+  "best_oa_location": {
+    "id": "pmh:oai:arXiv.org:2605.29495",
+    "is_oa": true,
+    "landing_page_url": "https://arxiv.org/abs/2605.29495",
+    "pdf_url": "https://arxiv.org/pdf/2605.29495",
+    "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "issn": [
+        "2331-8422"
+      ],
+      "is_oa": true,
+      "is_in_doaj": false,
+      "is_core": false,
+      "listed_in": [],
+      "host_organization": "https://openalex.org/I205783295",
+      "host_organization_name": "Cornell University",
+      "host_organization_lineage": [
+        "https://openalex.org/I205783295"
+      ],
+      "host_organization_lineage_names": [],
+      "type": "repository"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "submittedVersion",
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": "text"
+  },
+  "sustainable_development_goals": [
+    {
+      "display_name": "Quality Education",
+      "score": 0.6111361384391785,
+      "id": "https://metadata.un.org/sdg/4"
+    }
+  ],
+  "x_sdgs": [],
+  "study_designs": [],
+  "awards": [],
+  "funders": [],
+  "has_content": {
+    "grobid_xml": true,
+    "pdf": true
+  },
+  "content_urls": {
+    "pdf": "https://content.openalex.org/works/W7162795067.pdf",
+    "grobid_xml": "https://content.openalex.org/works/W7162795067.grobid-xml"
+  },
+  "referenced_works_count": 0,
+  "referenced_works": [],
+  "related_works": [],
+  "abstract_inverted_index": {
+    "Continual": [
+      0
+    ],
+    "supervised": [
+      1
+    ],
+    "fine-tuning": [
+      2
+    ],
+    "(SFT)": [
+      3
+    ],
+    "is": [
+      4,
+      130,
+      232,
+      239,
+      252,
+      262
+    ],
+    "the": [
+      5,
+      39,
+      80,
+      84,
+      88,
+      99,
+      111,
+      119,
+      149,
+      158,
+      247,
+      253,
+      257
+    ],
+    "de": [
+      6
+    ],
+    "facto": [
+      7
+    ],
+    "recipe": [
+      8
+    ],
+    "for": [
+      9
+    ],
+    "adapting": [
+      10
+    ],
+    "large": [
+      11
+    ],
+    "language": [
+      12
+    ],
+    "models": [
+      13
+    ],
+    "(LLMs)": [
+      14
+    ],
+    "to": [
+      15,
+      170,
+      178
+    ],
+    "a": [
+      16,
+      58,
+      66,
+      104,
+      114,
+      173,
+      181,
+      185,
+      191,
+      206,
+      218,
+      224,
+      234
+    ],
+    "stream": [
+      17
+    ],
+    "of": [
+      18,
+      27,
+      107
+    ],
+    "downstream": [
+      19
+    ],
+    "tasks,": [
+      20
+    ],
+    "but": [
+      21
+    ],
+    "it": [
+      22
+    ],
+    "suffers": [
+      23
+    ],
+    "from": [
+      24,
+      79
+    ],
+    "catastrophic": [
+      25
+    ],
+    "forgetting": [
+      26,
+      45
+    ],
+    "earlier": [
+      28
+    ],
+    "capabilities.": [
+      29
+    ],
+    "Recent": [
+      30
+    ],
+    "work": [
+      31
+    ],
+    "shows": [
+      32
+    ],
+    "that": [
+      33,
+      209,
+      227,
+      246
+    ],
+    "on-policy": [
+      34,
+      52,
+      85,
+      214,
+      254
+    ],
+    "signals": [
+      35
+    ],
+    "--": [
+      36,
+      43,
+      184
+    ],
+    "training": [
+      37,
+      60,
+      89
+    ],
+    "on": [
+      38,
+      103,
+      148,
+      157,
+      217
+    ],
+    "model's": [
+      40
+    ],
+    "own": [
+      41
+    ],
+    "outputs": [
+      42
+    ],
+    "reduce": [
+      44
+    ],
+    "more": [
+      46
+    ],
+    "reliably": [
+      47
+    ],
+    "than": [
+      48,
+      242
+    ],
+    "off-policy": [
+      49
+    ],
+    "supervision.": [
+      50
+    ],
+    "Existing": [
+      51
+    ],
+    "methods": [
+      53,
+      216
+    ],
+    "route": [
+      54,
+      83
+    ],
+    "this": [
+      55
+    ],
+    "signal": [
+      56,
+      86
+    ],
+    "through": [
+      57,
+      87
+    ],
+    "new": [
+      59
+    ],
+    "objective": [
+      61
+    ],
+    "(e.g.,": [
+      62
+    ],
+    "self-distillation": [
+      63
+    ],
+    "losses": [
+      64
+    ],
+    "with": [
+      65,
+      196
+    ],
+    "teacher": [
+      67
+    ],
+    "copy),": [
+      68
+    ],
+    "inheriting": [
+      69
+    ],
+    "an": [
+      70
+    ],
+    "extra": [
+      71
+    ],
+    "forward": [
+      72
+    ],
+    "pass,": [
+      73
+    ],
+    "schedule": [
+      74
+    ],
+    "sensitivity,": [
+      75
+    ],
+    "and": [
+      76,
+      117,
+      136,
+      177,
+      212,
+      221
+    ],
+    "stylistic": [
+      77
+    ],
+    "drift": [
+      78
+    ],
+    "teacher.We": [
+      81
+    ],
+    "instead": [
+      82
+    ],
+    "data": [
+      90
+    ],
+    "source.": [
+      91
+    ],
+    "Our": [
+      92
+    ],
+    "method,": [
+      93
+    ],
+    "On-Policy": [
+      94
+    ],
+    "Replay": [
+      95,
+      194,
+      231
+    ],
+    "(OPR),": [
+      96
+    ],
+    "rolls": [
+      97
+    ],
+    "out": [
+      98
+    ],
+    "most": [
+      100
+    ],
+    "recent": [
+      101
+    ],
+    "checkpoint": [
+      102
+    ],
+    "small": [
+      105
+    ],
+    "budget": [
+      106,
+      176,
+      183
+    ],
+    "historical": [
+      108
+    ],
+    "prompts,": [
+      109
+    ],
+    "filters": [
+      110
+    ],
+    "generations": [
+      112
+    ],
+    "by": [
+      113
+    ],
+    "task": [
+      115
+    ],
+    "reward,": [
+      116
+    ],
+    "replays": [
+      118
+    ],
+    "surviving": [
+      120
+    ],
+    "(prompt,": [
+      121
+    ],
+    "model": [
+      122
+    ],
+    "response)": [
+      123
+    ],
+    "pairs": [
+      124
+    ],
+    "as": [
+      125
+    ],
+    "ordinary": [
+      126
+    ],
+    "SFT": [
+      127,
+      164
+    ],
+    "examples.": [
+      128
+    ],
+    "There": [
+      129
+    ],
+    "no": [
+      131,
+      133,
+      137
+    ],
+    "teacher,": [
+      132
+    ],
+    "auxiliary": [
+      134
+    ],
+    "loss,": [
+      135
+    ],
+    "on-the-fly": [
+      138
+    ],
+    "distillation.": [
+      139
+    ],
+    "Across": [
+      140
+    ],
+    "three": [
+      141,
+      202
+    ],
+    "7--8B": [
+      142
+    ],
+    "instruction-tuned": [
+      143
+    ],
+    "backbones": [
+      144
+    ],
+    "(Qwen2.5-7B-Instruct,": [
+      145,
+      162
+    ],
+    "Qwen3-8B,": [
+      146
+    ],
+    "Llama3.1-8B-Instruct)": [
+      147
+    ],
+    "TRACE": [
+      150
+    ],
+    "continual-learning": [
+      151
+    ],
+    "benchmark,": [
+      152
+    ],
+    "OPR": [
+      153,
+      167,
+      211,
+      251
+    ],
+    "consistently": [
+      154
+    ],
+    "reduces": [
+      155
+    ],
+    "forgetting;": [
+      156
+    ],
+    "sharpest": [
+      159
+    ],
+    "stress": [
+      160
+    ],
+    "test": [
+      161
+    ],
+    "Sequential": [
+      163
+    ],
+    "BWT": [
+      165,
+      169
+    ],
+    "-13.93),": [
+      166
+    ],
+    "lifts": [
+      168
+    ],
+    "-0.65": [
+      171
+    ],
+    "at": [
+      172,
+      180,
+      264
+    ],
+    "10%": [
+      174
+    ],
+    "replay": [
+      175,
+      238
+    ],
+    "-2.29": [
+      179
+    ],
+    "1%": [
+      182
+    ],
+    "46%": [
+      186
+    ],
+    "reduction": [
+      187
+    ],
+    "in": [
+      188,
+      250
+    ],
+    "|BWT|": [
+      189
+    ],
+    "over": [
+      190
+    ],
+    "tuned": [
+      192
+    ],
+    "Vanilla": [
+      193,
+      230,
+      243
+    ],
+    "baseline,": [
+      195
+    ],
+    "42--46%": [
+      197
+    ],
+    "reductions": [
+      198
+    ],
+    "observed": [
+      199
+    ],
+    "across": [
+      200
+    ],
+    "all": [
+      201
+    ],
+    "backbones.": [
+      203
+    ],
+    "We": [
+      204
+    ],
+    "give": [
+      205
+    ],
+    "KL-shrinkage": [
+      207
+    ],
+    "interpretation": [
+      208
+    ],
+    "places": [
+      210
+    ],
+    "prior": [
+      213
+    ],
+    "distillation": [
+      215
+    ],
+    "single": [
+      219
+    ],
+    "axis,": [
+      220
+    ],
+    "we": [
+      222
+    ],
+    "present": [
+      223
+    ],
+    "counterintuitive": [
+      225
+    ],
+    "finding": [
+      226
+    ],
+    "explains": [
+      228
+    ],
+    "why": [
+      229
+    ],
+    "already": [
+      233
+    ],
+    "strong": [
+      235
+    ],
+    "baseline:": [
+      236
+    ],
+    "low-score": [
+      237
+    ],
+    "uniformly": [
+      240
+    ],
+    "worse": [
+      241
+    ],
+    "Replay,": [
+      244
+    ],
+    "demonstrating": [
+      245
+    ],
+    "active": [
+      248
+    ],
+    "ingredient": [
+      249
+    ],
+    "distribution,": [
+      255
+    ],
+    "not": [
+      256
+    ],
+    "response": [
+      258
+    ],
+    "quality": [
+      259
+    ],
+    "alone.Our": [
+      260
+    ],
+    "code": [
+      261
+    ],
+    "available": [
+      263
+    ],
+    "https://github.com/Yancey2024/OnPolicyReplay.": [
+      265
+    ]
+  },
+  "counts_by_year": [],
+  "updated_date": "2026-09-25T08:18:29.962427",
+  "created_date": "2026-05-30T00:00:00"
+}

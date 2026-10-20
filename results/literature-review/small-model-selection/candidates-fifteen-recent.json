@@ -1,0 +1,25 @@
+{
+  "as_of": "2026-09-30",
+  "cutoff": "2024-09-30",
+  "count": 15,
+  "model_budget_parameters": 1000000000,
+  "common_text_model": "Qwen2.5-0.5B-Instruct",
+  "definition": "Recent by first public version or peer-reviewed publication within the two-year window. Mix-CPT first appeared in July 2024 but was published at ICLR 2025.",
+  "items": [
+    {"rank": 1, "short_name": "CSReL", "status": "ICLR 2025", "axis": "memory writing", "first_six": true, "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/24a8d40f6656e542f3fd43bac678e71b-Paper-Conference.pdf", "text_0_5b_role": "adaptation after native vision run"},
+    {"rank": 2, "short_name": "aL-SAR", "status": "ICLR 2025", "axis": "replay retrieval", "first_six": true, "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/760564ebba4797d0dcf1678e96e8cbcb-Paper-Conference.pdf", "text_0_5b_role": "adaptation after native vision run"},
+    {"rank": 3, "short_name": "RDS+", "status": "2025 preprint", "axis": "static instruction-pool selection", "first_six": true, "paper": "https://arxiv.org/pdf/2503.01807", "text_0_5b_role": "causal representation port"},
+    {"rank": 4, "short_name": "LEAD", "status": "PVLDB 2025", "axis": "iterative instruction-pool selection", "first_six": true, "paper": "https://www.vldb.org/pvldb/vol19/p426-luo.pdf", "text_0_5b_role": "IDU and bandit port"},
+    {"rank": 5, "short_name": "OASIS", "status": "ACL 2026", "axis": "online example admission", "first_six": true, "paper": "https://aclanthology.org/2026.acl-long.158.pdf", "text_0_5b_role": "online selector port; paper-linked code empty at check"},
+    {"rank": 6, "short_name": "TSR", "status": "2026 preprint", "axis": "compatible-task replay", "first_six": true, "paper": "https://arxiv.org/html/2607.15587", "text_0_5b_role": "published native model setting"},
+    {"rank": 7, "short_name": "Adapt-infinity", "status": "ICLR 2025", "axis": "dynamic selection and pool pruning", "first_six": false, "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/a6610efd6c767f63343a4ab28505212e-Paper-Conference.pdf", "text_0_5b_role": "multimodal-to-text adaptation"},
+    {"rank": 8, "short_name": "On-Policy Replay", "status": "2026 preprint", "axis": "generated replay content", "first_six": false, "paper": "https://arxiv.org/pdf/2605.29495", "text_0_5b_role": "bounded-prompt-store adaptation"},
+    {"rank": 9, "short_name": "KPIG", "status": "ACL 2025", "axis": "instruction-key-part replay", "first_six": false, "paper": "https://aclanthology.org/2025.acl-long.1153.pdf", "text_0_5b_role": "format-aware replay comparison"},
+    {"rank": 10, "short_name": "SEEKR", "status": "EMNLP 2024", "axis": "selective replay distillation", "first_six": false, "paper": "https://aclanthology.org/2024.emnlp-main.190.pdf", "text_0_5b_role": "data versus distillation-cost comparison"},
+    {"rank": 11, "short_name": "D3", "status": "IJCAI 2025", "axis": "diversity-difficulty-dependability selection", "first_six": false, "paper": "https://www.ijcai.org/proceedings/2025/0928.pdf", "text_0_5b_role": "static quality-selection comparison"},
+    {"rank": 12, "short_name": "RICo", "status": "AAAI 2026", "axis": "in-context contribution selection", "first_six": false, "paper": "https://ojs.aaai.org/index.php/AAAI/article/view/40732/44693", "text_0_5b_role": "training-only assessment-set comparison"},
+    {"rank": 13, "short_name": "Self-Adaptive CIT", "status": "2025 preprint", "axis": "updated proxy filtering of arrivals", "first_six": false, "paper": "https://arxiv.org/pdf/2503.15924", "text_0_5b_role": "original 0.5B proxy becomes common learner"},
+    {"rank": 14, "short_name": "Mix-CPT", "status": "ICLR 2025; 2024-07 preprint", "axis": "format-alignment example selection", "first_six": false, "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/cc721384c26c0bdff3ec31a7de31d8d5-Paper-Conference.pdf", "text_0_5b_role": "FAS diagnostic, not full-system reproduction"},
+    {"rank": 15, "short_name": "Coresets are more than replay", "status": "Neural Computing and Applications 2026", "axis": "current-task coreset training", "first_six": false, "paper": "https://link.springer.com/article/10.1007/s00521-026-12273-y", "text_0_5b_role": "native vision pilot then text adaptation"}
+  ]
+}

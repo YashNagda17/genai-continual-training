@@ -1,0 +1,75 @@
+{
+  "as_of": "2026-09-30",
+  "cutoff": "2024-09-30",
+  "count": 6,
+  "definition": "Recent by first public version or peer-reviewed publication in the two-year window; published results are not small-model adaptations.",
+  "items": [
+    {
+      "rank": 1,
+      "id": "R01",
+      "short_name": "CSReL",
+      "status": "ICLR 2025",
+      "selection_axis": "persistent-memory writing",
+      "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/24a8d40f6656e542f3fd43bac678e71b-Paper-Conference.pdf",
+      "code": "https://github.com/RuilinTong/CSReL-Coreset-CL",
+      "native_small_model_path": true,
+      "code_status": "visible implementation; not run"
+    },
+    {
+      "rank": 2,
+      "id": "R02",
+      "short_name": "aL-SAR",
+      "status": "ICLR 2025; arXiv October 2024",
+      "selection_axis": "replay retrieval",
+      "paper": "https://proceedings.iclr.cc/paper_files/paper/2025/file/760564ebba4797d0dcf1678e96e8cbcb-Paper-Conference.pdf",
+      "code": "https://github.com/snumprlab/budgeted-cl",
+      "native_small_model_path": true,
+      "code_status": "visible implementation; not run"
+    },
+    {
+      "rank": 3,
+      "id": "R03",
+      "short_name": "RDS+",
+      "status": "2025 preprint",
+      "selection_axis": "representation-based training-pool selection",
+      "paper": "https://arxiv.org/pdf/2503.01807",
+      "code": "https://github.com/hamishivi/automated-instruction-selection",
+      "native_small_model_path": false,
+      "code_status": "visible implementation; not run"
+    },
+    {
+      "rank": 4,
+      "id": "R04",
+      "short_name": "LEAD",
+      "status": "PVLDB 2025",
+      "selection_axis": "iterative training-pool selection",
+      "paper": "https://www.vldb.org/pvldb/vol19/p426-luo.pdf",
+      "code": "https://github.com/HKUSTDial/LEAD",
+      "native_small_model_path": false,
+      "code_status": "visible implementation; not run"
+    },
+    {
+      "rank": 5,
+      "id": "R05",
+      "short_name": "OASIS",
+      "status": "ACL 2026; earlier preprint May 2025",
+      "selection_axis": "online new-example admission",
+      "paper": "https://aclanthology.org/2026.acl-long.158.pdf",
+      "code": "https://github.com/snumprlab/oasis",
+      "native_small_model_path": false,
+      "code_status": "linked repository empty on 2026-09-30; not run"
+    },
+    {
+      "rank": 6,
+      "id": "R06",
+      "short_name": "TSR",
+      "status": "July 2026 preprint",
+      "selection_axis": "compatible-task replay retrieval",
+      "paper": "https://arxiv.org/html/2607.15587",
+      "code": "https://github.com/ymeng3/transfer-selective-replay",
+      "native_small_model_path": false,
+      "native_0_5b_path": true,
+      "code_status": "visible implementation; not run"
+    }
+  ]
+}
