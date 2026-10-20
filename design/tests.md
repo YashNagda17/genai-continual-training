@@ -2,6 +2,8 @@
 
 Owns `src/tests/`. Test mathematical and lifecycle boundaries that could invalidate the research. Use deterministic tiny records/models; routine checks must not require downloading production weights or running a full experiment.
 
+Keep the routine suite compact: hand-computed equations, weight/policy handoff, device routing, standalone/hybrid smoke runs, and representative recovery failures. Consolidate repeated setup and failure phases into table-driven cases. Avoid tests of the fixture itself, Python abstract-class mechanics, or compositions checked only against the same helper calls. The checklist below also includes later production-adapter validation; a passing tiny-model suite does not establish all of it.
+
 ## Required checks by owner
 
 | Area | Evidence required before integration |
@@ -22,7 +24,7 @@ Owns `src/tests/`. Test mathematical and lifecycle boundaries that could invalid
 
 ## Validation sequence
 
-1. **Contract tests:** hand-computable cases and tiny CPU model checks for supported numerical operations. Verify no backend dependency for pure record/budget/metric tests.
+1. **Contract tests:** hand-computable cases and tiny Torch CPU model checks for supported numerical operations; no accelerator is required.
 2. **Algorithm checks:** compare a minimal implementation against the paper equations and, where available, a pinned official implementation. Exercise a case that distinguishes the real mechanism from the prohibited shortcut; matching method names or output shapes is insufficient.
 3. **Two-task smoke run:** test standalone pipelines first, then a compatible hybrid. Include current selection, replay, teacher routing, task-end coreset construction, evaluation, and checkpoint restore. State any features the tiny model cannot exercise.
 4. **Later experimental validation:** use the supplied models/datasets/protocol, repeated seeds, matched controls, and complete cost/storage reporting. This stage establishes empirical behavior; earlier stages cannot establish accuracy, retention, or speedup claims.

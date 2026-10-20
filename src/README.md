@@ -64,7 +64,7 @@ result = pipeline.run(RunContext(
 ))
 ```
 
-Construct `RunSpec`, `ReplayBudget`, and `ResourceBudget` from [contracts.py](/src/utils/contracts.py). Required settings include task order, seed, batch size, attempted/successful update and token limits, passes/exhaustion, reduction, replay units, CPU/device/disk bounds, checkpoint cadence, scientific/source/adaptation identity, and evaluation settings. Limits are per task; global counters are also returned. The initial executor uses one microbatch per update and keeps partial batches. A pass is a traversal of admitted current membership; replay-only updates remain bounded by attempts/steps/tokens.
+Construct `RunSpec`, `ReplayBudget`, and `ResourceBudget` from [contracts.py](/src/utils/contracts.py). Required settings include task order, seed, batch size, attempted/successful update and token limits, passes/exhaustion, reduction, replay units, CPU/device bounds, checkpoint cadence, scientific/source/adaptation identity, and evaluation settings. Limits are per task; global counters are also returned. The initial executor uses one microbatch per update and keeps partial batches. A pass is a traversal of admitted current membership; replay-only updates remain bounded by attempts/steps/tokens.
 
 Standalone OASIS `historical_pool` requires `ReplayBudget.examples=None` and enough explicit token/byte capacity for all observed data. `current_only` is a labeled adaptation. Exact SIREN enumerates subsets; supply small selection batches within `max_selection_batch` (at most twelve for the intended profile).
 
@@ -114,7 +114,7 @@ Paper configuration and algorithm checks are intentionally omitted during logic 
 
 ## Recovery and artifacts
 
-Each `output` is one attempt. `resume="auto"` resumes a compatible attempt, `"required"` rejects a missing checkpoint, and `"never"` requires a fresh directory. Changed scientific settings, adapter/data identity, implementation source, Torch version or resolved device reject resume. Changing checkpoint cadence or staging-disk capacity does not alter scientific identity.
+Each `output` is one attempt. `resume="auto"` resumes a compatible attempt, `"required"` rejects a missing checkpoint, and `"never"` requires a fresh directory. Changed scientific settings, adapter/data identity, implementation source, Torch version or resolved device reject resume. Changing checkpoint cadence does not alter scientific identity.
 
 Outputs include `run.json`, `metrics.csv`, `events.json`, checksummed recovery directories, `latest.json`, and required frozen teachers. A single writer lock protects state publication. The latest complete checkpoint plus one fallback survives during execution; completion retains one. Old replay payloads and numerical recovery files are pruned while small audit manifests remain. Required teachers survive as long as retained recovery state references them. Corrupt newest state can fall back with `recovery.json` identifying the discarded progress.
 
@@ -131,6 +131,6 @@ python -m unittest src.tests.test_pipelines -v
 python -m compileall -q src/models src/datasets src/pipelines src/utils src/combined_pipeline.py
 ```
 
-Tests check paper equations, signed similarities, dynamic coreset rankings, source/teacher coherence, native versus hybrid exposure, shared learner replacement, independent weight/policy handoff, budget rejection, two-task standalone/hybrid runs, bounded retention, and interruption recovery. They use a two-coordinate Torch model with autograd SGD and optional KL. Additional tests cover mocked CUDA/ROCm/XPU routing, dtype/autograd preservation and local sampling RNG. A real accelerator lifecycle test runs only when hardware is available and otherwise skips. Transformer gradients, actual LoRA-B semantics, production KD, pinned-author-code equivalence, and scientific experiments remain unverified.
+The compact suite checks paper equations, signed similarities, round-dependent coreset rankings, source/teacher coherence, native versus hybrid exposure, shared learner and weight/policy handoff, two-task standalone/hybrid runs, budgets, retention and representative recovery failures. It uses a two-coordinate Torch model with autograd SGD and optional KL. Small utility checks cover mocked CUDA/ROCm/XPU routing, dtype/autograd preservation and local sampling RNG. Transformer gradients, actual LoRA-B semantics, production KD, accelerator execution, pinned-author-code equivalence and scientific experiments remain unverified.
 
 The experiment matrix/CLI in [main.md](/design/main.md) is a separate future caller. This implementation supplies the requested algorithm library and adapter contracts.
