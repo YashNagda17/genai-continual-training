@@ -19,6 +19,8 @@ The paper's “holdout model” is trained on permitted **training candidates**,
 
 At empty `S`, use the declared subset-model initialization without optimizer updates; this is the project's explicit empty-set convention and must be compared with the pinned reference implementation before claiming reproduction. Resolve ties by stable sample ID. Allocate integer round sizes deterministically, with the last round taking the remainder; never duplicate records to fill capacity.
 
+The callable CL-Prv profile follows Appendix F Algorithms 3–4: each reselection reference is fitted on the candidate task's permitted pool union the committed old memory (deduplicated by observation ID). Subset fitting remains on the selected subset. Unlike CL, Prv recomputes reference losses when that permitted pool changes. Equal-task quota remainders go to ascending task IDs; unused slots are reported and not redistributed. Auxiliary training is a finite number of ordered passes with a saved pass/cursor after every update attempt.
+
 Zero quota returns empty memory without auxiliary fitting. Quotas above available unique candidates retain all available records and report underfill; unused quota is not redistributed unless the declared allocation policy permits it.
 
 ## Variants remain separate

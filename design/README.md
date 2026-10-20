@@ -1,6 +1,6 @@
 # Implementation contract
 
-Status: design only, 2026-10-20.
+Status: algorithm orchestration implemented with injected model/data adapters, 2026-10-20. See the [callable API and validation limits](/src/README.md). Production adapters, the experiment matrix, and training reproductions remain future work.
 
 ## Authority and scope
 

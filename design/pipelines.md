@@ -1,6 +1,6 @@
 # Pipelines and PipelineBase
 
-Owns `src/pipelines/` and `pipeline_base.py`. Each paper implementation inherits `PipelineBase`, runs independently, and exposes only the component capabilities needed by [CombinedPipeline](/design/combined-pipeline.md).
+Owns `src/pipelines/` and `pipeline_base.py`. Each paper implementation inherits `PipelineBase`, runs independently, and exposes its algorithm steps for composition in [CombinedPipeline](/design/combined-pipeline.md) and other hybrids.
 
 ## Public lifecycle
 
@@ -11,7 +11,23 @@ Owns `src/pipelines/` and `pipeline_base.py`. Each paper implementation inherits
 | `predict(inputs, generation_spec)` | Delegate to the learner's inference path; never select or train. |
 | `save(path)` / `load(path)` | Coordinate complete pipeline state, including model references, data position, memory, policy statistics, and RNG. |
 
-The base class owns common lifecycle validation and delegation. It does not contain a switch over paper names, a default replay algorithm, or placeholder implementations that return empty results. Unsupported component operations fail explicitly.
+The base class owns common lifecycle delegation through the generic runtime. It does not contain a switch over paper names or a default replay algorithm. Paper classes implement their supported component operations.
+
+## Initial callable implementation
+
+For the current logic-review stage, paper classes contain named algorithm steps and thin lifecycle composition. Inline algorithm/configuration validation, custom exceptions, and warning branches are omitted; callers supply valid paper settings and compatible models. Shared record validation remains in `contracts.py`, while generic execution, resource checks and checkpoint handling live in utilities. This review-stage scope supersedes the per-paper fail-fast requirements below until those checks are reinstated.
+
+Every pipeline supports `set_model(model)` for shared learner identity, `get_weights` / `set_weights` for detached weight transfer, `save_weights` / `load_weights` for weight files, and `get_policy_state` / `set_policy_state` for policy/RNG snapshots independent of a run. The hybrid binds the same learner object to all components. Fixed probes, references, subsets and historical teachers remain isolated roles. Weight transfer starts a new numerical training state; `save` / `load` retains the distinct full-resume semantics.
+
+`PipelineBase` declares these composition operations and lifecycle hooks. The generic `PipelineRuntime` mixin implements execution without importing paper classes; its lifecycle owner remains the standalone or combined pipeline instance.
+
+Paper numerical steps use Torch tensors on the shared learner's device, with CPU fallback for unbound components. Numerical results cross back to plain scalars/lists at policy, selection-record and checkpoint boundaries. Exact SIREN still includes all subset terms; signed similarities, loss differences and statistical clocks remain unchanged. Run identity records the resolved device and Torch version because backend changes need not reproduce identical floating-point decisions.
+
+Construct a paper pipeline with its explicit configuration and optional `model`/`dataset`, then call individual steps or `run(RunContext(model, dataset, spec, output))`. Models and datasets are injected adapters; this library does not select experimental inputs or implement the later run matrix. `RunSpec` requires finite update/pass limits, resource budgets, source/protocol identity, and a checkpoint cadence. The initial executor accepts one microbatch per update and keeps partial batches. Callers select a supported paper profile.
+
+The shared lifecycle drives open, training, memory construction, and evaluation phases. Paper methods implement the algorithm-specific transitions; the combined pipeline composes their public capabilities. Event boundaries persist cursors, pending branch/admissions, policy RNG, active auxiliary state and numerical learner state. Each supplied output directory is one attempt: `auto`, `required`, and `never` operate on that directory, with `never` refusing an existing attempt.
+
+Standalone OASIS exposes `historical_pool` (all observed records retained, memory-only sampling) and `current_only` (explicit bounded-access adaptation) profiles. Its logical arrival size and number of update opportunities are configuration, not claimed reproduction settings. Standalone aL-SAR's Greedy Balancing Sampler inserts each arriving record, then removes a uniformly chosen record from a largest class if over capacity; ties between largest classes are sampled uniformly. These choices are recorded pending pinned-code comparison.
 
 ## Component capabilities
 

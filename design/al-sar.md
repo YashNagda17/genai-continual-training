@@ -30,6 +30,8 @@ For each successful hybrid update, decay all active counts by `rho = 1 - B_eff/(
 - Update class similarities using the specified per-example gradients from the sampled parameter subset intersected with unfrozen layers. Store the subset identity, EMA state, update cadence, and behavior when no valid gradient pair exists.
 - Let the model executor apply the freeze plan and verify actual unchanged parameters. Account for parameter/activation backward work separately; `requires_grad=False` alone does not establish the claimed FLOP saving.
 
+The initial equation profile averages valid ordered, distinct-example cosine pairs for each class pair within an update, then applies one EMA update per observed class pair. An empty parameter intersection leaves that entry unchanged. First valid Fisher and feature observations initialize the EMAs directly; later observations use the configured coefficient of the new value. These estimator initialization/aggregation conventions are explicit and still need pinned-code comparison.
+
 ## Language-model boundary
 
 Native SAR uses class labels. A language-model task ID is not automatically a valid replacement, and target vocabulary tokens are not automatically sample classes. Require genuine class annotations or an explicitly documented training-only grouping adaptation before enabling SAR. If none is supplied, reject full aL-SAR; an aL-only ablation can remain available under its own name.

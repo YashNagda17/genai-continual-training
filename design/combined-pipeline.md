@@ -20,6 +20,8 @@ Validate the entire recipe before model allocation. Require explicit task bounda
 
 Record observed, probed, admitted, trained, replayed, and retained exposure separately. The task-chunk contract grants probes and task-end CSReL the full current training partition, including records not reached by the arrival cursor; log this auxiliary access separately. The protocol must fix pass/step/token limits, partial-batch handling, and exhaustion policy before running.
 
+Before the first update opportunity, the callable implementation keeps its already drawn branch and scans arrivals until it establishes at least one admitted current example or exhausts the stream. This also applies when replay probability is one; it gives the all-empty rule a terminating meaning without redrawing the branch. A retained current queue is consumed only on a current branch.
+
 ## Resume and residency
 
 Expose task phase, event watermark, pending admissions, samplers/RNG, auxiliary progress, and policy statistics to the [checkpoint/residency owner](/design/model-weights.md). Uncommitted atomic selection/probe work may restart from its preceding safe state; record recomputation cost.

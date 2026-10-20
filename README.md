@@ -4,6 +4,8 @@ This repository stores reusable skills, shared instructions, and helper scripts 
 
 The research workflow is in [ARCHITECTURE.md](/ARCHITECTURE.md); the current implementation blueprint is [design/README.md](/design/README.md).
 
+The four algorithm implementations and their combined pipeline are under [src/pipelines/](/src/pipelines/) and [src/combined_pipeline.py](/src/combined_pipeline.py). See [the Python API guide](/src/README.md) for model/dataset adapter obligations, configuration, recovery, and the deterministic test command.
+
 ## Implemented Markdown Files
 
 The repository currently contains these implemented workflow skill files under `skills/`:
@@ -36,7 +38,6 @@ The repo’s shared conventions in [skills/general_guidelines.md](/skills/genera
 - `results/challenger/`
 - `results/domain/`
 - `results/experiments/`
-- `results/code/`
 - `results/paper/`
 - `results/review/`
 - `results/summary.md`

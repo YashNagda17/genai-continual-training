@@ -156,3 +156,51 @@ Trimmed repeated overviews, caveats, generic folder descriptions, and duplicated
 Resolved branch/exhaustion and skipped-update semantics, SAR cold start/decay/profile choices, missing-teacher failures, replay eviction versus recovery retention, task commit/evaluation ordering, and isolated attempt outputs. Initial execution is one process/device; aL accumulation needs a separate aggregation contract. Model/data/protocol inputs and paper-code reconciliation remain explicit prerequisites.
 
 Converted authored Markdown links/templates to repository-root paths, repaired missing-rule references, and removed the machine-specific README link. Checked 232 concrete local links across 49 documents, all 14 design entries, 28 unchanged display equations, and four PDF hashes; normalization is idempotent. Runtime/training remains unimplemented; required behavioral checks are in `design/tests.md`. Resume, retention, the 700M ceiling, and the six-line `optimizations.md` rule remain required.
+
+---
+
+## [2026-10-20] Code Generation — Pipeline Algorithms
+
+**Stage:** code-generator.
+**Code/API:** [pipeline modules](/src/pipelines/), [combined pipeline](/src/combined_pipeline.py), and [adapter guide](/src/README.md).
+**Inputs:** current [design contracts](/design/README.md), [paper references](/Papers/README.md), and the request for pipeline algorithms with injected model/data implementations.
+
+**Implemented:** OASIS exact equation profile; TSR probing, source/teacher routing and KD objective delegation; native/hybrid aL-SAR retrieval and adaptive freezing; CSReL-CL/CL-Prv repeated auxiliary fitting and coreset construction; one composed learner lifecycle. Added abstract model/dataset methods, typed records, replay validation, total-parameter checks, phase-aware resume, bounded recovery retention, teacher dependencies, and on-demand numerical role residency.
+
+**Artifacts:** each attempt writes resolved configuration/identity/status JSON, long-form metrics CSV, committed event diagnostics, verified recovery state and required teachers. The configuration records explicit scientific inputs; no production model or dataset was selected.
+
+**Validation completed:** 32 deterministic tests passed in 103.762 seconds, including two-task standalone/hybrid runs and interruption/recovery comparisons. Syntax/import compilation, whitespace checks and 85 repository-root links passed. The test executor is a small squared-error model; these checks establish policy/orchestration behavior, not transformer or paper reproduction results.
+
+**Open boundaries:** concrete model/dataset adapters must implement numerical training, actual gradient representations, masking, optimizer freezing, KD, isolated RNG, hardware measurements and external asset accounting. GPU execution, author-code equivalence and scientific training remain unverified. The experiment matrix/CLI and optional CSReL-RS/KD variants remain outside this implementation.
+
+**Current claim:** the selected pipeline algorithms are callable and tested with injected numerical/data interfaces. No algorithmic novelty or scientific performance result is claimed; the sole idea log is unchanged.
+
+**Next action:** implement concrete adapters against the base classes, then validate backend gradient/loss/resume semantics before running the supplied experimental protocol.
+
+---
+
+## [2026-10-20] Code Generation — Modular Pipeline Steps
+
+**Stage:** code-generator.
+**Code/API:** [composition guide](/src/README.md), [pipeline classes](/src/pipelines/), and [model interface](/src/models/model_base.py).
+
+**Implemented:** separate public paper steps; shared learner replacement; detached weight and file handoff; independent policy/RNG snapshots. Moved generic lifecycle execution into utilities and consolidated replay/checkpoint storage and numerical/metric helpers. Removed explicit algorithm validation and exception handling from pipeline, model and dataset modules for the requested logic-review stage. Updated the contracts before implementing these interface changes.
+
+**Validation completed:** 38 tests passed in 108.144 seconds, including equations, handoff, two-task standalone/hybrid execution, recovery and retention. Python compilation passed. The squared-error test adapter does not validate transformer, LoRA/KD or GPU behavior. No scientific result or novel algorithm is claimed.
+
+**Next action:** review the named steps and implement concrete adapters; full backend validation remains necessary before experiments.
+
+**Review documentation follow-up:** added short helper comments and fuller algorithm/state explanations in the pipeline, adapter and utility methods. Executable ASTs are unchanged across 14 modules; compilation, whitespace and 18 equation/composition tests passed.
+
+---
+
+## [2026-10-20] Native Torch and Package Cleanup
+
+**Stage:** code-generator.
+**Code/API:** [adapter guide](/src/README.md), [model base](/src/models/model_base.py), and [numerical helpers](/src/utils/numerics.py).
+
+**Implemented:** native Torch policy calculations and model execution contracts; CUDA/ROCm and Intel XPU routing with CPU fallback; nested tensor transfer preserving dtypes/autograd; deterministic weighted sampling from saved policy RNG; Torch version/device in resume identity. Weight snapshots, shared learner identity and abstract concrete-adapter obligations remain available. Torch is declared in `requirements.txt`; package installation is deferred.
+
+**Cleanup:** removed the two requested dated Codegen reports and unnecessary package initializers. Agent rules now require namespace imports and explicitly needed initialization only. Training and inference use native Torch.
+
+**Validation:** the full suite ran 44 tests in 110.163 seconds: 43 passed and the real accelerator test skipped because no CUDA/ROCm or XPU device was available. The tiny Torch model exercised autograd, weight handoff, standalone/hybrid execution and recovery; routing mocks covered all requested backends. Compilation, namespace CLI imports, 83 local documentation links and scoped whitespace checks passed. GPU execution and production transformer/LoRA/KD behavior remain unverified; no scientific result is claimed.

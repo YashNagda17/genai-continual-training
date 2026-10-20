@@ -1,6 +1,8 @@
 # Shared records, storage, and measurement
 
-Owns `src/utils/`: typed records, replay storage, serialization, RNG, config validation, measurement, and metrics. Use small modules such as `contracts.py`, `replay.py`, `metrics.py`, and `artifacts.py`; paper formulas and model execution stay with their owners.
+Owns `src/utils/`: typed records, replay storage, serialization, RNG, config validation, measurement, and metrics. The callable implementation uses four logical files: `contracts.py` for records, `numerics.py` for shared math and metrics, `state.py` for replay/checkpoint storage, and `runtime.py` for generic lifecycle execution. Paper formulas stay in paper classes; numerical model execution remains in the model adapter. The runtime is a mixin using the owner's hooks and does not import concrete pipelines, models or datasets.
+
+`numerics.py` also owns Torch device selection and detached policy-tensor conversion. Numerical policy work follows the supplied tensor/model device; unbound list inputs use CPU. Policy arithmetic uses float64 on CPU and float32 on accelerators, including Intel devices without float64 support. Persistent policies, IDs and event records remain plain JSON values; transient gradients stay on their compute device. Weighted sampling uses a local CPU Torch generator seeded from the saved component RNG, without modifying global Torch RNG state. Nested tensor transfers preserve integer token/mask types and autograd state. Execution and inference remain native Torch.
 
 ## Boundary records
 
