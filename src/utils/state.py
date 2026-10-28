@@ -197,7 +197,7 @@ class Checkpoints:
 
     def latest(self):
         """Try the latest checkpoint, then its retained fallback, as complete recovery units.
-        Require matching run identity.
+        Require matching run identity and file checksums.
         Record a fallback in recovery.json so discarded progress is visible to the caller.
         """
         pointer = self.root / "latest.json"
@@ -210,6 +210,8 @@ class Checkpoints:
                 manifest = read_json(path / "complete.json")
                 if manifest["identity"] != self.identity:
                     raise ValueError("Scientific configuration or implementation changed")
+                if checksums(path) != manifest["files"]:
+                    raise ValueError("Checkpoint checksum mismatch")
                 if failures:
                     self.recovery = {"restored": name, "invalid": failures,
                                      "lost_work": "Uncheckpointed work is unmeasured"}

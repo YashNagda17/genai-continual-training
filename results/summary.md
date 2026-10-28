@@ -204,3 +204,11 @@ Converted authored Markdown links/templates to repository-root paths, repaired m
 **Cleanup:** removed the two requested dated Codegen reports and unnecessary package initializers. Agent rules now require namespace imports and explicitly needed initialization only. Training and inference use native Torch.
 
 **Validation:** the full suite ran 44 tests in 110.163 seconds: 43 passed and the real accelerator test skipped because no CUDA/ROCm or XPU device was available. The tiny Torch model exercised autograd, weight handoff, standalone/hybrid execution and recovery; routing mocks covered all requested backends. Compilation, namespace CLI imports, 83 local documentation links and scoped whitespace checks passed. GPU execution and production transformer/LoRA/KD behavior remain unverified; no scientific result is claimed.
+
+---
+
+## [2026-10-28] Compact Pipeline Tests
+
+Reduced the original [pipeline tests](/src/tests/test_pipelines.py) and [fixture](/src/tests/fakes.py) from 935 to 643 lines and 44 to 24 tests. Removed fixture/framework checks and redundant composition/recovery cases; retained equations, weight/policy handoff, routing, standalone/hybrid execution and representative recovery failures. Updated retained tests for the current resource-budget API and float32 arithmetic.
+
+The retained tests exposed missing enforcement of the mandatory 700M model cap and missing checkpoint checksum verification. Restored those checks in shared utilities. Validation: all 24 pipeline tests passed in 78.894 seconds with `python -m unittest src.tests.test_pipelines -q`; whitespace checks passed. These are tiny-model CPU checks, not production or accelerator validation.

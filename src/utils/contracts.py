@@ -176,6 +176,8 @@ class ModelInfo:
         """Check role metadata before allocating a learner, probe or teacher.
         Layer costs must align with the layer order, and legal prefixes leave a trainable path.
         """
+        if not 0 < self.total_parameters <= 700_000_000:
+            raise ValueError("Model roles must have at most 700M total parameters")
         if not 0 <= self.trainable_parameters <= self.total_parameters:
             raise ValueError("Invalid trainable parameter count")
         if min(self.cpu_bytes, self.accelerator_bytes, self.checkpoint_bytes) < 0:

@@ -49,7 +49,7 @@ def combined(rate=1, alpha=.5):
 
 def spec(**changes):
     base = RunSpec(("a", "b"), 17, 2, 5, 4, 1000, 2, "repeat_admitted", "per_example_mean",
-                   ReplayBudget(4, 1000, 100000), ResourceBudget(1000000, 1000000, 100000000),
+                   ReplayBudget(4, 1000, 100000), ResourceBudget(1000000, 1000000),
                    1, {"protocol": "tiny-interface-check", "adaptations": ["synthetic_model"]},
                    {"metric": "negative_mse"})
     return replace(base, **changes)
@@ -65,9 +65,9 @@ def run_pipeline(pipeline, root, run_spec=None, controller=None, dataset=None):
 class EquationTests(unittest.TestCase):
     def test_siren_keeps_higher_order_and_negative_cosine(self):
         values = OASISPipeline.siren(((2, 0), (1, 0), (1, 1)), ("a", "b", "c"))
-        self.assertAlmostEqual(values[0], 4)
-        self.assertAlmostEqual(values[2], 2 - 4 / math.sqrt(2))
-        self.assertAlmostEqual(values[1], 1 - 4 - 2 / math.sqrt(2) + 9 / math.sqrt(10))
+        self.assertAlmostEqual(values[0], 4, delta=1e-6)
+        self.assertAlmostEqual(values[2], 2 - 4 / math.sqrt(2), delta=1e-6)
+        self.assertAlmostEqual(values[1], 1 - 4 - 2 / math.sqrt(2) + 9 / math.sqrt(10), delta=1e-6)
         gradients = torch.tensor([[2., 0.], [-1., 0.]], requires_grad=True)
         self.assertEqual(OASISPipeline.siren(gradients, ("a", "b")), (4, 5))
         self.assertIsNone(gradients.grad)
@@ -80,8 +80,8 @@ class EquationTests(unittest.TestCase):
         result = pipeline.select_current(batch, model, "per_example_mean")
         self.assertEqual(result.provenance["previous_mean"], 0)
         average = (5 + 6.6125) / 2  # Hand-computed squared gradient norms.
-        self.assertAlmostEqual(pipeline.policy["mean"], .2 * average)
-        self.assertAlmostEqual(pipeline.policy["variance"], .2 * average ** 2 + .8)
+        self.assertAlmostEqual(pipeline.policy["mean"], .2 * average, delta=1e-6)
+        self.assertAlmostEqual(pipeline.policy["variance"], .2 * average ** 2 + .8, delta=1e-6)
         selected = tuple(i for i, p in zip(result.candidate_ids, result.probabilities)
                          if p > result.provenance["draw"])
         self.assertEqual(selected, result.selected_ids)
@@ -101,7 +101,7 @@ class EquationTests(unittest.TestCase):
         pipeline.policy["similarity"] = {"x": {"y": -1.}}
         self.assertEqual(pipeline.effective_frequencies(rows), (1, 2))
         probabilities = pipeline.probabilities(rows)
-        self.assertAlmostEqual(probabilities[0], 1 / (1 + math.exp(-1)))
+        self.assertAlmostEqual(probabilities[0], 1 / (1 + math.exp(-1)), delta=1e-6)
 
     def test_sar_decay_multiplicity_and_eviction(self):
         pipeline = sar(True)
@@ -135,14 +135,17 @@ class EquationTests(unittest.TestCase):
         pipeline = sar(True)
         rows = (record("a0", label="x"), record("a1", label="y"))
         pipeline.update_similarities(rows, ((1, 0), (-1, 0)))
-        self.assertEqual(pipeline.policy["similarity"], {"x": {"y": -.2}, "y": {"x": -.2}})
+        torch.testing.assert_close(pipeline.policy["similarity"],
+                                   {"x": {"y": -.2}, "y": {"x": -.2}}, rtol=1e-5, atol=1e-6)
         before = copy.deepcopy(pipeline.policy["similarity"])
         pipeline.update_similarities(rows, None)
         self.assertEqual(pipeline.policy["similarity"], before)
         pipeline.update_fisher((1, 10))
         pipeline.update_feature_statistics(1)
-        self.assertEqual(pipeline.information_per_cost(TinyModel().info), (11 / 7, 10 / 3))
-        self.assertEqual(pipeline.freezing_scores(0, TinyModel().info), (0, 40 / 3))
+        torch.testing.assert_close(pipeline.information_per_cost(TinyModel().info),
+                                   (11 / 7, 10 / 3), rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(pipeline.freezing_scores(0, TinyModel().info),
+                                   (0., 40 / 3), rtol=1e-5, atol=1e-6)
 
     def test_tsr_distribution_coherent_sources_and_ties(self):
         pipeline = tsr()
@@ -153,7 +156,7 @@ class EquationTests(unittest.TestCase):
             "b": {"signature": dict(signature, values=[0., 1.]), "teacher": "teacher-b"}}
         replay = ReplayStore((record("a0"), record("b0", "b")), budget=spec().replay)
         plan = pipeline.route_replay(signature, replay)
-        self.assertAlmostEqual(plan.probabilities[0], 1 / (1 + math.exp(-2)))
+        self.assertAlmostEqual(plan.probabilities[0], 1 / (1 + math.exp(-2)), delta=1e-6)
         self.assertEqual(plan.current_teacher, "a")
         pipeline.policy["tasks"]["b"]["signature"] = signature
         self.assertEqual(pipeline.route_replay(signature, replay).current_teacher, "a")
@@ -164,8 +167,8 @@ class EquationTests(unittest.TestCase):
         self.assertEqual(quotas(("c", "a", "b"), 2), {"a": 1, "b": 1, "c": 0})
         self.assertIsNone(continual_metrics([[.5]], 0)["forgetting"])
         result = continual_metrics([[.5], [.7, .8]], 1)
-        self.assertAlmostEqual(result["forgetting"], -.2)
-        self.assertAlmostEqual(result["backward_transfer"], .2)
+        self.assertAlmostEqual(result["forgetting"], -.2, delta=1e-6)
+        self.assertAlmostEqual(result["backward_transfer"], .2, delta=1e-6)
 
 
 class CompositionTests(unittest.TestCase):
@@ -216,7 +219,7 @@ class CompositionTests(unittest.TestCase):
             pipeline.accumulate_probe(pipeline.probe_batch(batch, model, "per_example_mean"), batch.ids)
         signature = pipeline.task_signature(model, "per_example_mean")
         self.assertEqual(signature["ids"], ["a0", "a1"])
-        self.assertEqual(signature["values"], [-1, -1.7])
+        torch.testing.assert_close(signature["values"], [-1., -1.7], rtol=1e-5, atol=1e-6)
         self.assertEqual(pipeline.retrieve_replay((), 2), ())
 
 
@@ -380,10 +383,8 @@ class LifecycleTests(unittest.TestCase):
             replace(model.info, total_parameters=700_000_001).validate()
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
-                run_pipeline(oasis(), root, spec(resources=ResourceBudget(1, 0, 100)))
+                run_pipeline(oasis(), root, spec(resources=ResourceBudget(1, 0)))
             self.assertFalse(Path(root, "latest.json").exists())
-        with self.assertRaises(ValueError):
-            spec(accumulation=2)
 
     def test_replay_denies_evicted_records_and_all_units(self):
         store = ReplayStore((record("a0"), record("a1")), budget=ReplayBudget(2, 4, 10000))
