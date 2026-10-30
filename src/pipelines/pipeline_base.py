@@ -37,10 +37,15 @@ class PipelineBase(PipelineRuntime, ABC):
         Update any bound context as well, so later lifecycle calls use the replacement.
         No weights or optimizer state are copied; callers switch between completed operations.
         """
+        if self.context is not None and self.model is not None and self.model is not model:
+            self.model.offload()
         for component in self.components().values():
             component.model = model
             if component.context is not None:
                 component.context.model = model
+        if self.context is not None:
+            model.bind_runtime(self.context.output, self.context.spec.resources)
+            model.bind_dataset(self.context.dataset)
         return self
 
     def get_weights(self):

@@ -34,6 +34,8 @@ The injected Python adapter additionally exposes `training_view(task_id)`, `eval
 
 ## Batch contract
 
+Model-provided preprocessing sets `allow_reasoning=False`. Targets containing `<think>`/`</think>` or `<analysis>`/`</analysis>` are dropped with a recorded reason, without silently rewriting responses. Older standalone preprocessing configurations keep their existing behavior unless this option is set.
+
 `collate` builds native Torch tensor payloads, normally on CPU. The model adapter transfers them to its resolved device and chooses supported floating-point precision while preserving integer token IDs and boolean masks. Persist record manifests as plain JSON; transient collated tensors are reconstructed after resume.
 
 Every batch carries ordered IDs, task/origin labels, tensors or payloads, valid-token masks, supervised-token masks, and valid counts. For causal SFT, supervise only the configured response tokens; exclude padding and masked prompt tokens. Record the EOS and truncation policy. Reject or explicitly drop examples with no supervised target tokens; do not turn them into zero-loss examples.

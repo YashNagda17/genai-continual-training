@@ -32,3 +32,15 @@ Keep the routine suite compact: hand-computed equations, weight/policy handoff, 
 Keep ablations distinguishable from missing features. A test skipping unavailable gradient support must not mark a pipeline fully validated. Record failure and unavailable checks explicitly. Do not write brittle tests for Markdown wording, class-name existence alone, or private implementation structure.
 
 Report executed, failed, and unavailable checks.
+
+## Setup check
+
+`SetupModelTests` in [test_pipelines.py](/src/tests/test_pipelines.py) loads the three cached causal language models and runs one short forward on the resolved device. It is skipped unless `GENAI_SETUP_TESTS=1`.
+
+Run it only when the task is setup: confirming downloaded weights, the Torch build, or accelerator placement. Do not run it for algorithm, pipeline, contract, or paper changes, and do not add it to the routine command below. A passing routine suite does not require this check.
+
+```sh
+GENAI_SETUP_TESTS=1 python -m unittest src.tests.test_pipelines.SetupModelTests -v
+```
+
+`resolve_device` prints to stderr when the resolved device is CPU, including an explicit `cpu` choice and a fallback from a missing CUDA or XPU device. That line means the run is not on an accelerator; pass `device="xpu:0"` or `device="cuda:0"` when that device is present.

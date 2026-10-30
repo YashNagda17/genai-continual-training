@@ -1,6 +1,6 @@
 """Generic lifecycle execution; the owner supplies all paper policies."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import copy
 import csv
@@ -53,7 +53,8 @@ class PipelineRuntime:
             "torch": torch.__version__, "device": str(self.model.device),
             "implementation": fingerprint(code), "design": fingerprint(design),
         }
-        self.artifacts = Checkpoints(context.output, fingerprint(self.resolved))
+        self.artifacts = Checkpoints(context.output, fingerprint(self.resolved), self.spec.resources.disk_bytes,
+                                     external_bytes=lambda: self.model.base_storage_bytes)
 
     def _activate(self, model):
         """Validate metadata, activate the wrapper and verify its loaded parameter counts.
@@ -384,10 +385,9 @@ class PipelineRuntime:
     @staticmethod
     def report_summary(report):
         """Copy report fields for persistence while dropping transient per-example gradient arrays."""
-        result = asdict(report)
-        # Per-example gradient arrays are transient executor observations.
-        result["diagnostics"].pop("class_gradients", None)
-        return result
+        # Exclude transient arrays before asdict can duplicate a large tensor buffer.
+        diagnostics = {k: v for k, v in report.diagnostics.items() if k != "class_gradients"}
+        return asdict(replace(report, diagnostics=diagnostics))
 
     def current_batch(self, selector=None, *, peek=False):
         """Scan arrivals until admission produces a queued batch or the current view is exhausted.

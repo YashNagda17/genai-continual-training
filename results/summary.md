@@ -207,8 +207,15 @@ Converted authored Markdown links/templates to repository-root paths, repaired m
 
 ---
 
-## [2026-10-28] Compact Pipeline Tests
+## [2026-10-30] Concrete Torch Model Adapters
 
-Reduced the original [pipeline tests](/src/tests/test_pipelines.py) and [fixture](/src/tests/fakes.py) from 935 to 643 lines and 44 to 24 tests. Removed fixture/framework checks and redundant composition/recovery cases; retained equations, weight/policy handoff, routing, standalone/hybrid execution and representative recovery failures. Updated retained tests for the current resource-budget API and float32 arithmetic.
+**Stage:** code-generator.
+**Code/API:** [Qwen3](/src/models/model_qwen3.py), [LFM2.5](/src/models/model_lfm25.py), [SmolLM2](/src/models/model_smollm2.py), [shared executor](/src/models/model_causal_lm.py), and [usage guide](/src/README.md).
 
-The retained tests exposed missing enforcement of the mandatory 700M model cap and missing checkpoint checksum verification. Restored those checks in shared utilities. Validation: all 24 pipeline tests passed in 78.894 seconds with `python -m unittest src.tests.test_pipelines -q`; whitespace checks passed. These are tiny-model CPU checks, not production or accelerator validation.
+**Implemented:** the three requested architecture profiles with shared native Torch training and inference. The executor supplies full fine-tuning and native LoRA, response-masked causal losses, head/subset/LoRA-B gradients, exact masked teacher KL, supervised Fisher/feature statistics, adaptive freezing, generation and evaluation. Transformers supplies architectures and tokenizers; external inference backends are not used.
+
+**State integration:** lazy role construction, unique parameter counts and the 700M ceiling, isolated numerical roles, GPU routing with CPU fallback, bounded disk offload, immutable base references, full resume state, and independent weight handoff. Replacing a learner binds the receiving runtime's dataset and storage budget. Exact resume records Torch/device identity; frozen weight transfer retains architecture compatibility.
+
+**Non-thinking inputs:** Qwen templates always use `enable_thinking=False`; preprocessing drops reasoning-tagged targets, masks prompt/padding labels and records the tokenizer/template identity. The same preprocessing contract applies during training and evaluation.
+
+**Execution boundary:** no tests or verification commands ran in this continuation, as requested. No test files were added, packages installed or production weights downloaded. Production architecture and GPU execution remain unverified. No scientific performance result or novel algorithm is claimed.

@@ -1,26 +1,44 @@
 """Torch policy arithmetic, device routing and shared metrics."""
 
+import sys
+
 import torch
+
+_cpu_notices = set()
+
+
+def _notice_cpu(reason):
+    """Print each distinct CPU placement once so an accelerator miss is visible."""
+    if reason in _cpu_notices:
+        return
+    _cpu_notices.add(reason)
+    print(f"Using CPU: {reason}", file=sys.stderr, flush=True)
 
 
 def resolve_device(preferred="auto"):
     """Route CUDA/ROCm, then Intel XPU, with CPU as the available-device fallback.
     Explicit CPU avoids accelerator probing; indexed requests keep a valid device index.
+    CPU results are printed so a fallback is not silent.
     """
     if preferred is None or str(preferred) == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda:0")
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             return torch.device("xpu:0")
+        _notice_cpu("no CUDA or XPU is available. Pass device=\"cuda:0\" or device=\"xpu:0\" "
+                    "when an accelerator is present.")
         return torch.device("cpu")
     device = torch.device(preferred)
     if device.type == "cpu":
+        _notice_cpu("device was set to cpu. Pass device=\"cuda:0\" or device=\"xpu:0\" "
+                    "to run on an accelerator.")
         return device
     backend = getattr(torch, device.type, None)
     if (device.type in {"cuda", "xpu"} and backend is not None
             and backend.is_available()
             and (device.index is None or device.index < backend.device_count())):
         return device
+    _notice_cpu(f"requested {preferred} is not available. Pass an available cuda:N or xpu:N device.")
     return torch.device("cpu")
 
 
@@ -39,12 +57,12 @@ def move_to_device(value, device):
 
 def tensor(values, device=None):
     """Detach policy inputs and keep tensor inputs on their device unless explicitly moved.
-    Use float32 on CPU for reference arithmetic and float16 on accelerators for portability.
+    Use float32 so squared gradients stay in the same precision as the model.
     Python sequences default to CPU; callers with a model pass its resolved device.
     """
     target = torch.device(device) if device is not None else (
         values.device if isinstance(values, torch.Tensor) else torch.device("cpu"))
-    dtype = torch.float32 if target.type == "cpu" else torch.float16
+    dtype = torch.float32
     if isinstance(values, torch.Tensor):
         return values.detach().to(device=target, dtype=dtype)
     return torch.as_tensor(values, dtype=dtype, device=target)

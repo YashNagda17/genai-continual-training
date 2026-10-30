@@ -197,6 +197,7 @@ class ModelInfo:
 class ResourceBudget:
     cpu_bytes: int
     accelerator_bytes: int
+    disk_bytes: int = 10_000_000_000
 
     def validate_role(self, info):
         """Check one role against CPU/device bounds; aggregate payload checks belong to runtime."""
@@ -240,7 +241,14 @@ class RunSpec:
         spec = asdict(self)
         for key in ("resume", "checkpoint_every"):
             spec.pop(key)
+        spec["resources"].pop("disk_bytes")
         return spec
+
+
+def model_boundary(condition, message):
+    """Validate a concrete model's shape, identity or allocation request at its boundary."""
+    if not condition:
+        raise ValueError(message)
 
 
 @dataclass

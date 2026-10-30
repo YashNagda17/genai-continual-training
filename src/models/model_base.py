@@ -9,6 +9,21 @@ class ModelBase(ABC):
     def __init__(self, device="auto"):
         """Resolve Torch placement without loading model weights or allocating model tensors."""
         self.device = resolve_device(device)
+        self.runtime_root = None
+
+    def bind_runtime(self, output, resources):
+        """Give concrete executors a run-owned location for bounded numerical offload state."""
+        self.runtime_root = output
+
+    def bind_dataset(self, dataset):
+        """Inject collation callbacks while keeping dataset implementations outside model code."""
+        self.collate = dataset.collate
+        self.collate_prompts = getattr(dataset, "collate_prompts", None)
+
+    @property
+    def base_storage_bytes(self):
+        """Immutable external model assets charged alongside run-owned artifacts."""
+        return 0
 
     def to_device(self, payload):
         """Move nested batch tensors to this model while preserving dtypes and autograd state."""

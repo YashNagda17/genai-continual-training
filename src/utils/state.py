@@ -66,10 +66,12 @@ def synchronize(path):
 
 
 class Checkpoints:
-    def __init__(self, root, identity):
+    def __init__(self, root, identity, disk_bytes=10_000_000_000, external_bytes=0):
         """Keep attempt identity; create files only when operations need them."""
         self.root = Path(root)
         self.identity = identity
+        self.disk_bytes = disk_bytes
+        self.external_bytes = external_bytes
         self.recovery = None
         self._locked = False
 
@@ -93,7 +95,11 @@ class Checkpoints:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def reserve(self, additional):
-        """Check actual free space before staging bytes."""
+        """Charge retained artifacts and offload files before allocating a staging checkpoint."""
+        used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
+        external = self.external_bytes() if callable(self.external_bytes) else self.external_bytes
+        if used + external + additional > self.disk_bytes:
+            raise OSError("Run storage budget cannot hold checkpoint staging")
         if shutil.disk_usage(self.root).free < additional:
             raise OSError("Insufficient free disk space for checkpoint staging")
 
@@ -279,3 +285,27 @@ def save_weights(model, path):
     path.mkdir(parents=True, exist_ok=True)
     model.save(path, "frozen")
     return path
+
+
+def base_assets(path):
+    """Hash immutable model-cache assets, following content-addressed cache symlinks."""
+    result = {}
+    for file in sorted(Path(path).rglob("*")):
+        if file.is_file():
+            with file.open("rb") as stream:
+                result[str(file.relative_to(path))] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return result
+
+
+def tensor_fingerprint(value):
+    """Hash Torch serialization as a stream instead of collecting a second checkpoint in RAM."""
+    import torch
+    digest = hashlib.sha256()
+    class DigestWriter:
+        def write(self, data):
+            digest.update(data)
+            return len(data)
+        def flush(self):
+            pass
+    torch.save(value, DigestWriter())
+    return digest.hexdigest()

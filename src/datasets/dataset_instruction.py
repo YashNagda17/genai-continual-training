@@ -33,11 +33,13 @@ class InstructionPreprocessing:
     max_length: int
     identity: dict
     truncation: str = "drop"
+    allow_reasoning: bool = True
 
     def describe(self):
         """JSON identity of the pinned tokenizer/template; callables are identified by `identity`."""
         return {"identity": self.identity, "eos_id": self.eos_id, "pad_id": self.pad_id,
-                "max_length": self.max_length, "truncation": self.truncation}
+                "max_length": self.max_length, "truncation": self.truncation,
+                "allow_reasoning": self.allow_reasoning}
 
 
 def _storage_bytes(record):
@@ -144,6 +146,10 @@ class InstructionDataset(DatasetBase):
         for name in SPLITS:
             kept = []
             for r in view.get(name, ()):
+                if not spec.allow_reasoning and any(tag in r.target["text"].lower()
+                        for tag in ("<think>", "</think>", "<analysis>", "</analysis>")):
+                    dropped.append({"sample_id": r.sample_id, "reason": "reasoning_response"})
+                    continue
                 prompt = list(spec.encode(spec.render(r.inputs["messages"])))
                 response = list(spec.encode(r.target["text"])) + [spec.eos_id]
                 if len(response) == 1:

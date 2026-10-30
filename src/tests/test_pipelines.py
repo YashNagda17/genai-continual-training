@@ -3,6 +3,7 @@ from pathlib import Path
 import copy
 import json
 import math
+import os
 import random
 import tempfile
 import unittest
@@ -394,6 +395,39 @@ class LifecycleTests(unittest.TestCase):
         for budget in (ReplayBudget(0, 10, 1000), ReplayBudget(10, 1, 1000), ReplayBudget(10, 10, 1)):
             with self.assertRaises(ValueError):
                 ReplayStore((record("a0"),), budget=budget)
+
+
+@unittest.skipUnless(os.environ.get("GENAI_SETUP_TESTS") == "1",
+                     "setup-only check of cached weights and device placement")
+class SetupModelTests(unittest.TestCase):
+    """Load each cached causal LM and run one short forward on the resolved device.
+
+    Skipped unless GENAI_SETUP_TESTS=1. Routine algorithm runs must not enable it.
+    """
+
+    def test_models_load_and_forward_on_device(self):
+        from ..models.model_causal_lm import CausalLMSettings
+        from ..models.model_lfm25 import LFM25Model
+        from ..models.model_qwen3 import Qwen3Model
+        from ..models.model_smollm2 import SmolLM2Model
+        settings = CausalLMSettings(rank=4, alpha=8, max_length=32, max_batch_size=1,
+                                    working_bytes=64 * 1024 ** 2, max_score_bytes=64 * 1024 ** 2)
+        for cls in (SmolLM2Model, LFM25Model, Qwen3Model):
+            model = cls(settings, device="auto")
+            print(f"setup {cls.__name__} device={model.device}", flush=True)
+            model.activate()
+            try:
+                parameter = next(model.module.parameters())
+                self.assertEqual(parameter.device.type, model.device.type)
+                self.assertEqual(parameter.dtype, torch.float32)
+                token_ids = torch.randint(1, 32, (1, 8), device=model.device)
+                mask = torch.ones_like(token_ids, dtype=torch.bool)
+                with torch.no_grad():
+                    logits = model.module(input_ids=token_ids, attention_mask=mask, use_cache=False).logits
+                self.assertEqual(logits.device.type, model.device.type)
+                self.assertTrue(bool(torch.isfinite(logits).all()))
+            finally:
+                model.release()
 
 
 if __name__ == "__main__":
