@@ -1,6 +1,6 @@
 # Raw and prepared data storage
 
-Owns `src/datasets/data/`.
+Owns `src/datasets/data/`. `download_clinc_oos.sh` writes the `plus` configuration of `clinc/clinc_oos` there as canonical JSONL: one task `clinc`, the intent name as `class` and as the supervised response, and the Hub splits `train` / `validation` / `test` unchanged, including out-of-scope.
 
 - Namespace artifacts by dataset ID and immutable source revision. Record source URI/local origin, checksum, schema, and source usage constraints where supplied. Do not treat a mutable upstream dataset name as a revision.
 - Keep downloaded raw data immutable. Derived split/preprocessing artifacts must have separate fingerprints, including split seed/grouping, tokenizer/template revision, normalization, and truncation rules.

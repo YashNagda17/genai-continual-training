@@ -3,5 +3,6 @@
 __pycache__/
 /data/*
 /src/models/model_weights/
+/src/datasets/data/
 hf_token.txt
 
