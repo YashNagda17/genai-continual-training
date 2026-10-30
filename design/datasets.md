@@ -1,6 +1,6 @@
 # Datasets and DatasetBase
 
-Owns `src/datasets/`, `dataset_base.py`, and one concrete subclass per source format or processing behavior. Different dataset names with identical processing use configuration, not duplicate classes. Raw storage is governed by [data.md](/design/data.md).
+Owns `src/datasets/`, `dataset_base.py`, and one concrete subclass per source format or processing behavior. Different dataset names with identical processing use configuration, not duplicate classes. CLINC, Schuster, Bitext, and TRACE share [InstructionDataset](/src/datasets/dataset_instruction.py). Their fetch classes in `dataset_sources.py` only convert source files into that JSONL schema. Raw storage is governed by [data.md](/design/data.md).
 
 Produce identifiable, reproducible records and causal task views. Dataset code does not decide replay membership, importance scores, optimization, or paper-specific task grouping.
 

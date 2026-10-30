@@ -96,8 +96,10 @@ class ModelBase(ABC):
         """
 
     @abstractmethod
-    def evaluate(self, view, evaluation_spec):
-        """Return finite named metrics; preserve all numerical/training/RNG state."""
+    def evaluate(self, view, evaluation_spec, progress=None):
+        """Return finite named metrics; preserve all numerical/training/RNG state.
+        When progress is set, call progress(done, total) after each scored batch.
+        """
 
     @abstractmethod
     def predict(self, inputs, generation_spec):

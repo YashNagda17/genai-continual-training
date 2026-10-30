@@ -1,6 +1,13 @@
 # Raw and prepared data storage
 
-Owns `src/datasets/data/`. `download_clinc_oos.sh` writes the `plus` configuration of `clinc/clinc_oos` there as canonical JSONL: one task `clinc`, the intent name as `class` and as the supervised response, and the Hub splits `train` / `validation` / `test` unchanged, including out-of-scope.
+Owns `src/datasets/data/`. `download_datasets.sh` calls the source fetchers in `src/datasets/dataset_sources.py`. Each fetcher writes canonical JSONL for [InstructionDataset](/src/datasets/dataset_instruction.py): one directory `src/datasets/data/<dataset_id>/<commit>/` with `records.jsonl` and `manifest.json`. Importing a fetcher does not download. A second fetch of the same commit returns the existing files when the checksum matches and refuses to overwrite different bytes.
+
+| Dataset | Source | Tasks and labels |
+|---|---|---|
+| `clinc_oos` | `clinc/clinc_oos`, config `plus` | One task `clinc`. The intent name is `class` and the supervised response. Official `train` / `validation` / `test`, including out-of-scope. Truncation `drop`. |
+| `schuster` | `edmdias/multilingual-task-oriented-dialog`, config `en` | Tasks are the intent prefix `alarm`, `reminder`, and `weather`. The full intent label is `class` and the supervised response. Slots are not supervised. Hub `eval` is stored as `validation`. License CC-BY-SA-4.0. Truncation `drop`. |
+| `bitext_customer_support` | `bitext/Bitext-customer-support-llm-chatbot-training-dataset` | Task is the category. `class` is the intent. The supervised response is the assistant reply. The file has no official split: within each category, seed 0 assigns the first 10% of instruction groups to test and the next 10% to validation, with the percentage truncated toward zero. License CDLA-Sharing-1.0. Truncation `prompt_left`. |
+| `trace` | `YeMoKoo/TRACE` file `TRACE-Benchmark.zip`, subset `LLM-CL-Benchmark_5000` | Eight tasks in benchmark order: C-STANCE, FOMC, MeetingBank, Py150, ScienceQA, NumGLUE-cm, NumGLUE-ds, 20Minuten. Lima is not part of this stream. `eval.json` is `validation`. `class` is the answer for FOMC, C-STANCE, NumGLUE-cm, and NumGLUE-ds, and the leading `A`–`D` choice for ScienceQA. MeetingBank, Py150, and 20Minuten have no class. The supervised response is the full answer. Truncation `prompt_left`. |
 
 - Namespace artifacts by dataset ID and immutable source revision. Record source URI/local origin, checksum, schema, and source usage constraints where supplied. Do not treat a mutable upstream dataset name as a revision.
 - Keep downloaded raw data immutable. Derived split/preprocessing artifacts must have separate fingerprints, including split seed/grouping, tokenizer/template revision, normalization, and truncation rules.

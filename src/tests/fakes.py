@@ -220,8 +220,10 @@ class TinyModel(ModelBase):
                     skip_reason="test overflow" if skip else None))
         return reports
 
-    def evaluate(self, view, evaluation_spec):
+    def evaluate(self, view, evaluation_spec, progress=None):
         self.controller.hit("evaluate")
+        if progress is not None and view:
+            progress(len(view), len(view))
         inputs = self._weights.new_tensor([r.inputs for r in view])
         targets = self._weights.new_tensor([r.target for r in view])
         return {"negative_mse": -(inputs @ self._weights.detach() - targets).square().mean().item()}

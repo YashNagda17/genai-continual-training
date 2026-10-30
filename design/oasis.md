@@ -33,7 +33,7 @@ A differing released-code profile needs a separate method identifier and tests.
 ## Cost and numerical boundaries
 
 - SIREN's literal higher-order subset sum can grow exponentially with batch size. Implement a tiny exact reference and enforce a feasible configured selection-batch limit. Any truncation, sketch, or recursive approximation requires a documented derivation or an adaptation label; silently dropping Eq. 8 terms is prohibited.
-- Last-layer gradient computation still costs a model forward and some backward work. Declare the exact layer/parameter view. A frozen/tied language-model head requires capability checks and cost accounting; do not unfreeze the learner merely to score examples.
+- Last-layer gradient computation for one arrival is one decoder forward and one decoder backward for the whole batch, still returning one gradient vector per example. Declare the exact layer/parameter view. A frozen/tied language-model head requires capability checks and cost accounting; do not unfreeze the learner merely to score examples.
 - Define zero-norm cosine as zero contribution and preserve negative adjusted scores; do not clamp them without a named variant. Reject nonfinite input statistics. Require positive normalization scale after the declared numerical floor.
 - The normal approximation is a modeling assumption, not a guarantee under shifting data. A target selection rate is an expected rate; record the realized rate and do not enforce an exact per-batch quota. Explicit rates zero/one may use deterministic none/all controls.
 - Keep `mu`, `var`, arrival count, threshold/calibration, parameter-view fingerprint, and RNG in checkpoints. Temporary gradients and `H` are released after the decision.

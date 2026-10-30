@@ -1,0 +1,296 @@
+"""Fetch CLINC, Schuster, Bitext, and TRACE into the shared instruction JSONL schema.
+
+These classes convert source files. They are not DatasetBase subclasses: identical
+instruction processing stays in InstructionDataset. Importing this module does not download.
+"""
+
+from pathlib import Path
+import hashlib
+import json
+import random
+import re
+import zipfile
+
+from .dataset_instruction import InstructionDataset
+
+SPLITS = ("train", "validation", "test")
+TRACE_TASKS = ("C-STANCE", "FOMC", "MeetingBank", "Py150", "ScienceQA",
+               "NumGLUE-cm", "NumGLUE-ds", "20Minuten")
+TRACE_CHOICE = {"FOMC", "C-STANCE"}
+TRACE_ANSWER = {"NumGLUE-cm", "NumGLUE-ds"}
+SPLIT_NAMES = {"train": "train", "eval": "validation", "validation": "validation", "test": "test"}
+
+
+def canonical(source_id, task, split, prompt, response, label, group=None):
+    """One instruction row. A missing class stays JSON null and is not invented from the task."""
+    row = {"id": source_id, "task": task, "split": split, "prompt": prompt,
+           "response": response, "class": label}
+    if group is not None:
+        row["group"] = group
+    return row
+
+
+def clinc_rows(by_split, names):
+    """Map plus-split texts and intent indexes to one task whose response is the intent name."""
+    rows = []
+    for split in SPLITS:
+        for index, (text, intent) in enumerate(by_split[split]):
+            label = names[int(intent)]
+            prompt = str(text).strip()
+            if prompt:
+                rows.append(canonical(f"{split}-{index:05d}", "clinc", split, prompt, label, label))
+    return rows
+
+
+def schuster_rows(by_split):
+    """Map English intent rows. The task is the domain prefix; slots are omitted."""
+    rows = []
+    for raw_split in ("train", "eval", "validation", "test"):
+        if raw_split not in by_split:
+            continue
+        split = SPLIT_NAMES[raw_split]
+        for index, row in enumerate(by_split[raw_split]):
+            intent = str(row["intent_label"]).strip()
+            prompt = str(row["untokenized_utterance"]).strip()
+            if intent and prompt:
+                rows.append(canonical(f"{split}-{index:05d}", intent.split("/", 1)[0],
+                                      split, prompt, intent, intent))
+    return rows
+
+
+def bitext_rows(records, seed=0):
+    """Assign a seeded group holdout because the source file is one train split.
+
+    Within each category, the first 10% of instruction groups are test and the next
+    10% are validation. The percentage is truncated toward zero.
+    """
+    groups = {}
+    for index, row in enumerate(records):
+        category = str(row["category"]).strip()
+        instruction = str(row["instruction"]).strip()
+        groups.setdefault(category, {}).setdefault(instruction, []).append(index)
+    chosen = {}
+    for category, members in groups.items():
+        names = sorted(members)
+        random.Random(f"{seed}:{category}").shuffle(names)
+        n_test = int(len(names) * 0.1)
+        n_val = int(len(names) * 0.1)
+        test, validation = set(names[:n_test]), set(names[n_test:n_test + n_val])
+        for name in names:
+            split = "test" if name in test else "validation" if name in validation else "train"
+            for index in members[name]:
+                chosen[index] = split
+    rows = []
+    for index, row in enumerate(records):
+        prompt = str(row["instruction"]).strip()
+        response = str(row["response"]).strip()
+        label = str(row["intent"]).strip()
+        if prompt and response and label:
+            rows.append(canonical(f"{index:05d}", str(row["category"]).strip(), chosen[index],
+                                  prompt, response, label,
+                                  hashlib.sha256(prompt.encode()).hexdigest()))
+    return rows
+
+
+def trace_class(task, answer):
+    """Return a genuine label. Generation tasks and unlabeled ScienceQA answers stay unset."""
+    text = answer.strip()
+    if task in TRACE_CHOICE or task in TRACE_ANSWER:
+        return text
+    if task == "ScienceQA" and text[:1] in "ABCD" and (len(text) == 1 or text[1] == "\n"):
+        return text[0]
+    return None
+
+
+def trace_rows(tasks):
+    """Convert the eight TRACE-5000 tasks. Lima is not a task in this stream."""
+    rows = []
+    for task in TRACE_TASKS:
+        files = tasks[task]
+        for raw_split, split in (("train", "train"), ("eval", "validation"), ("test", "test")):
+            for index, row in enumerate(files[raw_split]):
+                prompt = str(row["prompt"]).strip()
+                answer = row.get("answer")
+                if prompt and isinstance(answer, str) and answer.strip():
+                    rows.append(canonical(f"{task}-{split}-{index:05d}", task, split,
+                                          prompt, answer, trace_class(task, answer)))
+    return rows
+
+
+def publish(root, dataset_id, source, revision, rows, extra):
+    """Write canonical JSONL and its manifest. Matching bytes are kept; different bytes are refused."""
+    counts = {split: sum(row["split"] == split for row in rows) for split in SPLITS}
+    if counts["train"] == 0:
+        raise ValueError(f"{dataset_id} produced no training records")
+    task_counts = {}
+    for row in rows:
+        bucket = task_counts.setdefault(row["task"], {split: 0 for split in SPLITS})
+        bucket[row["split"]] += 1
+    out = Path(root) / dataset_id / revision
+    payload = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+    encoded = payload.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    records = out / "records.jsonl"
+    manifest_path = out / "manifest.json"
+    if records.exists():
+        if hashlib.sha256(records.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"Refusing to overwrite {records} with different content")
+        if manifest_path.exists():
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if saved.get("sha256") != digest:
+                raise ValueError(f"Manifest checksum does not match {records}")
+            return out
+    out.mkdir(parents=True, exist_ok=True)
+    records.write_bytes(encoded)
+    manifest = {"dataset_id": dataset_id, "source": source, "revision": revision,
+                "counts": counts, "task_counts": task_counts,
+                "task_order": list(dict.fromkeys(row["task"] for row in rows)),
+                "records": len(rows), "sha256": digest, **extra}
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
+
+
+def load_instruction_source(directory):
+    """Load a fetched directory, verify its checksum, and keep the source manifest on the dataset."""
+    directory = Path(directory)
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    dataset = InstructionDataset()
+    raw, _ = dataset.load({"path": directory / "records.jsonl", "dataset_id": manifest["dataset_id"],
+                           "sha256": manifest["sha256"]})
+    dataset.manifest["source"] = {key: value for key, value in manifest.items() if key != "sha256"}
+    return dataset, raw
+
+
+def snapshot_revision(path):
+    """The Hub snapshot directory name is the immutable commit."""
+    if re.fullmatch(r"[0-9a-f]{40}", path.name):
+        return path.name
+    raise ValueError(f"Snapshot {path} is not an immutable commit")
+
+
+class InstructionSource:
+    """Download one Hub snapshot and convert it. Subclasses own the file layout."""
+
+    dataset_id = ""
+    source = ""
+    patterns = ()
+    extra = {}
+
+    def download(self, root, token=None, revision="main"):
+        from huggingface_hub import snapshot_download
+        cache = Path(root) / self.dataset_id / "hub"
+        cache.mkdir(parents=True, exist_ok=True)
+        kwargs = {"repo_id": self.source, "repo_type": "dataset", "revision": revision,
+                  "cache_dir": str(cache), "allow_patterns": list(self.patterns)}
+        if token:
+            kwargs["token"] = token
+        return Path(snapshot_download(**kwargs))
+
+    def convert(self, snapshot):
+        raise NotImplementedError
+
+    def fetch(self, root, token=None, revision="main"):
+        snapshot = self.download(root, token, revision)
+        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot),
+                       self.convert(snapshot), dict(self.extra))
+
+
+class ClincOOSSource(InstructionSource):
+    dataset_id = "clinc_oos"
+    source = "clinc/clinc_oos"
+    patterns = ("plus/*.parquet", "README.md")
+    extra = {"config": "plus", "protocol": "official", "truncation": "drop",
+             "usage": "Official plus splits, including out-of-scope, as one task."}
+
+    def convert(self, snapshot):
+        import pyarrow.parquet as pq
+        by_split, names = {}, None
+        for split in SPLITS:
+            table = pq.read_table(snapshot / "plus" / f"{split}-00000-of-00001.parquet")
+            if names is None:
+                meta = json.loads(table.schema.metadata[b"huggingface"])
+                names = meta["info"]["features"]["intent"]["names"]
+            data = table.to_pydict()
+            by_split[split] = list(zip(data["text"], data["intent"]))
+        return clinc_rows(by_split, names)
+
+
+class SchusterSource(InstructionSource):
+    dataset_id = "schuster"
+    source = "edmdias/multilingual-task-oriented-dialog"
+    patterns = ("en/*.parquet", "README.md")
+    extra = {"config": "en", "protocol": "official", "truncation": "drop", "license": "cc-by-sa-4.0",
+             "usage": "English intents only. Hub eval is validation. Slots are not supervised."}
+
+    def convert(self, snapshot):
+        import pyarrow.parquet as pq
+        files = {"train": "train-en.parquet", "eval": "eval-en.parquet", "test": "test-en.parquet"}
+        by_split = {split: pq.read_table(snapshot / "en" / name).to_pylist()
+                    for split, name in files.items()}
+        return schuster_rows(by_split)
+
+
+class BitextSource(InstructionSource):
+    dataset_id = "bitext_customer_support"
+    source = "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
+    patterns = ("*.csv", "README.md")
+    extra = {"protocol": "category-instruction-groups-seed-0-10-10", "truncation": "prompt_left",
+             "license": "cdla-sharing-1.0",
+             "usage": "Synthetic customer-support replies. Split is the seeded group holdout."}
+
+    def convert(self, snapshot):
+        import csv
+        files = [path for path in snapshot.glob("*.csv") if path.is_file()]
+        if len(files) != 1:
+            raise ValueError(f"Expected one CSV in {snapshot}, found {len(files)}")
+        with files[0].open(newline="", encoding="utf-8") as handle:
+            return bitext_rows(list(csv.DictReader(handle)))
+
+
+class TraceSource(InstructionSource):
+    dataset_id = "trace"
+    source = "YeMoKoo/TRACE"
+    patterns = ("TRACE-Benchmark.zip",)
+    extra = {"config": "LLM-CL-Benchmark_5000", "protocol": "official", "truncation": "prompt_left",
+             "usage": "Eight TRACE tasks. Lima is excluded. eval.json is validation."}
+
+    def convert(self, snapshot):
+        with zipfile.ZipFile(snapshot / "TRACE-Benchmark.zip") as archive:
+            tasks = {}
+            for task in TRACE_TASKS:
+                tasks[task] = {}
+                for name in ("train.json", "eval.json", "test.json"):
+                    member = f"TRACE-Benchmark/LLM-CL-Benchmark_5000/{task}/{name}"
+                    key = "eval" if name == "eval.json" else name[:-5]
+                    try:
+                        tasks[task][key] = json.loads(archive.read(member))
+                    except KeyError as error:
+                        raise ValueError(f"TRACE archive is missing {member}") from error
+        return trace_rows(tasks)
+
+
+SOURCES = {"clinc_oos": ClincOOSSource, "schuster": SchusterSource,
+           "bitext_customer_support": BitextSource, "trace": TraceSource}
+
+
+def fetch_source(name, root, token=None, revision="main"):
+    """Fetch one named source, or every source when name is 'all' is handled by the CLI."""
+    try:
+        source = SOURCES[name]()
+    except KeyError as error:
+        raise ValueError(f"Unknown instruction source {name}") from error
+    return source.fetch(root, token=token, revision=revision)
+
+
+def main(argv):
+    name = argv[1]
+    root = Path(argv[2]) if len(argv) > 2 else Path("src/datasets/data")
+    token = argv[3] if len(argv) > 3 and argv[3] else None
+    names = list(SOURCES) if name == "all" else [name]
+    for item in names:
+        print(fetch_source(item, root, token=token))
+
+
+if __name__ == "__main__":
+    import sys
+    main(sys.argv)

@@ -32,6 +32,28 @@ class PipelineBase(PipelineRuntime, ABC):
         """Follow the shared learner's Torch device; unbound numerical steps use CPU."""
         return self.model.device if self.model is not None else resolve_device("cpu")
 
+    def bind_instruction_dataset(self, dataset, raw, split_spec=None):
+        """Preprocess an instruction source with the bound local model and share that dataset.
+
+        Official splits remain unless split_spec sets validation_fraction. Truncation comes from
+        the source manifest unless split_spec overrides it. The model must implement attach_instruction.
+        """
+        from ..datasets.dataset_instruction import InstructionPreprocessing
+        spec = {"validation_fraction": 0.0, "seed": 0}
+        if split_spec:
+            spec.update(split_spec)
+        truncation = spec.pop("truncation", dataset.manifest.get("source", {}).get("truncation", "drop"))
+        views = dataset.split(raw, spec)
+        prepared, report = dataset.preprocess(
+            views, InstructionPreprocessing(**self.model.preprocessing_kwargs(truncation=truncation)))
+        self.dataset = dataset
+        for component in self.components().values():
+            component.dataset = dataset
+            if component.context is not None:
+                component.context.dataset = dataset
+        self.model.attach_instruction(dataset)
+        return prepared, report
+
     def set_model(self, model):
         """Share the exact learner wrapper across this owner and all registered components.
         Update any bound context as well, so later lifecycle calls use the replacement.
@@ -107,6 +129,42 @@ class PipelineBase(PipelineRuntime, ABC):
 
     def after_memory_commit(self):
         """Methods with task-boundary policies override this hook."""
+
+    def log_sample_progress(self, phase, done, total):
+        """Print one line each time this sweep crosses another 5% of its samples."""
+        if total <= 0 or done <= 0:
+            return
+        bucket = min(20, (done * 20) // total)
+        if bucket < 1:
+            return
+        marks = getattr(self, "_sample_marks", None)
+        if marks is None:
+            self._sample_marks = marks = {}
+        if marks.get(phase) == bucket:
+            return
+        marks[phase] = bucket
+        print(f"{phase} {done}/{total} samples ({bucket * 5}%)", flush=True)
+
+    def current_batch(self, selector=None, *, peek=False):
+        """Scan arrivals, then print when the training cursor crosses another 5%."""
+        before = self.progress.get("cursor", 0) if isinstance(self.progress, dict) else 0
+        batch = super().current_batch(selector, peek=peek)
+        done = self.progress.get("cursor", 0) if isinstance(self.progress, dict) else 0
+        if done != before and self.current:
+            self.log_sample_progress(f"train task={self.task_id}", done, len(self.current))
+        return batch
+
+    def evaluate(self, view, evaluation_spec):
+        """Score held-out records and print each new 5% of that view."""
+        if any(r.split == "train" for r in view):
+            raise ValueError("Evaluation requires held-out records")
+        self._activate(self.model)
+        task = view[0].task_id if view else ""
+
+        def progress(done, total, _task=task):
+            self.log_sample_progress(f"evaluate task={_task}", done, total)
+
+        return self.model.evaluate(view, evaluation_spec, progress=progress)
 
     @abstractmethod
     def open_task(self):

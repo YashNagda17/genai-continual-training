@@ -18,7 +18,7 @@ src/
 ├── utils/
 ├── tests/
 ├── combined_pipeline.py
-└── main.py
+└── example.py
 ```
 
 | Component | Responsibility / public operations |
@@ -28,7 +28,8 @@ src/
 | `PipelineBase` | One independently runnable paper method per module/package; `run`, `evaluate`, `predict`, `save`, `load` |
 | `utils/` | Shared records, storage, configuration, and measurement |
 | `CombinedPipeline` | Compose paper components across datasets/models into one hybrid run |
-| `main.py` | Resolve and execute the configured model/method/task-sequence run matrix |
+| `example.py` | Sample run: one local model, one CLINC pass, pipeline evaluation, and a few inferences |
+| `main.py` | Later: resolve and execute the configured model/method/task-sequence run matrix |
 
 Detailed interfaces and ownership: [design/README.md](/design/README.md).
 

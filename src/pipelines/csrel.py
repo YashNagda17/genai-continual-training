@@ -49,6 +49,9 @@ class CSReLPipeline(PipelineBase):
                 model, TrainingBatch(batch, ("auxiliary",) * len(batch.ids)),
                 Objective(owner.spec.reduction))
             fit["cursor"] += len(batch.ids)
+            owner.log_sample_progress(
+                f"csrel {selection['stage']} task={selection['task']}",
+                fit["pass"] * len(records) + fit["cursor"], passes * len(records))
             if fit["cursor"] == len(records):
                 fit["cursor"] = 0
                 fit["pass"] += 1
@@ -71,6 +74,8 @@ class CSReLPipeline(PipelineBase):
                 table[sample_id] = {"loss": value, "model": result.model_revision,
                                     "reduction": result.reduction,
                                     "loss_fingerprint": model.info.loss_fingerprint}
+            owner.log_sample_progress(
+                f"csrel {key} task={selection['task']}", len(table), len(records))
             owner.record_event("auxiliary_scoring", ids=list(batch.ids), table=key, cost=result.cost)
             owner.boundary()
         return table

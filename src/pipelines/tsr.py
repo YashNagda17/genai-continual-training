@@ -87,6 +87,8 @@ class TSRPipeline(PipelineBase):
             batch = owner.collate(records[start:start + owner.spec.batch_size])
             result = self.probe_batch(batch, model, owner.spec.reduction)
             self.accumulate_probe(result, batch.ids)
+            limit = min(len(records), self.config.probe_batches * owner.spec.batch_size)
+            owner.log_sample_progress(f"probe task={owner.task_id}", probe_state["cursor"], limit)
             owner.record_event("probe", ids=list(batch.ids), cost=result.cost)
             owner.boundary()
         self.policy["current_signature"] = self.task_signature(model, owner.spec.reduction)

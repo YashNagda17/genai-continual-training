@@ -64,7 +64,10 @@ def tensor(values, device=None):
         values.device if isinstance(values, torch.Tensor) else torch.device("cpu"))
     dtype = torch.float32
     if isinstance(values, torch.Tensor):
-        return values.detach().to(device=target, dtype=dtype)
+        values = values.detach()
+        if values.dtype == dtype and values.device == target:
+            return values
+        return values.to(device=target, dtype=dtype)
     return torch.as_tensor(values, dtype=dtype, device=target)
 
 

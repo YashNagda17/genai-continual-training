@@ -1,6 +1,6 @@
 # Entry point and run matrix
 
-Owns `src/main.py`. Parse a configuration, expand independent runs, instantiate adapters/components, call the lifecycle owner, and record status. Keep selection, training, metric formulas, and paper-specific defaults out of this file.
+Owns the run entry points. The present sample is `src/example.py`. It loads the local SmolLM2 snapshot, prepares CLINC, and runs `CombinedPipeline` for one pass over task `clinc`. Each launch deletes `results/sample/clinc-smollm2` and starts a new attempt. The sample does not resume. The lifecycle evaluates the official test split, including exact-match generation. The script then prints a few generated intents. Paper settings in that file are sample values. The later matrix still parses a closed configuration, expands independent runs, and keeps selection formulas out of the sample file. That matrix remains `src/main.py`.
 
 ## Configuration contract
 
@@ -32,4 +32,4 @@ Each independent run creates fresh learner/optimizer, policy state, replay, and 
 
 Follow [model-weights.md](/design/model-weights.md) for the rolling latest-plus-one retention policy, completion cleanup, and teacher dependencies. Check both per-run and remaining output-root disk capacity before staging a save. Never delete another run's artifacts automatically to free space.
 
-Intended entry point: `python -m src.main --config <path>`.
+Sample entry point: `python -m src.example`. Intended matrix entry point: `python -m src.main --config <path>`.

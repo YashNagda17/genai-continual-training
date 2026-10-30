@@ -37,6 +37,7 @@ Read this shared contract once, then the affected component and paper reference.
 | `src/utils/`, shared records and replay storage | [utils.md](/design/utils.md) |
 | `src/tests/` | [tests.md](/design/tests.md) |
 | `src/combined_pipeline.py`, `CombinedPipeline` | [combined-pipeline.md](/design/combined-pipeline.md) |
+| `src/example.py` | [main.md](/design/main.md) |
 | `src/main.py` | [main.md](/design/main.md) |
 
 A paper module may become a same-named package while preserving its public contract.
@@ -53,7 +54,7 @@ A paper module may become a same-named package while preserving its public contr
 
 ## Dependency and ownership boundary
 
-`main -> combined_pipeline -> pipelines -> {models, datasets, utils}`. Models and datasets may depend on shared utility records, but not on pipeline implementations or each other. Tokenization is supplied to datasets through an injected preprocessing interface. Utilities cannot import concrete models, datasets, or pipelines.
+`example.py` is the present sample entry. The later matrix entry is `main.py`. Both call `combined_pipeline -> pipelines -> {models, datasets, utils}`. Models and datasets may depend on shared utility records, but not on pipeline implementations or each other. Tokenization is supplied to datasets through an injected preprocessing interface. Utilities cannot import concrete models, datasets, or pipelines.
 
 | Concern | Single owner |
 |---|---|
@@ -62,8 +63,11 @@ A paper module may become a same-named package while preserving its public contr
 | Paper equations and policy state | Corresponding paper pipeline |
 | Task lifecycle, component composition, memory commit | Standalone pipeline or `CombinedPipeline` |
 | Serialization, budget validation, metric arithmetic | Utilities |
+| Sample run | `example.py` |
 | Run matrix, config resolution, process exit status | `main.py` |
 
 Validation requirements live in [tests.md](/design/tests.md); experiment controls live in [combined-pipeline.md](/design/combined-pipeline.md).
 
 Initial implementation scope is one process/device, the four standalone methods, and the specified hybrid. Distributed training, automatic task discovery, alternative recipes, and optional paper variants need separate contracts. Model/data choices and unresolved paper-code discrepancies remain explicit inputs, not inferred defaults.
+
+use source ~/venv/bin/activate to activate virtual environment

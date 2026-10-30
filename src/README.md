@@ -72,6 +72,18 @@ dataset.preprocess(views, InstructionPreprocessing(**model.preprocessing_kwargs(
 # The runtime injects dataset collation callbacks and validates preprocessing identity.
 ```
 
+CLINC, Schuster, Bitext, and TRACE are fetched into that same JSONL schema. The pipeline prepares them with the local model's tokenizer:
+
+```python
+from src.datasets.dataset_sources import fetch_source, load_instruction_source
+
+directory = fetch_source("schuster", "src/datasets/data")
+dataset, raw = load_instruction_source(directory)
+pipeline.bind_instruction_dataset(dataset, raw)
+```
+
+`download_datasets.sh` fetches `clinc_oos`, `schuster`, `bitext_customer_support`, and `trace`. Task order is `dataset.manifest["source"]["task_order"]`.
+
 Qwen always renders with `enable_thinking=False`. Prepared targets containing explicit thinking/analysis tags are reported and dropped, and prompt tokens remain unsupervised. Standard templates are used for LFM2.5 and SmolLM2. Teacher/probe roles use the same non-thinking identity. Generation accepts conversations or `dataset.collate_prompts(records)` and returns IDs, completion texts and generated token IDs. `evaluate` returns negative token NLL and perplexity; supply `evaluation_spec["generation"]` for exact-match accuracy. For direct evaluation outside a pipeline, inject `collate=dataset.collate` and `collate_prompts=dataset.collate_prompts` when constructing the model.
 
 The learner defaults to LoRA; `mode="full"` enables full fine-tuning. TSR probes always use deterministic zero-B LoRA, even for a full-fine-tuned learner. LFM2 maps attention and convolution projections explicitly. Layer groups include embeddings, decoder blocks and output parameters; tied weights count once. These architecture/adapter mappings are declared language-model adaptations. Caller-supplied layer costs override parameter-based estimates. Scoring implements actual per-example gradients and batch-mean LoRA-B gradients, not embedding substitutes.
@@ -178,4 +190,4 @@ GENAI_SETUP_TESTS=1 python -m unittest src.tests.test_pipelines.SetupModelTests 
 
 The compact suite checks paper equations, signed similarities, round-dependent coreset rankings, source/teacher coherence, native versus hybrid exposure, shared learner and weight/policy handoff, two-task standalone/hybrid runs, budgets, retention and representative recovery failures. It uses a two-coordinate Torch model with autograd SGD and optional KL. Small utility checks cover mocked CUDA/ROCm/XPU routing, dtype/autograd preservation and local sampling RNG. The setup check covers one short forward of each cached model on the resolved device. Transformer gradients, actual LoRA-B semantics, production KD, pinned-author-code equivalence, and scientific experiments remain unverified by the routine suite.
 
-The experiment matrix/CLI in [main.md](/design/main.md) is a separate future caller. This implementation supplies the requested algorithm library and adapter contracts.
+The sample entry point is `python -m src.example`: local SmolLM2, one CLINC pass through `CombinedPipeline`, official-test evaluation, and a few generated intents. Each launch deletes `results/sample/clinc-smollm2` and starts over. The full experiment matrix in [main.md](/design/main.md) is still a later caller.

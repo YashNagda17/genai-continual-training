@@ -53,6 +53,7 @@ class CausalLMSettings:
     working_bytes: int = 1024 ** 3
     autocast: str = "float32"
     optimizer_dtype: str = "float32"
+    compile: bool = False
     forward_cost: float | None = None
     backward_costs: tuple | None = None
 
@@ -127,6 +128,7 @@ class CausalLMModel(ModelBase):
         self._base_bytes = 0
         self.rng_state = None
         self.resources = None
+        self._compiled_forward = None
 
     def _load_dtype(self):
         """Initial resident weights. The optimizer dtype is applied later by upgrade_parameters."""
@@ -348,6 +350,14 @@ class CausalLMModel(ModelBase):
             self._offload = target
             previous.cleanup()
 
+    def attach_instruction(self, dataset):
+        """Bind an instruction dataset preprocessed with this local tokenizer and template.
+
+        CLINC, Schuster, Bitext, and TRACE share this check. The model does not import a fetcher.
+        """
+        self.bind_dataset(dataset)
+        return self
+
     def bind_dataset(self, dataset):
         """Bind dataset callbacks and require the same non-thinking tokenizer/template identity."""
         super().bind_dataset(dataset)
@@ -459,6 +469,7 @@ class CausalLMModel(ModelBase):
         self.rng_state = self.rng_state or self._new_rng()
         if self._offload is not None:
             self._read_state(Path(self._offload.name))
+        self._compiled_forward = None
 
     def parameter_counts(self):
         """Count tied parameters once; restore baseline eligibility after every frozen-prefix update."""
@@ -559,11 +570,69 @@ class CausalLMModel(ModelBase):
                        "Non-thinking training requires final-response targets")
         return self.to_device(payload)
 
+    def _decoder(self, **kwargs):
+        """Run the decoder forward, compiling it once when this role asked for torch.compile."""
+        if self._compiled_forward is None:
+            forward = self.module.model.forward
+            if self.settings.compile:
+                forward = torch.compile(forward, dynamic=True)
+            self._compiled_forward = forward
+        return self._compiled_forward(**kwargs)
+
     def _features(self, payload):
         """Obtain final token features without allocating logits for prompt/padding tokens."""
-        return self.module.model(input_ids=payload["input_ids"],
-                                 attention_mask=payload["attention_mask"],
-                                 use_cache=False, return_dict=True).last_hidden_state
+        return self._decoder(input_ids=payload["input_ids"],
+                             attention_mask=payload["attention_mask"],
+                             use_cache=False, return_dict=True).last_hidden_state
+
+    def _batched_head_gradients(self, payload, reduction):
+        """One decoder pass for every example's tied last-layer gradient.
+
+        A single-example reduction is that example's token mean for both batch reductions,
+        so the batch differentiates each of those means. The output-projection part is the
+        outer product of logit gradients and hidden states. A tied embedding adds each
+        example's rows from the decoder gradient. Untied heads omit that scatter.
+        """
+        input_ids = payload["input_ids"]
+        labels = payload["labels"]
+        embed = self.module.get_input_embeddings()
+        tied = embed.weight is self.module.lm_head.weight
+        model_boundary(reduction in {"per_example_mean", "per_token_mean"}, "Unknown gradient reduction")
+        batch, seq = input_ids.shape
+        hidden = self.module.lm_head.in_features
+        vocab = self.module.lm_head.out_features
+        self._buffer_bound(batch * vocab * hidden + batch * max(seq - 1, 0) * vocab)
+        if tied:
+            embedded = embed(input_ids).detach().requires_grad_(True)
+            features = self._decoder(inputs_embeds=embedded, attention_mask=payload["attention_mask"],
+                                     use_cache=False, return_dict=True).last_hidden_state
+            means, _, counts = self._losses(features, labels)
+            # One-example reductions both differentiate that example's token mean.
+            token_grad = torch.autograd.grad(means.sum(), embedded)[0]
+            padding_idx = getattr(embed, "padding_idx", None)
+            if padding_idx is not None:
+                token_grad = token_grad.masked_fill((input_ids == padding_idx).unsqueeze(-1), 0)
+        else:
+            with torch.no_grad():
+                features = self._features(payload)
+                _, _, counts = self._losses(features, labels)
+            token_grad = None
+        shifted = features[:, :-1]
+        with torch.no_grad():
+            targets = labels[:, 1:]
+            valid = targets != -100
+            logits = self.module.lm_head(shifted).float()
+            safe = targets.clamp(min=0)
+            grad_logits = logits.softmax(-1)
+            chosen = grad_logits.gather(-1, safe.unsqueeze(-1)) - 1
+            grad_logits.scatter_(-1, safe.unsqueeze(-1), chosen)
+            scale = counts.to(grad_logits.dtype).clamp_min(1)[:, None, None]
+            grad_logits = torch.where(valid.unsqueeze(-1), grad_logits / scale, torch.zeros_like(grad_logits))
+            result = torch.matmul(grad_logits.transpose(1, 2), shifted.float())
+            if token_grad is not None:
+                index = (torch.arange(batch, device=result.device)[:, None] * vocab + input_ids).reshape(-1)
+                result.view(batch * vocab, hidden).index_add_(0, index, token_grad.reshape(-1, hidden).float())
+        return result.view(batch, -1)
 
     def _head_loss(self, features, labels):
         """Compute one small vocabulary projection in float32 for stable causal cross entropy."""
@@ -663,7 +732,7 @@ class CausalLMModel(ModelBase):
     def score_loss(self, payload):
         """Return one response-token mean per ordered example, without constructing a training graph."""
         with torch.no_grad():
-            return self._losses(self._features(payload), payload["labels"])[0].float().cpu()
+            return self._losses(self._features(payload), payload["labels"])[0].float()
 
     def score_logits(self, payload, temperature):
         """Buffer temperature-scaled teacher logits on CPU at causally shifted positions.
@@ -686,15 +755,15 @@ class CausalLMModel(ModelBase):
 
     def score_gradients(self, payload, kind, view, reduction):
         """Use autograd.grad so scoring never overwrites existing training gradients.
-        Head requests include all uses of tied weights; LoRA-B requests use the fixed probe.
-        Per-example requests run separately; the B signature differentiates the batch objective.
+        Head requests include all uses of tied weights and differentiate the whole batch at once.
+        LoRA-B requests use the fixed probe and differentiate the batch objective.
+        The returned buffer stays on the parameter device.
         """
+        if kind == "last_layer_gradients":
+            return self._batched_head_gradients(payload, reduction)
         named = dict(self.module.named_parameters())
         coordinates = None
-        if kind == "last_layer_gradients":
-            head_ids = {id(p) for p in self.module.lm_head.parameters()}
-            selected = {n: p for n, p in named.items() if id(p) in head_ids}
-        elif kind == "lora_b_gradient":
+        if kind == "lora_b_gradient":
             selected = {n: p for n, p in named.items() if n.endswith(".B")}
         else:
             coordinates = self._coordinates(view)
@@ -704,7 +773,8 @@ class CausalLMModel(ModelBase):
         width = sum(len(coordinates[n]) if coordinates is not None else p.numel() for n, p in selected.items())
         rows = 1 if kind == "lora_b_gradient" else len(payload["input_ids"])
         self._buffer_bound(rows * width)
-        result = torch.empty((rows, width), dtype=torch.float32)
+        device = next(iter(selected.values())).device if selected else self.device
+        result = torch.empty((rows, width), dtype=torch.float32, device=device)
         for i in range(rows):
             current = payload if kind == "lora_b_gradient" else {k: v[i:i + 1] for k, v in payload.items()}
             means, sums, counts = self._losses(self._features(current), current["labels"])
@@ -736,8 +806,11 @@ class CausalLMModel(ModelBase):
                                      token_positions=self._batch_identity(payload),
                                      output_bytes=values.numel() * values.element_size())
             revision = fingerprint((self.info.identity, self.steps, self.weight_revision, self._weights_identity))
+        nbytes = values.numel() * values.element_size()
+        on_cpu = values.device.type == "cpu"
         return ScoreResult(batch.ids, values, revision, score_spec.parameter_view, score_spec.reduction,
-                           cost, cpu_bytes=values.numel() * values.element_size())
+                           cost, cpu_bytes=nbytes if on_cpu else 0,
+                           accelerator_bytes=0 if on_cpu else nbytes)
 
     def feature_statistics(self, payload, objective, origins):
         """Differentiate only the final features for the pre-backward freeze decision.
@@ -786,7 +859,8 @@ class CausalLMModel(ModelBase):
         coordinates = self._coordinates(hooks.gradient_subset) if hooks.gradient_subset else {}
         named = {n: p for n, p in self.module.named_parameters() if p.requires_grad
                  and (refresh or n in coordinates)}
-        traces = [0.] * len(self.info.layer_names)
+        groups = len(self.info.layer_names)
+        traces = torch.zeros(groups, device=self.device, dtype=torch.float32) if refresh and named else None
         active = {n: indices for n, indices in coordinates.items() if n in named}
         self._buffer_bound(len(means) * sum(map(len, active.values())))
         rows = []
@@ -798,13 +872,14 @@ class CausalLMModel(ModelBase):
                 for (name, parameter), gradient in zip(named.items(), gradients):
                     if gradient is None:
                         gradient = torch.zeros_like(parameter)
-                    if refresh:
-                        traces[self._group(name)] += gradient.detach().float().square().sum().item() / len(means)
+                    if traces is not None:
+                        traces[self._group(name)] += gradient.detach().float().square().sum() / len(means)
                     if name in active:
-                        pieces.append(gradient.detach().flatten()[active[name]].float().cpu())
+                        pieces.append(gradient.detach().flatten()[active[name]].float())
                 if pieces:
                     rows.append(torch.cat(pieces))
-        return {"layer_fisher": traces, "fisher_refresh": refresh, "gradient_subset": hooks.gradient_subset,
+        return {"layer_fisher": [0.] * groups if traces is None else traces.tolist(),
+                "fisher_refresh": refresh, "gradient_subset": hooks.gradient_subset,
                 "class_gradients": torch.stack(rows) if rows else None}
 
     def optimizer_update(self, loss, *, revision_context=None):
@@ -879,7 +954,7 @@ class CausalLMModel(ModelBase):
                     del features, means, sums, counts, loss
         return reports
 
-    def evaluate(self, view, evaluation_spec):
+    def evaluate(self, view, evaluation_spec, progress=None):
         """Evaluate caller-collated held-out records, preserving the learner's numerical state.
         Report token-weighted NLL/perplexity and optionally exact-match generation accuracy.
         The dataset retains ownership of response masks and prompt-only generation collation.
@@ -900,6 +975,8 @@ class CausalLMModel(ModelBase):
                     generated = self.predict(self.collate_prompts(records), evaluation_spec["generation"])
                     correct += sum(text.strip() == record.target["text"].strip()
                                    for text, record in zip(generated["texts"], records))
+                if progress is not None:
+                    progress(start + len(records), len(view))
         result = {"negative_nll": -total / count, "perplexity": math.exp(min(80., total / count))}
         if "generation" in evaluation_spec:
             result["exact_match"] = correct / len(view)
@@ -1117,6 +1194,7 @@ class CausalLMModel(ModelBase):
         """
         if self.module is None:
             return
+        self._compiled_forward = None
         target = self._offload_directory()
         self.save(target.name, "resume")
         previous, self._offload = self._offload, target
@@ -1129,6 +1207,7 @@ class CausalLMModel(ModelBase):
 
     def release(self):
         """Drop an unneeded auxiliary and its private state; required frozen teachers live elsewhere."""
+        self._compiled_forward = None
         self.module = self.optimizer = self.scheduler = self.scaler = None
         if self._offload is not None:
             self._offload.cleanup()
