@@ -1,0 +1,18 @@
+{
+  "query": "upgrades to OASIS admission, TSR routing, aL-SAR freezing and retrieval, CSReL memory",
+  "date": "2026-11-01",
+  "count": 10,
+  "note": "Manual ranking after abstract and full-text reading. The litreview ranker module is not in this tree. OpenAlex citation counts were too incomplete to use as weights.",
+  "items": [
+    {"rank": 1, "title": "GREATS: Online Selection of High-Quality Data for LLM Training in Every Iteration", "year": 2024, "venue": "NeurIPS", "stage": "admission", "url": "https://proceedings.neurips.cc/paper_files/paper/2024/file/ed165f2ff227cf36c7e3ef88957dadd9-Paper-Conference.pdf"},
+    {"rank": 2, "title": "LESS: Selecting Influential Data for Targeted Instruction Tuning", "year": 2024, "venue": "ICML", "stage": "admission", "arxiv_id": "2402.04333"},
+    {"rank": 3, "title": "Replay on Demand: An Emergent Curriculum for Balancing Adaptation and Forgetting in Continued Pretraining", "year": 2026, "venue": "arXiv preprint", "stage": "replay-share", "arxiv_id": "2609.40089"},
+    {"rank": 4, "title": "TreeLoRA: Efficient Continual Learning via Layer-Wise LoRAs Guided by a Hierarchical Gradient-Similarity Tree", "year": 2025, "venue": "ICML", "stage": "routing", "arxiv_id": "2506.10355"},
+    {"rank": 5, "title": "Soft Orthogonal Low-Rank Adaptation for Knowledge Sharing in Large Language Model Continual Learning", "year": 2026, "venue": "ACL", "stage": "routing", "url": "https://aclanthology.org/2026.acl-long.842/"},
+    {"rank": 6, "title": "SD-LoRA: Scalable Decoupled Low-Rank Adaptation for Class Incremental Learning", "year": 2025, "venue": "ICLR", "stage": "rehearsal-free-boundary", "arxiv_id": "2501.13198"},
+    {"rank": 7, "title": "Adaptive Rank, Reduced Forgetting: Continual Learning with Dynamic Rank-Selective LoRA", "year": 2024, "venue": "arXiv preprint", "stage": "layer-or-rank-update", "arxiv_id": "2412.01004"},
+    {"rank": 8, "title": "LISA: Layerwise Importance Sampling for Memory-Efficient Large Language Model Fine-Tuning", "year": 2024, "venue": "NeurIPS", "stage": "layer-or-rank-update", "arxiv_id": "2403.17919"},
+    {"rank": 9, "title": "Goal oriented error estimation for adaptive sampling of PINNs", "year": 2026, "venue": "arXiv preprint", "stage": "cfd-analogue", "arxiv_id": "2604.01835"},
+    {"rank": 10, "title": "Awake replay: off the clock but on the job", "year": 2025, "venue": "Trends in Neurosciences", "stage": "biology-analogue", "doi": "10.1016/j.tins.2025.02.006"}
+  ]
+}
