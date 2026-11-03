@@ -17,7 +17,7 @@ The paper's “holdout model” is trained on permitted **training candidates**,
 3. Recompute subset-model losses after each round. Reusing a single ranking for the whole coreset is a different algorithm.
 4. Return selected IDs plus reference-loss provenance and cost. Do not change the continual learner or commit memory inside the selector.
 
-At empty `S`, use the declared subset-model initialization without optimizer updates; this is the project's explicit empty-set convention and must be compared with the pinned reference implementation before claiming reproduction. Resolve ties by stable sample ID. Allocate integer round sizes deterministically, with the last round taking the remainder; never duplicate records to fill capacity.
+At empty `S`, use the declared subset-model initialization without optimizer updates. The author confirmed this reading on 2025-06-23 in [CSReL issue 2](https://github.com/RuilinTong/CSReL-Coreset-CL/issues/2): the first coreset model is randomly initialized and has learned nothing, so the first round prefers low reference loss when subset losses are similar. The vision training loop itself is not pinned to a commit in this repository. Resolve ties by stable sample ID. Allocate integer round sizes deterministically, with the last round taking the remainder; never duplicate records to fill capacity.
 
 The callable CL-Prv profile follows Appendix F Algorithms 3–4: each reselection reference is fitted on the candidate task's permitted pool union the committed old memory (deduplicated by observation ID). Subset fitting remains on the selected subset. Unlike CL, Prv recomputes reference losses when that permitted pool changes. Equal-task quota remainders go to ascending task IDs; unused slots are reported and not redistributed. Auxiliary training is a finite number of ordered passes with a saved pass/cursor after every update attempt.
 
@@ -46,5 +46,23 @@ Standalone CSReL-CL trains with separately normalized current and replay losses,
 
 ## Language-model adaptation
 
-The paper's native class-incremental setting does not establish this generative port. For SFT, explicitly define comparable per-example target NLL for both scoring models, including tokenizer/template, token mask, and sum-versus-mean reduction. Length normalization changes selection and must be recorded. Auxiliary architecture and training schedule are later configuration; using a small model must not collapse the two scoring roles into one loss.
+The paper's native class-incremental setting does not establish this generative port. For SFT, explicitly define comparable per-example target NLL for both scoring models, including tokenizer/template, token mask, and sum-versus-mean reduction. Length normalization changes selection and must be recorded. Auxiliary architecture and training schedule are later configuration; using a small model must not collapse the two scoring roles into one loss. A short fitting schedule is an experiment setting, not a reproduction of the paper's epoch count.
+
+## Unresolved against the author repository
+
+- CSReL-RS and the KD score are not implemented. CL does not stand in for them.
+- The published numbers are class-incremental vision results. Per-example response-token NLL on a causal LM is a labeled adaptation.
+- Author issue 2 settles the empty-subset initialization. The surrounding ResNet schedule, augmentation, and class-incremental head were not line-checked against a pinned commit in this session.
+
+## Matched baselines for the CSReL experiment
+
+`src/pipelines/memory_baselines.py` is separate from `CSReLPipeline`. OASIS, TSR, aL-SAR, and `CombinedPipeline` do not call it.
+
+| Method | What changes |
+|---|---|
+| `new_only` | Current-task batches only. Task-end memory is empty. |
+| `random` | Same uniform replay, replay weight, batch size, and separate current/replay means as standalone CSReL. Memory is an equal-quota sample drawn without replacement. Selection has its own seed and does not consume the replay RNG. |
+| `cumulative` | At each task, reload the frozen weights saved from the run's initial learner, then train on the concatenation of seen-task training views. Replay stays empty. This is complete-data retraining from one initialization. |
+
+Random and CSReL comparisons share the learner, initialization, task order, seed, optimizer settings, global replay budget, and evaluation. Only the memory writer changes. Older random and CSReL candidates are retained examples only.
 

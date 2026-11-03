@@ -33,3 +33,14 @@ Each independent run creates fresh learner/optimizer, policy state, replay, and 
 Follow [model-weights.md](/design/model-weights.md) for the rolling latest-plus-one retention policy, completion cleanup, and teacher dependencies. Check both per-run and remaining output-root disk capacity before staging a save. Never delete another run's artifacts automatically to free space.
 
 Sample entry point: `python -m src.example`. Intended matrix entry point: `python -m src.main --config <path>`.
+
+## CSReL comparison entry
+
+The `pilot` protocol uses seeded equal-per-class subsets of three CLINC domains, validation evaluation, and an explicit intent-classification instruction. It reports all selected IDs and class counts after preprocessing. It is a development pilot, not a final test result. Cumulative pilot stages must have enough update/token budget for all configured passes over all seen records; reject insufficient budgets. Pilot evaluation persists generated strings separately from aggregate metrics. Selection timing tables sum reference/subset fitting and scoring components, labeled as measured components rather than full selection wall time.
+
+`python -m src.csrel_experiment` runs new-data-only, random memory, CSReL-CL, and complete retraining from the common initial weights. A learner update collates the current batch and the replay batch into one tensor, so the model batch bound is their sum. Each arm writes its own attempt directory under the chosen output root and never deletes an existing attempt. `backend-smoke` uses a tiny local JSONL and the SmolLM2 adapter. `smoke` uses the first two CLINC domains and records any train or test prefix as truncated. `scientific` rejects those prefixes and is the only protocol whose metrics are experiment results. Validation stays in the dataset and is not read by training, selection, or the reported test matrix. This entry does not tune hyperparameters. Forgetting follows [utils.md](/design/utils.md): the mean over earlier tasks of the best earlier score minus the final score.
+
+
+## Learner-order ablation
+
+The optional `--shuffle-training` comparison flag permutes the full permitted learner view separately per pass, using a deterministic seed derived from run seed, task stage, and pass. Cumulative views mix all seen tasks. Dataset arrival order, memory candidate membership, replay RNG, and auxiliary fitting order remain unchanged. Pending queue/cursor state remains checkpointed; permutations reconstruct without consuming the replay RNG. The flag is part of scientific identity. This is an explicitly labeled learner-order ablation, not an exact paper reproduction.

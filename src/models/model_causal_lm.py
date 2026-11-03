@@ -17,7 +17,10 @@ import gc
 import hashlib
 import math
 import random
-import resource
+try:
+    import resource
+except ImportError:  # Windows has no resource module; peak RSS stays unmeasured.
+    resource = None
 import shutil
 import tempfile
 import time
@@ -946,7 +949,8 @@ class CausalLMModel(ModelBase):
                     cost = self._timing_cost(start, execution_mode=execution_mode,
                                              forward_passes=1 + int(hooks.plan_update is not None),
                                              per_example_backward_observations=len(means) if hooks.gradient_subset or (plan and plan.refresh) else 0,
-                                             process_peak_cpu_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                                             process_peak_cpu_bytes=(None if resource is None
+                                              else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024),
                                              layer_cost_kind="supplied" if self.settings.backward_costs else "parameter_estimate")
                     reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
                                               {"supervised": logged_sum}, {"supervised": logged_count}, diagnostics, cost,
@@ -961,6 +965,7 @@ class CausalLMModel(ModelBase):
         """
         size = evaluation_spec.get("batch_size", self.settings.max_batch_size)
         total, count, correct = 0., 0, 0
+        predictions = []
         with self._execution() as execution_mode:
             timing_start = self._begin_timed_block()
             for start in range(0, len(view), size):
@@ -975,12 +980,20 @@ class CausalLMModel(ModelBase):
                     generated = self.predict(self.collate_prompts(records), evaluation_spec["generation"])
                     correct += sum(text.strip() == record.target["text"].strip()
                                    for text, record in zip(generated["texts"], records))
+                    if evaluation_spec.get("return_predictions"):
+                        predictions.extend({"id": record.sample_id,
+                                            "messages": record.inputs["messages"],
+                                            "target": record.target["text"], "prediction": text,
+                                            "exact_match": text.strip() == record.target["text"].strip()}
+                                           for text, record in zip(generated["texts"], records))
                 if progress is not None:
                     progress(start + len(records), len(view))
         result = {"negative_nll": -total / count, "perplexity": math.exp(min(80., total / count))}
         if "generation" in evaluation_spec:
             result["exact_match"] = correct / len(view)
         result.update(self._timing_cost(timing_start, execution_mode=execution_mode))
+        if evaluation_spec.get("return_predictions"):
+            result["_predictions"] = predictions
         return result
 
     def _generation_payload(self, inputs):

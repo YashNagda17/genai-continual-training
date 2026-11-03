@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 import copy
 import csv
+import random
 import time
 
 import torch
@@ -38,14 +39,14 @@ class PipelineRuntime:
             component.dataset, component.spec = self.dataset, self.spec
         self.validate_runtime()
         source_root = Path(__file__).resolve().parents[1]
-        code = {str(p.relative_to(source_root)): p.read_text()
+        code = {str(p.relative_to(source_root)): p.read_text(encoding="utf-8")
                 for directory in ("pipelines", "utils", "models", "datasets")
                 for p in sorted((source_root / directory).glob("*.py"))}
         combined = source_root / "combined_pipeline.py"
         if combined.exists():
-            code["combined_pipeline.py"] = combined.read_text()
+            code["combined_pipeline.py"] = combined.read_text(encoding="utf-8")
         design_root = source_root.parent / "design"
-        design = {p.name: p.read_text() for p in sorted(design_root.glob("*.md"))}
+        design = {p.name: p.read_text(encoding="utf-8") for p in sorted(design_root.glob("*.md"))}
         self.resolved = {
             "schema": 1, "method": type(self).__name__, "spec": self.spec.scientific(),
             "config": {k: asdict(v.config) for k, v in self.components().items()},
@@ -389,6 +390,13 @@ class PipelineRuntime:
         diagnostics = {k: v for k, v in report.diagnostics.items() if k != "class_gradients"}
         return asdict(replace(report, diagnostics=diagnostics))
 
+    def learner_pass_order(self, items, pass_number):
+        """Reconstruct a pass permutation independently of replay/policy randomness."""
+        items = list(items)
+        if self.spec.identity.get("shuffle_training", False):
+            random.Random(f"{self.spec.seed}:learner-order:{self.task_index}:{pass_number}").shuffle(items)
+        return items
+
     def current_batch(self, selector=None, *, peek=False):
         """Scan arrivals until admission produces a queued batch or the current view is exhausted.
         Checkpoint cursor, admitted IDs and queue together so resume preserves each selection.
@@ -396,9 +404,10 @@ class PipelineRuntime:
         """
         progress = self.progress
         by_id = {r.sample_id: r for r in self.current}
+        ordered_current = self.learner_pass_order(self.current, 1)
         while not progress["queue"] and progress["cursor"] < len(self.current):
             start = progress["cursor"]
-            records = self.current[start:start + self.spec.batch_size]
+            records = ordered_current[start:start + self.spec.batch_size]
             selected = selector(records) if selector else tuple(r.sample_id for r in records)
             if not set(selected) <= set(r.sample_id for r in records):
                 raise ValueError("Admission selected an ineligible record")
@@ -411,7 +420,8 @@ class PipelineRuntime:
             if (self.spec.exhaustion == "repeat_admitted" and progress["admitted"]
                     and progress["pass"] < self.spec.passes):
                 start = progress["repeat_cursor"]
-                ids = progress["admitted"][start:start + self.spec.batch_size]
+                ordered_ids = self.learner_pass_order(progress["admitted"], progress["pass"] + 1)
+                ids = ordered_ids[start:start + self.spec.batch_size]
                 progress["queue"] = ids
                 progress["repeat_cursor"] += len(ids)
                 if progress["repeat_cursor"] == len(progress["admitted"]):
@@ -441,6 +451,12 @@ class PipelineRuntime:
                 continue
             view = tuple(self.dataset.evaluation_view(task))
             metrics = self.evaluate(view, self.spec.evaluation_spec) if view else {}
+            predictions = metrics.pop("_predictions", None)
+            if predictions is not None:
+                stage = self.spec.task_ids.index(task)
+                prediction_dir = Path(self.context.output) / "predictions"
+                prediction_dir.mkdir(parents=True, exist_ok=True)
+                write_json(prediction_dir / f"stage-{self.task_index + 1}-task-{stage + 1}.json", predictions)
             self.metrics.append({"checkpoint_task": self.task_id, "task": task, "metrics": metrics})
             self.record_event("evaluation", task_evaluated=task, metrics=metrics)
             self.boundary()

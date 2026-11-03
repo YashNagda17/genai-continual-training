@@ -42,6 +42,88 @@ def clinc_rows(by_split, names):
     return rows
 
 
+# Official order and membership from clinc/oos-eval data/domains.json.
+CLINC_DOMAINS = {
+    "banking": ("freeze_account", "routing", "pin_change", "bill_due", "pay_bill",
+                "account_blocked", "interest_rate", "min_payment", "bill_balance", "transfer",
+                "order_checks", "balance", "spending_history", "transactions", "report_fraud"),
+    "credit_cards": ("replacement_card_duration", "expiration_date", "damaged_card",
+                     "improve_credit_score", "report_lost_card", "card_declined",
+                     "credit_limit_change", "apr", "redeem_rewards", "credit_limit",
+                     "rewards_balance", "application_status", "credit_score", "new_card",
+                     "international_fees"),
+    "kitchen_and_dining": ("food_last", "confirm_reservation", "how_busy", "ingredients_list",
+                           "calories", "nutrition_info", "recipe", "restaurant_reviews",
+                           "restaurant_reservation", "meal_suggestion", "restaurant_suggestion",
+                           "cancel_reservation", "ingredient_substitution", "cook_time",
+                           "accept_reservations"),
+    "home": ("what_song", "play_music", "todo_list_update", "reminder", "reminder_update",
+             "calendar_update", "order_status", "update_playlist", "shopping_list", "calendar",
+             "next_song", "order", "todo_list", "shopping_list_update", "smart_home"),
+    "auto_and_commute": ("current_location", "oil_change_when", "oil_change_how", "uber",
+                         "traffic", "tire_pressure", "schedule_maintenance", "gas", "mpg",
+                         "distance", "directions", "last_maintenance", "gas_type", "tire_change",
+                         "jump_start"),
+    "travel": ("plug_type", "travel_notification", "translate", "flight_status",
+               "international_visa", "timezone", "exchange_rate", "travel_suggestion",
+               "travel_alert", "vaccines", "lost_luggage", "book_flight", "book_hotel",
+               "carry_on", "car_rental"),
+    "utility": ("weather", "alarm", "date", "find_phone", "share_location", "timer",
+                "make_call", "calculator", "definition", "measurement_conversion", "flip_coin",
+                "spelling", "time", "roll_dice", "text"),
+    "work": ("pto_request_status", "next_holiday", "insurance_change", "insurance",
+             "meeting_schedule", "payday", "taxes", "income", "rollover_401k", "pto_balance",
+             "pto_request", "w2", "schedule_meeting", "direct_deposit", "pto_used"),
+    "small_talk": ("who_made_you", "meaning_of_life", "who_do_you_work_for", "do_you_have_pets",
+                   "what_are_your_hobbies", "fun_fact", "what_is_your_name", "where_are_you_from",
+                   "goodbye", "thank_you", "greeting", "tell_joke", "are_you_a_bot",
+                   "how_old_are_you", "what_can_i_ask_you"),
+    "meta": ("change_speed", "user_name", "whisper_mode", "yes", "change_volume", "no",
+             "change_language", "repeat", "change_accent", "cancel", "sync_device",
+             "change_user_name", "change_ai_name", "reset_settings", "maybe"),
+}
+
+
+def clinc_domain_of(intent):
+    """Return the official CLINC domain for one in-scope intent name."""
+    for domain, intents in CLINC_DOMAINS.items():
+        if intent in intents:
+            return domain
+    return None
+
+
+def clinc_domain_rows(by_split, names):
+    """Map plus-split rows onto the ten official domains and count omitted oos rows.
+
+    The schema must contain every official intent. Unknown in-scope names are an error.
+    A domain with no training row is an error because the continual stream would hide it.
+    """
+    official = {intent for intents in CLINC_DOMAINS.values() for intent in intents}
+    if any(len(intents) != 15 for intents in CLINC_DOMAINS.values()) or len(official) != 150:
+        raise ValueError("CLINC domain map must contain 10 domains of 15 unique intents")
+    unknown = sorted({name for name in names if name != "oos" and name not in official})
+    missing = sorted(official.difference(names))
+    if unknown or missing:
+        raise ValueError(f"CLINC intent schema does not match domains.json: unknown={unknown} missing={missing}")
+    rows, dropped = [], 0
+    for split in SPLITS:
+        for index, (text, intent) in enumerate(by_split[split]):
+            label = names[int(intent)]
+            prompt = str(text).strip()
+            if not prompt:
+                continue
+            if label == "oos":
+                dropped += 1
+                continue
+            rows.append(canonical(f"{split}-{index:05d}", clinc_domain_of(label), split, prompt, label, label))
+    present = {row["task"] for row in rows if row["split"] == "train"}
+    absent = [domain for domain in CLINC_DOMAINS if domain not in present]
+    if absent:
+        raise ValueError(f"CLINC domain stream is missing training rows for {absent}")
+    return rows, {"oos_dropped": dropped,
+                  "task_order": [domain for domain in CLINC_DOMAINS if domain in {row["task"] for row in rows}]}
+
+
 def schuster_rows(by_split):
     """Map English intent rows. The task is the domain prefix; slots are omitted."""
     rows = []
@@ -215,6 +297,38 @@ class ClincOOSSource(InstructionSource):
         return clinc_rows(by_split, names)
 
 
+class ClincDomainSource(ClincOOSSource):
+    """Same plus snapshot as the one-task CLINC file, with one task per official domain."""
+
+    dataset_id = "clinc_oos_domains"
+    extra = {"config": "plus", "protocol": "official-domains", "truncation": "drop",
+             "domain_map": "clinc/oos-eval data/domains.json",
+             "usage": "Ten official domains are tasks. Out-of-scope rows are omitted and counted."}
+
+    def convert(self, snapshot):
+        """Read the plus parquet files and return domain rows. The report is kept for fetch."""
+        import pyarrow.parquet as pq
+        by_split, names = {}, None
+        for split in SPLITS:
+            table = pq.read_table(snapshot / "plus" / f"{split}-00000-of-00001.parquet")
+            if names is None:
+                meta = json.loads(table.schema.metadata[b"huggingface"])
+                names = meta["info"]["features"]["intent"]["names"]
+            data = table.to_pydict()
+            by_split[split] = list(zip(data["text"], data["intent"]))
+        rows, report = clinc_domain_rows(by_split, names)
+        self.domain_report = report
+        return rows
+
+    def fetch(self, root, token=None, revision="main"):
+        """Publish the domain JSONL. task_order in the report overrides first-seen order."""
+        snapshot = self.download(root, token, revision)
+        rows = self.convert(snapshot)
+        extra = dict(self.extra)
+        extra.update(self.domain_report)
+        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot), rows, extra)
+
+
 class SchusterSource(InstructionSource):
     dataset_id = "schuster"
     source = "edmdias/multilingual-task-oriented-dialog"
@@ -269,8 +383,8 @@ class TraceSource(InstructionSource):
         return trace_rows(tasks)
 
 
-SOURCES = {"clinc_oos": ClincOOSSource, "schuster": SchusterSource,
-           "bitext_customer_support": BitextSource, "trace": TraceSource}
+SOURCES = {"clinc_oos": ClincOOSSource, "clinc_oos_domains": ClincDomainSource,
+           "schuster": SchusterSource, "bitext_customer_support": BitextSource, "trace": TraceSource}
 
 
 def fetch_source(name, root, token=None, revision="main"):

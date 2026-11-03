@@ -39,6 +39,7 @@ Read this shared contract once, then the affected component and paper reference.
 | `src/combined_pipeline.py`, `CombinedPipeline` | [combined-pipeline.md](/design/combined-pipeline.md) |
 | `src/example.py` | [main.md](/design/main.md) |
 | `src/main.py` | [main.md](/design/main.md) |
+| `src/csrel_experiment.py`, `MemoryBaselinePipeline` | [main.md](/design/main.md), [csrel.md](/design/csrel.md) |
 
 A paper module may become a same-named package while preserving its public contract.
 

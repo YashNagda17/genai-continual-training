@@ -6,3 +6,15 @@ __pycache__/
 /src/datasets/data/
 hf_token.txt
 
+# Training outputs. Written reports in results/ stay tracked.
+/results/csrel-replay/
+/results/learning-sanity/
+/results/sample/
+/results/code/
+
+*.pt
+*.safetensors
+*.parquet
+**/.offload/
+.writer.lock
+

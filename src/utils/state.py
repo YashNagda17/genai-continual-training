@@ -3,14 +3,32 @@
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-import fcntl
 import hashlib
 import json
 import os
 import shutil
+import stat
+import time
 import uuid
 
 from .contracts import Record, training_records
+
+
+def is_folder_metadata(path):
+    """Windows Explorer files are not model or recovery payloads."""
+    return Path(path).name.casefold() in {"desktop.ini", "thumbs.db"}
+
+
+def replace_artifact(source, destination):
+    """Preserve atomic publication, retrying transient Windows permission failures."""
+    for attempt in range(5):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 4:
+                raise
+            time.sleep(.1 * 2 ** attempt)
 
 
 def write_json(path, value):
@@ -24,12 +42,8 @@ def write_json(path, value):
         json.dump(value, stream, sort_keys=True, allow_nan=False)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    descriptor = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    replace_artifact(temporary, path)
+    _fsync_directory(path.parent)
 
 
 def read_json(path):
@@ -44,6 +58,8 @@ def checksums(path):
     """
     result = {}
     for file in sorted(Path(path).rglob("*")):
+        if is_folder_metadata(file):
+            continue
         if file.is_symlink():
             raise ValueError("Checkpoint files must not be symlinks")
         if file.is_file() and file != Path(path) / "complete.json":
@@ -52,17 +68,76 @@ def checksums(path):
     return result
 
 
+def _fsync_directory(path):
+    """Flush a directory entry when the platform allows it.
+
+    Windows can reject a directory handle. The file contents were already fsynced.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _lock_handle(handle):
+    """Take one exclusive non-blocking writer lock.
+
+    POSIX keeps fcntl.flock. Windows locks a single byte because fcntl is absent.
+    """
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_handle(handle):
+    """Release the lock taken by _lock_handle."""
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+    fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _fsync_file(path):
+    """Flush one file. Windows rejects fsync on a read-only handle, so retry read/write."""
+    for flag in (os.O_RDONLY, os.O_RDWR):
+        try:
+            descriptor = os.open(path, flag)
+        except OSError:
+            continue
+        try:
+            os.fsync(descriptor)
+            return
+        except OSError:
+            continue
+        finally:
+            os.close(descriptor)
+
+
 def synchronize(path):
     """Flush model files and their directory before writing the completion marker."""
     for file in Path(path).rglob("*"):
+        if is_folder_metadata(file):
+            continue
         if file.is_file():
-            with file.open("rb") as stream:
-                os.fsync(stream.fileno())
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+            _fsync_file(file)
+    _fsync_directory(path)
 
 
 class Checkpoints:
@@ -85,18 +160,19 @@ class Checkpoints:
             yield
             return
         self.root.mkdir(parents=True, exist_ok=True)
-        with (self.root / ".writer.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (self.root / ".writer.lock").open("a+b") as lock:
+            _lock_handle(lock)
             self._locked = True
             try:
                 yield
             finally:
                 self._locked = False
-                fcntl.flock(lock, fcntl.LOCK_UN)
+                _unlock_handle(lock)
 
     def reserve(self, additional):
         """Charge retained artifacts and offload files before allocating a staging checkpoint."""
-        used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
+        used = sum(p.stat().st_size for p in self.root.rglob("*")
+                   if not is_folder_metadata(p) and p.is_file())
         external = self.external_bytes() if callable(self.external_bytes) else self.external_bytes
         if used + external + additional > self.disk_bytes:
             raise OSError("Run storage budget cannot hold checkpoint staging")
@@ -154,12 +230,8 @@ class Checkpoints:
             if checksums(stage) != manifest["files"]:
                 raise ValueError("Checkpoint verification failed")
             self.reserve(0)
-            os.replace(stage, folder / name)
-            descriptor = os.open(folder, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            replace_artifact(stage, folder / name)
+            _fsync_directory(folder)
             latest_path = self.root / "latest.json"
             previous = read_json(latest_path)["checkpoints"] if latest_path.exists() else []
             # A fallback recovery must never retain the corrupt newer checkpoint.
@@ -175,6 +247,39 @@ class Checkpoints:
         self.prune(retained)
         return str(folder / name)
 
+    def _remove_owned(self, path):
+        """Remove obsolete run-owned trees, handling Windows read-only attributes and locks."""
+        path = Path(path)
+        root = self.root.resolve()
+        target = path.resolve()
+        if target == root or not target.is_relative_to(root):
+            raise ValueError("Cleanup target must remain inside the attempt directory")
+
+        def retry_readonly(operation, failed_path, error):
+            resolved = Path(failed_path).resolve()
+            if resolved != target and not resolved.is_relative_to(target):
+                raise ValueError("Cleanup callback escaped the obsolete artifact")
+            if isinstance(error[1], FileNotFoundError):
+                return  # Another actor already removed this obsolete entry.
+            # Windows directory READONLY attributes can prevent rmdir after files are gone.
+            if os.name != "nt" or not isinstance(error[1], PermissionError):
+                raise error[1]
+            os.chmod(failed_path, os.stat(failed_path).st_mode | stat.S_IWRITE)
+            operation(failed_path)
+
+        for attempt in range(3):
+            try:
+                shutil.rmtree(path, onerror=retry_readonly)
+                return
+            except FileNotFoundError:
+                if not path.exists():
+                    return
+                raise
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(.1 * (attempt + 1))
+
     def prune(self, retained):
         """Find teacher blobs referenced by every retained recovery checkpoint.
         Remove other model/replay payloads and abandoned staging directories.
@@ -189,17 +294,17 @@ class Checkpoints:
                 # Keep small manifests for audit; remove only owned numerical state.
                 for name in ("learner", "auxiliary"):
                     if (path / name).exists():
-                        shutil.rmtree(path / name)
+                        self._remove_owned(path / name)
                 # state.json contains replay payload, not merely audit metadata.
                 if (path / "state.json").exists():
                     (path / "state.json").unlink()
                 if path.name.startswith(".stage-"):
-                    shutil.rmtree(path)
+                    self._remove_owned(path)
         teacher_root = self.root / "teachers"
         if teacher_root.exists():
             for path in teacher_root.iterdir():
-                if str(path.relative_to(self.root)) not in live_blobs:
-                    shutil.rmtree(path)
+                if path.relative_to(self.root).as_posix() not in live_blobs:
+                    self._remove_owned(path)
 
     def latest(self):
         """Try the latest checkpoint, then its retained fallback, as complete recovery units.

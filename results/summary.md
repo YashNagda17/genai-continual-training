@@ -219,3 +219,25 @@ Converted authored Markdown links/templates to repository-root paths, repaired m
 **Non-thinking inputs:** Qwen templates always use `enable_thinking=False`; preprocessing drops reasoning-tagged targets, masks prompt/padding labels and records the tokenizer/template identity. The same preprocessing contract applies during training and evaluation.
 
 **Execution boundary:** no tests or verification commands ran in this continuation, as requested. No test files were added, packages installed or production weights downloaded. Production architecture and GPU execution remain unverified. No scientific performance result or novel algorithm is claimed.
+---
+
+## [2026-11-03] Three-task CSReL development pilot preparation
+
+Implemented `--protocol pilot`: seeded class-balanced CLINC training and validation views, explicit intent-label instructions, coverage/ID artifacts, prediction files per stage/task, generation-length reservation, and a cumulative full-pass budget guard. Comparison Markdown includes measured auxiliary fitting and scoring components. Model initial snapshots and attempt matching include configuration identities. Existing smoke results are preserved; pilot output stays under the ignored CSReL output directory.
+
+Validation: syntax parsing of five changed Python modules and `git diff --check` passed. Added regression cases for balanced sampling, prefix rejection, and cumulative budget rejection. Tests and training have not been executed in this continuation: the user will run the supplied commands. Pilot performance, CUDA training for this configuration, and repeated real-model selection remain unverified.
+
+Next: user runs fixture tests, then the three-task pilot; inspect coverage, generated predictions, task-stage metrics, and selection costs before selecting a scientific protocol.
+
+
+---
+
+## [2026-11-04] 600-example audit and learner-order ablation
+
+Audit: [pilot-600-audit](/results/experiments/pilot-600-audit.md). All four arms completed; random 81.56%, CSReL 54.44% final validation exact match. Prepared opt-in deterministic learner shuffling; auxiliary order unchanged. Added RNG/membership and resume tests. Syntax checked; user runs tests and training. Existing results preserved. No scientific superiority or convergence claim.
+
+---
+
+## [2026-11-04] Pre-push verification
+
+Saved portable one-seed pilot metrics and audit under results/experiments/. Verified Python syntax for eight changed modules, staged whitespace integrity, and exclusion of dataset/model/raw-run outputs. Ran `python -m unittest src.tests.test_csrel_baselines src.tests.test_pipelines`: 42 tests in 236.858 seconds, OK with one skipped. These are fixture/orchestration checks; shuffled real-model performance and Kaggle execution remain unverified. No language-model training was launched during this verification. Kaggle notebook creation is pending and is not included in this commit.

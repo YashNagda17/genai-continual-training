@@ -40,6 +40,8 @@ Enforce the [parameter ceiling](/design/README.md) from architecture metadata be
 
 ## Interface contract
 
+When evaluation requests `return_predictions`, the causal adapter also returns a transient `_predictions` list with sample IDs, prompts, gold strings, generated strings, and exact-match flags. The runtime removes this list before metric logging and writes it to a task-stage prediction artifact. This reuses evaluation generation without an extra forward pass.
+
 | Operation | Required behavior |
 |---|---|
 | `train(k, *, batch_factory, objective, hooks, limits)` | Run the supplied finite/reproducibly bounded update stream for `k` passes; return counters and cost records. Never choose replay or reshuffle independently. |

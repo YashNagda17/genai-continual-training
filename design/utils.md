@@ -44,12 +44,23 @@ Return undefined aggregate quantities as null with a reason, including first-tas
 
 ## Cost and artifact contract
 
+Exclude Explorer metadata (`desktop.ini` and `Thumbs.db`, case-insensitive) from checkpoint hashes, synchronization, and payload accounting. Continue verifying every actual model/state payload. Cleanup of already obsolete trees tolerates entries concurrently removed by another actor; missing retained recovery payloads remain errors.
+
+Atomic file and checkpoint-directory replacement retries Windows permission failures five times with bounded exponential delays, then reports persistent failures. Never replace atomic rename with a copy/delete fallback. Comparison output roots may be absolute paths outside the repository to avoid sync-folder interference; summaries retain absolute paths for such roots.
+
+Obsolete checkpoint-tree cleanup handles Windows read-only attributes and retries transient permission errors up to three times. Targets must resolve strictly inside the owning attempt; current retained checkpoints are excluded by pruning. Persistent failures remain explicit and preserve the published recovery pointer.
+
 Each run writes a resolved JSON manifest and status, a long-form metrics CSV, phase-level cost records, checkpoint references, and selection/replay diagnostics under `results/code/runs/<run_id>/<attempt_id>/`. Add per-example evaluation errors where applicable; publication plots are generated as PDF by code under `src/`, with script/config references in the output manifest.
 
-Artifact utilities implement [checkpoint transactions](/design/model-weights.md), locking, event watermarks, and reference-aware pruning. Reference immutable shared blobs rather than copying them on each save.
+Artifact utilities implement [checkpoint transactions](/design/model-weights.md), locking, event watermarks, and reference-aware pruning. The run-writer lock is exclusive and non-blocking: POSIX uses `fcntl.flock`, and Windows uses `msvcrt.locking` on one byte. Directory `fsync` is best-effort because some platforms reject directory handles. File `fsync` retries a read/write handle where a read-only handle is rejected. Teacher paths are compared with forward slashes so Windows pruning keeps the same blobs as POSIX. Source and design fingerprints are read as UTF-8. Peak process RSS is null when the OS has no `resource` module. Reference immutable shared blobs rather than copying them on each save.
 
 Record data preparation, probing, selection, reference-model training, learner training, teacher inference, memory construction, and evaluation separately. Include wall-clock seconds, peak CPU/GPU memory with units and measurement scope, parameter counts, optimizer steps, tokens, replay exposures, storage breakdown, and FLOPs when measured or estimated. Label estimates and unavailable measurements. `gpu_hours = sum(device_active_seconds) / 3600`; synchronized timing must include asynchronous device work.
 
 Never report selection-only forward cost as total CSReL cost, or TSR's absence of optimizer steps as zero probe compute. Separate cold-start overhead from incremental update cost without hiding either. Keep failed and negative runs. Outcome (`positive`, `negative`, `null`, or unassessed) is distinct from execution status and requires a predefined comparison criterion.
 
 Aggregate independent seeds, not batches, for uncertainty. Save seed counts, mean, sample standard deviation, CI method, and missing-run reasons; do not produce a meaningful confidence interval from a single run or silently drop failed seeds.
+
+
+## Learner-order ablation
+
+The optional `--shuffle-training` comparison flag permutes the full permitted learner view separately per pass, using a deterministic seed derived from run seed, task stage, and pass. Cumulative views mix all seen tasks. Dataset arrival order, memory candidate membership, replay RNG, and auxiliary fitting order remain unchanged. Pending queue/cursor state remains checkpointed; permutations reconstruct without consuming the replay RNG. The flag is part of scientific identity. This is an explicitly labeled learner-order ablation, not an exact paper reproduction.

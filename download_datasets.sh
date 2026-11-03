@@ -2,7 +2,7 @@
 # Fetch each instruction source into canonical JSONL. Hub files stay in the source cache.
 #
 # Usage:
-#   ./download_datasets.sh [clinc_oos|schuster|bitext_customer_support|trace|all] [hf_token]
+#   ./download_datasets.sh [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|all] [hf_token]
 #
 # Output, for each selected source:
 #   src/datasets/data/<dataset_id>/<commit>/records.jsonl
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 if [[ $# -gt 2 ]]; then
-  echo "Usage: $0 [clinc_oos|schuster|bitext_customer_support|trace|all] [hf_token]" >&2
+  echo "Usage: $0 [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|all] [hf_token]" >&2
   exit 1
 fi
 
@@ -33,7 +33,9 @@ python3 - "$ROOT/src/datasets/data" "$NAME" "$TOKEN" <<'PY'
 import sys
 from pathlib import Path
 
-from src.datasets.dataset_sources import BitextSource, ClincOOSSource, SchusterSource, TraceSource
+from src.datasets.dataset_sources import (
+    BitextSource, ClincDomainSource, ClincOOSSource, SchusterSource, TraceSource,
+)
 
 root = Path(sys.argv[1])
 name = sys.argv[2]
@@ -46,6 +48,10 @@ sources = {
     "bitext_customer_support": BitextSource,     # category tasks, intent class, assistant reply
     "trace": TraceSource,                        # eight TRACE-5000 tasks, Lima excluded
 }
+# Domain CLINC is an explicit continual stream. "all" keeps the original four sources.
+if name == "clinc_oos_domains":
+    print(ClincDomainSource().fetch(root, token=token))
+    raise SystemExit(0)
 selected = list(sources) if name == "all" else [name]
 if name not in sources and name != "all":
     raise SystemExit(f"Unknown dataset {name}")
