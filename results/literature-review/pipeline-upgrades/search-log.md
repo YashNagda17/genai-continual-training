@@ -45,3 +45,13 @@ Queries: LESS sequence-level gradient norm versus completion length; token-level
 Accepted into the same review: Grad-Mimic and LeaF, as boundaries. LESS Table 13 and its sequence-gradient appendix were read from the existing LESS HTML and folded into the LESS section. No OpenAlex counts were collected for the new papers.
 
 Held out of the five-paragraph set: NICE (policy-gradient selection of a non-differentiable metric). The same loss-versus-accuracy split is already stated in LESS Appendix J, and NICE's result table was not extracted. IProX and SkMM stay out; they are proxy-model selectors already screened as a second model.
+
+## Round 3 (2026-11-01) — token excess and the replay multiplier
+
+The question was whether the admission gradient should change with response length, or whether the mean over tokens and the fixed replay probability are the quantities theory actually names.
+
+Queries: selective language modeling excess loss; primal-dual continual learning Lagrangian; adaptive replay scheduling for LLM fine-tuning; conditional token selection in chain-of-thought. arXiv title search confirmed `2404.07965`, `2310.00154`, `2603.09892`, and `2505.17827`. HTML for those four was read. No OpenAlex counts were collected.
+
+Accepted into the same review: Rho-1, PDCL, MSSR, and conditional token selection.
+
+Held out: MSL, a recommender tuning paper returned by the same title query. It is a different task. GEM and A-GEM are older than the window and appear inside the PDCL related work as the constraint predecessors.

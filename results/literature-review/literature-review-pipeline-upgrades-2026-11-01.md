@@ -1,6 +1,6 @@
 # Literature Review: Upgrades for the Incremental Fine-Tuning Pipeline
 
-Date: 2026-11-01. Last updated: 2026-11-01, round 2. Papers deep-read: 12. Window: 2023-11-01 through 2026-11-01.
+Date: 2026-11-01. Last updated: 2026-11-01, round 3. Papers deep-read: 16. Window: 2023-11-01 through 2026-11-01.
 
 **Topic interpretation.** The current system is the task-chunk hybrid in [Idea.md](/Idea.md): OASIS admits current examples, TSR picks a historical task and a teacher, aL-SAR samples inside that task and freezes layers, and CSReL writes the replay memory. The question is which later papers can raise retained and new-task accuracy, or cut selection and training cost, without pretending that a stack of published selectors is a new algorithm. CFD and biology are used as mechanism sources, not as new application domains.
 
@@ -420,3 +420,117 @@ LeaF is the boundary on token gradients. It shows that a mean over tokens can hi
 ## Round-2 novelty verdict
 
 Probe-aligned admission and demand-routed replay remain the round-1 ideas, and they stay logged. They are the wrong first course experiment. The inner product they rely on is the LESS failure mode in Table 13, and running both of them at once is two variables. Summed-gradient energy is the substitution that uses the backward OASIS already pays for. It is preempted as a research claim the moment it is described as "cosine selection" or "alignment to a teacher." Described as `n²` times the current OASIS energy, with length-stratified random as the control, it is still an untested measurement on this stream. No training was run for this round.
+
+## Round 3 Additions (2026-11-01) — which tokens, and which constraint
+
+Round 2 treated completion length as the defect in OASIS energy. A mean over response tokens is also a mixture of tokens the model has already fit and tokens it has not. Selective language modeling and constrained continual learning name those as separate objects: a token weight inside the loss, and a dual variable on a retention constraint. Four papers were read for that split. Their headline margins do not transfer to a 700M instruction stream.
+
+### Round-3 synthesis
+
+What is preempted: "train on the tokens with high excess loss" as a new objective. Rho-1 already does that with a reference model, and its self-reference variant is the no-extra-corpus version. "Set the replay rate from a loss signal" is also published: PDCL updates a dual variable from constraint violation, and MSSR compares fixed, loss-triggered, and accuracy-triggered replay on LLM fine-tunes. Multiplying gradient energy by n² is not in these papers, and it is not what they found. Rho-1 keeps the per-selected-token mean and drops tokens. PDCL never mixes a squared gradient with a loss.
+
+What stays open: using the response tokens that still exceed a batch median as the only tokens inside this repository's OASIS energy, on one bounded instruction stream at or below 700M, with semantic accuracy and token NLL reported separately. A dual update of TSR's replay probability on one probe loss is a second, separate measurement. It has to beat a fixed probability and a loss-triggered rule, and PDCL's vision bounds do not certify it.
+
+## [2024] Rho-1: Not All Tokens Are What You Need (arXiv)
+
+**Citation**: Zhenghao Lin, Zhibin Gou, Yeyun Gong, Xiao Liu, Yelong Shen, Ruochen Xu, Chen Lin, Yujiu Yang, Jian Jiao, Nan Duan, and Weizhu Chen. "Rho-1: Not All Tokens Are What You Need." arXiv:2404.07965, 2024.
+**Links**: [Paper](https://arxiv.org/abs/2404.07965) | [AlphaXiv](https://www.alphaxiv.org/abs/2404.07965) | [Code](https://aka.ms/rho) | Venue: not stated in the pages read
+
+### Idea
+
+Rho-1 starts from the observation that a language-model loss is an average over tokens, and most of those tokens are not what later accuracy depends on. The method, selective language modeling, trains a reference model on a curated corpus, scores every token in a larger corpus by the excess loss of the training model over that reference, and then optimizes ordinary cross-entropy only on the top k% of that excess. The loss is still a mean, taken over the kept tokens rather than over the whole sequence. The setting is continual pretraining: 15B tokens of OpenWebMath, and a separate 80B general-token run. The models in the headline results are 1B and 7B.
+
+### Novelty
+
+Document-level filtering and high-quality data mixtures are older. The change is the unit of selection. A token can be kept inside a document that would have been discarded, and a token can be dropped inside a document that would have been kept. The reference model is the part that distinguishes a token that is hard for everyone from a token that this model has not learned. The architecture is unchanged. The protocol is one pretraining run plus a fine-tune, not a task stream with a bounded replay memory.
+
+### Results
+
+On the math continual-pretraining comparison, the paper says both the 1B and 7B selective runs beat the full-token baseline by over 16 points of few-shot accuracy on GSM8K and MATH, and that the selective run reaches the baseline's accuracy 5 to 10 times faster. The abstract states an absolute few-shot gain of up to 30 points across 9 math tasks on the 15B OpenWebMath corpus. After fine-tuning, Rho-1-1B and Rho-1-7B reach 40.6% and 51.8% on MATH. A token census during training puts 26% of tokens in a high-to-low loss path, 51% in low-to-low, 11% in high-to-high, and 12% in low-to-high. The 11% that stay hard are described as aleatoric. On 80B general tokens with TinyLlama-1B, the paper reports a 6.8 point average gain across 15 tasks. A self-reference setting, with no separate curated reference corpus, is reported at up to 3.3 points. Those are the authors' averages. The pages read do not include a seed count for the 16-point math gap.
+
+### Limitations
+
+The useful version trains a reference model on curated data before scoring. The self-reference gain is much smaller than the curated-reference gain. The 1B model is already above this project's 700M cap, and the token budget is tens of billions. Nothing in the pages read is a forgetting metric, a replay buffer, or an admission gate over examples. The 11% of persistently hard tokens are a direct warning that the maximum-loss token is not automatically the token worth learning. The paper does not claim the same gains for instruction streams whose answers are short.
+
+### Relevance
+
+Rho-1 is the reason a mean over every response token is a questionable admission gradient, and the reason n² times that mean is the wrong repair. The mean spends its mass on the 51% of tokens that are already fit. The repair they measured is a mask on excess loss, followed by a mean over the surviving tokens. Copying the full method would add a second pretraining run this project does not have. The piece that can be tested here is the mask, using token losses the head pass already computes, with a random mask of the same keep-rate as the control. Threat to summed-gradient energy: high. Threat to example-level probe alignment: moderate, because a probe of the diluted mean still dilutes the same tokens.
+
+## [2023] Primal Dual Continual Learning (arXiv)
+
+**Citation**: Juan Elenter, Navid NaderiAlizadeh, Tara Javidi, and Alejandro Ribeiro. "Primal Dual Continual Learning: Balancing Stability and Plasticity through Adaptive Memory Allocation." arXiv:2310.00154, 2023.
+**Links**: [Paper](https://arxiv.org/abs/2310.00154) | [AlphaXiv](https://www.alphaxiv.org/abs/2310.00154) | Code: not in the pages read | Venue: not stated in the pages read
+
+### Idea
+
+PDCL writes continual learning as a constrained problem: minimize the loss on the current task subject to the loss on each previous task staying below a tolerance ε. The empirical dual puts a multiplier λ_k on each previous-task constraint. For a fixed λ the Lagrangian is an ordinary weighted sum of current loss and replay losses. The multiplier is then raised when the constraint is violated and projected back to zero when the constraint has slack. The paper uses that multiplier in two further ways. Its size ranks how hard a past task is to retain, so the replay buffer gives more slots to larger λ. At sample level, the per-example multiplier is treated as a sampling distribution over what to store. The experiments are image, speech, and medical classification with replay buffers, run inside the Mammoth setup, five seeds.
+
+### Novelty
+
+GEM, A-GEM, and GSS already treat forgetting as a constraint. GEM projects the current gradient so the old loss does not rise. PDCL solves the saddle point instead of projecting, and it reads the optimal multiplier as a sensitivity: how much current-task performance moves if the forgetting tolerance is loosened. The losses are assumed convex in the predictor, not in the network weights. The architecture is a standard classifier. The evaluation is class-incremental accuracy and forgetting. There is no language model and no token mask.
+
+### Results
+
+The paper's Figure 3 caption says that dual-variable weights improve on fixed regularization weights used by ring and reservoir replay, and that partitioning the buffer by λ improves on uniform partitions, including A-GEM's. Figure 6 compares average accuracy and forgetting after the last task. The text says the primal-dual versions are comparatively high on accuracy and low on forgetting across most buffer sizes, and that in the small-buffer speech setting the gain disappears and sample selection does not help. Figure 4 is the tolerance sweep: a loose ε drives the multipliers to zero, and a tight ε makes the problem infeasible and the multipliers diverge. The operating choice they report is near 1.1 times the unconstrained loss of that task, with selected values 0.08, 0.02, 0.05, and 0.005 on Tiny ImageNet, SpeechCommands, OrganA, and MNIST. The pages read do not contain a numeric accuracy table, so no accuracy delta is quoted here.
+
+### Limitations
+
+The deviation bound on the dual variables needs a function-class complexity term that grows with the square root of the parameter dimension over the number of stored samples. At 700M parameters and a small buffer that term is not a useful guarantee, and the paper says as much by tying the quality of λ to memory size and to how expressive the parametrization is. Cross-entropy is convex in the predicted distribution, not in θ. The duality gap for a deep net is therefore a modeling gap, not the bound in the convex function class. All reported tasks are classification. A fixed replay probability is exactly the hyperparameter the paper says the multiplier should replace, but only when both sides of the Lagrangian are the same loss and a tolerance is declared.
+
+### Relevance
+
+PDCL is the correction to any rule that compares a squared gradient with a loss rise. Those two numbers are not terms in one Lagrangian. The replay weight has to multiply a replay loss, and it has to move when that loss crosses a declared tolerance. The hybrid's branch probability is a constant in place of λ. Using PDCL's full buffer partition would also replace CSReL, which is a second change. The piece that stays testable is the scalar update of the branch probability from one probe loss. Threat to demand-routed share as written: high. Threat to OASIS energy: none. The dual variable does not rank current examples.
+
+## [2026] MSSR: Memory-Aware Adaptive Replay for Continual LLM Fine-Tuning (arXiv)
+
+**Citation**: Yiyang Lu, Yu He, Jianlong Chen, and Hongyuan Zha. "MSSR: Memory-Aware Adaptive Replay for Continual LLM Fine-Tuning." arXiv:2603.09892, 2026.
+**Links**: [Paper](https://arxiv.org/abs/2603.09892) | [AlphaXiv](https://www.alphaxiv.org/abs/2603.09892) | Code: not in the pages read | The PDF keywords include ICML; a proceedings version was not confirmed in the pages read
+
+### Idea
+
+MSSR schedules replay during LoRA fine-tuning by giving each stored sample a memory strength and a stability, then triggering rehearsal from those states. Strength drops as a function of time since the sample was last trained, and a successful replay resets strength and raises stability so the next gap can be longer. The training loss is the usual mix of the new batch and the replay batch. The paper's own Figure 1 distinguishes this from three published alternatives: replay at a fixed interval, replay when loss crosses a threshold, and replay when accuracy has already dropped. The experiments fine-tune Mistral-7B, Llama-3.1-8B, Qwen2.5-7B, and Gemma2-9B. The short sequence is Alpaca-GPT4, then GSM8K, then competition math. A longer sequence has 11 tasks.
+
+### Novelty
+
+Experience replay, loss-triggered replay, and accuracy-triggered replay are the baselines the paper draws in Figure 1. The added state is the per-sample strength and stability, with a parametric decay the authors relate to the Ebbinghaus curve. They also write that they do not assume a language model forgets by the human curve. The schedule is the contribution. The model, the LoRA update, and the next-token loss are unchanged. There is no admission gate on the new task and no coreset writer of the CSReL type.
+
+### Results
+
+Table 1 reports final averages on MMLU, GSM8K, and MATH. For Qwen2.5-7B the averages are 52.1 with no replay, 52.8 with fixed replay, 53.7 with loss-triggered replay, 53.7 with accuracy-triggered replay, and 54.5 for the full MSSR method. Llama-3.1-8B is 52.5, 53.0, 53.2, 53.1, and 54.4 on that same order. Mistral-7B is 48.5, 49.2, 49.3, 49.9, and 50.8. The full method's margin over loss-triggered replay is 0.8, 1.2, and 1.5 points on those three models. The margin over training with no replay is about 2 points. Table 2 extends the comparison to 11 tasks on Gemma2-9B and the other backbones. The cells are a mixture of fractions and F1-style scores, and the paper marks winners per column. No seed standard deviation is printed in Table 1. Every backbone is 7B to 9B.
+
+### Limitations
+
+The interesting margin is the gap over loss-triggered and accuracy-triggered replay, and that gap is about a point on these tables. The paper's own caption says loss-triggered replay fires on noisy fluctuations, so a raw loss threshold is a jittery dual. Accuracy-triggered replay fires after the metric has already fallen. The decay curve has several fitted constants. None of the models fit under 700M. The replay set is drawn from the datasets in the stream, not from a CSReL coreset with a byte cap. A result at 7B with an unbounded training mixture does not certify a branch probability on a 0.5B model.
+
+### Relevance
+
+MSSR is the scheduler a replay-weight claim has to beat, and it is also the warning about borrowing a forgetting curve. The human curve is a parametric choice in the paper, and the paper says the model is not assumed to follow it. Fixed replay, loss-triggered replay, and accuracy-triggered replay already exist as arms. A new branch rule that only ties loss-triggered replay has not cleared the table the authors already published. Threat to a dual update of one probability: moderate, as a required baseline. Threat to token-level admission: low. MSSR does not choose tokens.
+
+## [2025] Not All Tokens Are What You Need In Thinking (arXiv)
+
+**Citation**: Hang Yuan, Bin Yu, Haotian Li, Shijun Yang, Christina Dan Wang, Zhou Yu, Xueyin Xu, Weizhen Qi, and Kai Chen. "Not All Tokens Are What You Need In Thinking." arXiv:2505.17827, 2025.
+**Links**: [Paper](https://arxiv.org/abs/2505.17827) | [AlphaXiv](https://www.alphaxiv.org/abs/2505.17827) | Code: not in the pages read
+
+### Idea
+
+Conditional token selection compresses long chain-of-thought traces before a fine-tune. A reference model trained on high-quality reasoning data scores each thinking token by how much it contributes to reaching the answer, conditioned on the question and the answer. Tokens below a compression ratio are deleted, and the student trains on the shortened trace. The aim is a model that also emits fewer reasoning tokens at inference. The reported student in the abstract's main number is Qwen2.5-14B-Instruct. The benchmarks named in the abstract and the opening figures are GPQA and MATH500, with TokenSkip as the compression baseline.
+
+### Novelty
+
+Rho-1 selects tokens by excess loss during pretraining. This paper selects tokens by a conditional importance score during a reasoning fine-tune, and it deletes them from the trace rather than masking them inside an otherwise intact loss. The reference model is again a separate trained model. The problem is inference cost of long traces. There is no continual task sequence and no replay.
+
+### Results
+
+On GPQA with Qwen2.5-14B-Instruct, the abstract reports a 9.1 point accuracy gain together with 13.2% fewer reasoning tokens, from a 13% cut in training tokens. A 42% cut in training tokens is reported with a 5 point accuracy drop and a 75.8% cut in reasoning tokens. The opening figure caption says accuracy stays above TokenSkip across compression ratios on MATH500 for the models they plot. The pages read do not include the per-ratio table, so those curves are not quoted cell by cell. The reference-model training cost is discussed in an appendix and was not extracted as a FLOP count.
+
+### Limitations
+
+The student is 14B. The reference model is an extra training run. Deleting tokens changes the sequence the loss sees, which is a different edit from reweighting an OASIS score. The 42% compression result is a loss on accuracy, so "fewer tokens" is not a free improvement. No forgetting number is reported. Conditioning the score on the gold answer uses the answer at selection time, which a training-time mask may do and an evaluation-time mask must not.
+
+### Relevance
+
+CTS is the boundary on the slogan that some tokens do not matter. The result that supports a mask is the mild compression, which raised GPQA. The result that limits it is the aggressive compression, which lowered accuracy. A median mask inside OASIS can overshoot in the same way. It also shows that a second reference model is the tool these papers use to decide which token is real. A batch median has no such reference. Threat to an excess-token admission score: moderate as a failure mode, low as a method to copy.
+
+## Round-3 novelty verdict
+
+Token selection by excess loss and dual weights on replay losses are published. What is not published, in the sources read, is either one inside this hybrid's admission energy or branch probability, at or below 700M, with the other stages left untouched. The defensible core is the token mask on the energy this code already computes. The dual update of the replay probability is a later arm, and it is a correction of a dimension error in the logged demand rule rather than a new scheduler. No training was run for this round.
