@@ -64,3 +64,26 @@ Aggregate independent seeds, not batches, for uncertainty. Save seed counts, mea
 ## Learner-order ablation
 
 The optional `--shuffle-training` comparison flag permutes the full permitted learner view separately per pass, using a deterministic seed derived from run seed, task stage, and pass. Cumulative views mix all seen tasks. Dataset arrival order, memory candidate membership, replay RNG, and auxiliary fitting order remain unchanged. Pending queue/cursor state remains checkpointed; permutations reconstruct without consuming the replay RNG. The flag is part of scientific identity. This is an explicitly labeled learner-order ablation, not an exact paper reproduction.
+
+## Generation-aware replay additions
+
+Used by the [generation replay recipe](/design/generation-replay.md). All are additive; existing callers see no change.
+
+| Item | Change |
+|---|---|
+| `Record` | New `practice: dict | None = None`, the metadata a retained record's active policy needs: `answer_ids`, `answer_text`, `baseline`, `writer`, `writer_mode`, `generation`, `truncated`, `gold_similarity`. It holds plain JSON and is never set by dataset code. `target` keeps the gold response |
+| `practice_record(record, cut=None)` | In `contracts.py`. Returns a copy whose `target` is `{"text": answer_text, "ids": answer_ids[:cut]}`, with `tokens` updated. Same `sample_id`. Returns a row with `practice=None` unchanged |
+| `TokenTargets` | In `contracts.py`. `baseline` and `weight`, float32 CPU tensors, flat in row-major order over supervised tokens. Length must equal `Batch.supervised_tokens` |
+| `TrainingBatch` | New `token_targets: TokenTargets | None = None` |
+| `Objective` | New `token_mode: str = "all"` (`all`, `weighted`, or `hinge`) and `token_allowance: float = 0.0`. See [models.md](/design/models.md) |
+| `ReplayStore.usage` | New `answer_tokens`. Bytes already follow the serialized size, so answers and baselines count automatically. `tokens` remains the gold payload and has no implicit conversion to answer tokens |
+| `numerics.py` | New `token_similarity`, `answer_disagreement`, `kmeans`, `largest_remainder`, `rouge_l`, all in native Torch on the supplied device |
+
+Runtime additions in `runtime.py`:
+
+- `collate_prompts(records)` and `collate_prefixes(records, lengths)` apply the same train-only guard and order check as `collate`.
+- `run` passes `self.token_targets(batch)` into `TrainingBatch`. The default hook in `PipelineBase` returns `None`.
+- `report_summary` also drops `token_surprise`, as it does `class_gradients`.
+- `_limit_reached` also stops at `spec.identity["max_task_seconds"]` when set, using `progress["seconds"]`. Using `identity` follows `shuffle_training` and leaves `RunSpec`'s fields unchanged. The value is part of scientific identity.
+
+New separately recorded cost categories: selection sampling, selection embedding, answer writing, answer check, surprise forward, repair rollout, noise replica. Each records generations, input tokens, new tokens, and seconds. A generation count alone hides the cost of re-reading a long prompt.

@@ -64,3 +64,19 @@ Every run records `method_id`, algorithm variant, source PDF checksum and sectio
 ## Failure boundaries
 
 Reject an incompatible gradient capability, unknown task boundary, missing teacher, unavailable class/group semantics, unsupported memory budget, or nonfinite score before silently substituting behavior. Empty history at the first task and an empty probabilistic current selection are expected states with defined behavior, not errors. Unexpected dataset exhaustion is an error unless it is the configured stopping condition.
+
+## Generation-aware replay additions
+
+The [generation replay recipe](/design/generation-replay.md) adds these capabilities, with the same rule that proposals never mutate the shared store.
+
+| Capability | Input -> output | Intended owner |
+|---|---|---|
+| `build_memory` | As above, scored by answer disagreement | `AnswerSelectionPipeline` |
+| `write_answers` | Newly kept rows -> rows with `practice` | `PastSelfReplayPipeline` |
+| `route_replay` | As above, plus drift by topic | `PastSelfReplayPipeline` |
+| `refresh` | Retained rows -> row state, drift | `RepairStopPipeline` |
+| `retrieve`, `token_targets` | Topic, batch -> practice rows, aligned targets | `RepairStopPipeline` |
+
+Method identity gains one status, `project`: a mechanism we define ourselves, with no source PDF or paper section to record. `RepairStopPipeline` uses it, and the full recipe stays `hybrid`.
+
+`PipelineBase` gains a default `token_targets(batch)` hook returning `None`. `RepairStopPipeline` is the one component without a standalone lifecycle, because it is not a paper method and needs a writer and a router. Its independent run is the composer's `repair_only` arm.

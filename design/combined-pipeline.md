@@ -39,3 +39,7 @@ Expose task phase, event watermark, pending admissions, samplers/RNG, auxiliary 
 ## Required controls for later experiments
 
 Provide configurations for new-only, uniform replay, individual components, and the complete hybrid under the same data/order/evaluation contract. Define cumulative retraining from a fixed initialization separately from cumulative warm-start fine-tuning. Record both access and total cost; neither cumulative reference has the bounded-history restriction. Actual model/dataset choices, comparison budgets, and success margins belong to the later experiment protocol.
+
+## Generation-aware replay additions
+
+`CombinedPipeline` and this contract are unchanged by the proposed recipe. `GenerationReplayPipeline` shares this file's module and has [its own contract](/design/generation-replay.md). `CombinedPipeline` remains runnable as the `old_hybrid` arm.

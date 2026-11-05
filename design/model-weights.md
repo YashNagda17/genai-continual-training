@@ -43,3 +43,11 @@ Keep the active learner and at most one required auxiliary/teacher model residen
 
 Sharing immutable base tensors across distinct adapters is allowed only when state and autograd isolation are verified. Never swap an adapter inside a live learner graph. For a tight-memory KD path, compute detached teacher outputs before the student graph, release the teacher when necessary, and bound output buffering; exact loss-preserving chunking is allowed. Charge transfers/reloads to measured cost. Probe and CSReL stages release their models when no longer needed, retaining only state required for resume or subsequent computation.
 
+## Generation-aware replay additions
+
+Used by the [generation replay recipe](/design/generation-replay.md).
+
+- `PastSelfConfig.retain_copies=False` is an explicit, labeled adaptation that drops eras. A saved copy may be pruned once its answers and baselines are committed and no retained checkpoint or task record references it. Removing it takes it out of `dependencies()`; deletion still goes through reference-aware pruning, so a retained fallback keeps its files until replaced. Its removal cannot be undone within a run, so an arm that needs a copy later must retain it.
+- Answers and baselines are committed with replay membership, in one recovery checkpoint. Task-end writing and refresh progress are lifecycle state with safe boundaries after each batch. A hard kill may repeat at most the unsaved batch.
+- Refresh and writing run on the resident learner and add no resident model. Selection follows the existing auxiliary rule.
+- Retained answers and baselines are replay payload, not recovery-only state, so they count toward the replay budget and remain readable by the active policy.

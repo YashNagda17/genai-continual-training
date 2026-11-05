@@ -44,3 +44,20 @@ GENAI_SETUP_TESTS=1 python -m unittest src.tests.test_pipelines.SetupModelTests 
 ```
 
 `resolve_device` prints to stderr when the resolved device is CPU, including an explicit `cpu` choice and a fallback from a missing CUDA or XPU device. That line means the run is not on an accelerator; pass `device="xpu:0"` or `device="cuda:0"` when that device is present.
+
+## Generation-aware replay additions
+
+Evidence required for the [generation replay recipe](/design/generation-replay.md), in `src/tests/test_generation_replay.py`, using the tiny fixtures in `fakes.py` extended with `predict`, `token_loss`, and `collate_prompts`. Worked numbers come from [Idea_Refined.md](/Idea_Refined.md) and were made up to show the method, so these test arithmetic, not behavior.
+
+| Area | Evidence required |
+|---|---|
+| Answer selection | Disagreement by hand, including 0 for identical answers; `gap` ordering across the messy/clear table; strong model still fitted on the whole pool under `candidate_limit`; exact group quota total and stable ties; seeded k-means reproducible; older-task reselection reusing stored strong scores; same seeds give same samples after resume |
+| Past self | Routing formula with drift; `b = 0` equals TSR weights; greedy answer reproduced by the saved copy, so a pass at write time; EOS trim and `truncated`; rejected answers never replayed; older answers unchanged by reselection; commit is atomic with membership; `retain_copies=False` keeps files needed by a retained checkpoint |
+| Repair and stop | `S = 2.575` and `w = 2.5` from `d = 1.03`, `g = 0.75`, `beta = 2`; targets 0.46 and 0.61; rounds use 7, 7, then 3 tokens; 260 generations for 60 rows, 20 failing, 5 tokens, 2 runs; gain 0 with no rollouts when nothing follows the token; negative gain clamped; floor zeroes small gains; shuffled and random policies reproducible |
+| Clock | A turn counts when nothing is active; a row that slips after everything recovered is found by the next refresh; fall-through moves to another topic, then to current; `skip` terminates at replay probability 1 |
+| Model execution | Hinge and weighted losses by hand; an all-inactive batch leaves every parameter and optimizer state unchanged, including under weight decay; truncated-row surprises equal full-row surprises at kept positions; `token_loss` agrees with `score` loss after reduction; refresh and writing preserve learner, optimizer, and training RNG |
+| Data | `reserve_response` leaves room for generation on a long prompt; `collate_prefixes` order and left padding; held-out records rejected at prompt and prefix collation |
+| Recovery | Interrupt during task-end writing, each refresh stage, and between refresh and the pending branch; compare with an uninterrupted run; row state round-trips through JSON with integer positions intact; no double count of turns |
+| Measurement | Every generation and forward appears in one cost category; `max_task_seconds` stops at a safe boundary |
+
+Do not treat these as evidence for retention, cost, or the main claim. Only the [first test and arms](/design/generation-replay-experiments.md) can show that.

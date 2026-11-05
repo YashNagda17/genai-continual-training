@@ -72,3 +72,29 @@ The training executor exposes ordered hooks for batch preparation, pre-backward 
 - Keep attempted updates separate from successful optimizer steps. Overflow skips retain the scaler update, consumed-data/RNG progress, and cost, but do not advance the scheduler or commit success-clock policy observations.
 - Do not promise bitwise reproducibility across hardware/backends. Record deterministic settings and validate resume within declared numerical tolerances.
 - Role loading/unloading must preserve learner parameters and optimizer state; follow [model-weights.md](/design/model-weights.md).
+
+## Generation-aware replay additions
+
+Used by the [generation replay recipe](/design/generation-replay.md). No branch here names a method. New capabilities: `generation`, `token_loss`, `prompt_embedding`.
+
+| Operation | Behavior |
+|---|---|
+| `score` kind `token_loss` | Detached per-token NLL, flat in row-major order over supervised tokens, with reduction `"none"`. The caller splits by answer length |
+| `score` kind `prompt_embedding` | One L2-normalized vector per example: mean final hidden state over attended tokens of a prompt-only batch. `_batch_identity` must accept a payload with no `labels` |
+| `predict` | `token_ids` end at the first EOS, inclusive, with padding removed. `texts` is unchanged. No other caller reads `token_ids` today. Prompt-plus-prefix batches use the existing prompt-only path |
+| `evaluate` | `evaluation_spec["text_metrics"]` adds named metrics over generated strings, using `numerics.py` |
+
+Split `_losses` so a new token-level helper returns flat NLL, owners, and counts, and `_losses` sums those. Existing behavior and chunking stay the same.
+
+`train` applies `Objective.token_mode` to a batch with `token_targets`, using flat surprise `s`, baseline `b`, weight `w`, and allowance `m`:
+
+| `token_mode` | Loss |
+|---|---|
+| `all` | Existing supervised loss. `token_targets` is `None` |
+| `weighted` | `sum(w * s) / count(w > 0)` |
+| `hinge` | `sum(w * max(0, s - b - m)) / count(w > 0 and s - b - m > 0)` |
+
+- **A batch with zero denominator takes no optimizer step.** Return `success=False` and `skip_reason="no_active_tokens"`, with no backward. `optimizer_update` must not be called, because AdamW's weight decay and momentum move parameters even when gradients are zero, and a stop must really stop.
+- Report detached pre-update surprise in `diagnostics["token_surprise"]` as a flat list, on success and on this skip. It is not persisted.
+- Include a fingerprint of `token_targets` in `revision_context`, so scoring revisions distinguish different selections.
+- A truncated row's surprises must equal the full row's at kept positions. Check this per adapter, including LFM2's convolutions, because cuts rely on it.

@@ -44,3 +44,7 @@ The `pilot` protocol uses seeded equal-per-class subsets of three CLINC domains,
 ## Learner-order ablation
 
 The optional `--shuffle-training` comparison flag permutes the full permitted learner view separately per pass, using a deterministic seed derived from run seed, task stage, and pass. Cumulative views mix all seen tasks. Dataset arrival order, memory candidate membership, replay RNG, and auxiliary fitting order remain unchanged. Pending queue/cursor state remains checkpointed; permutations reconstruct without consuming the replay RNG. The flag is part of scientific identity. This is an explicitly labeled learner-order ablation, not an exact paper reproduction.
+
+## Generation replay entry
+
+`python -m src.generation_replay_experiment` runs the first test and arm comparisons for the [generation replay recipe](/design/generation-replay.md). Its [experiment contract](/design/generation-replay-experiments.md) owns protocols, arms, and drop rules. Attempt handling matches the CSReL comparison entry.

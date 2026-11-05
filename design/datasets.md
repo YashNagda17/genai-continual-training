@@ -42,3 +42,12 @@ Every batch carries ordered IDs, task/origin labels, tensors or payloads, valid-
 
 Variable-length collation must preserve ID alignment. Packing is optional and requires sample boundaries and segment masks that prevent unintended cross-example attention and allow per-example scoring. Disable packing on a scoring path until its per-example equivalence is validated.
 
+## Generation-aware replay additions
+
+Used by the [generation replay recipe](/design/generation-replay.md). Datasets stay unaware of practice answers.
+
+- `InstructionPreprocessing.reserve_response: int = 0`. With `prompt_left`, keep `len(prompt) <= max_length - max(len(response), reserve_response)`. Today's rule fills `max_length` with prompt plus gold, so on a long-prompt row `predict` has no room to generate and raises its sequence bound. The value enters the prepared-view fingerprint. Zero preserves current behavior.
+- `InstructionDataset.collate_prefixes(records, lengths)`. Left-pads `prompt_ids + target["ids"][:length]`, with no labels, in record order. Repeated IDs are allowed, for the two runs of a repair test.
+- `collate` needs no change. A row from `practice_record` already carries its answer or cut as `target`, and its count as `tokens`.
+- The dataset may not assign groups. Question groups are a policy decision in [answer-selection.md](/design/answer-selection.md). `class_id` stays genuine labels only.
+- No new source or fetcher. The recipe uses the existing TRACE snapshot and `TraceSource`, plus CLINC for the class-group check.
