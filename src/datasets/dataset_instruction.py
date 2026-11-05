@@ -34,12 +34,13 @@ class InstructionPreprocessing:
     identity: dict
     truncation: str = "drop"
     allow_reasoning: bool = True
+    reserve_response: int = 0
 
     def describe(self):
         """JSON identity of the pinned tokenizer/template; callables are identified by `identity`."""
         return {"identity": self.identity, "eos_id": self.eos_id, "pad_id": self.pad_id,
                 "max_length": self.max_length, "truncation": self.truncation,
-                "allow_reasoning": self.allow_reasoning}
+                "allow_reasoning": self.allow_reasoning, "reserve_response": self.reserve_response}
 
 
 def _storage_bytes(record):
@@ -138,10 +139,14 @@ class InstructionDataset(DatasetBase):
         """Tokenize prompt and response separately so only response tokens (plus EOS) are supervised.
 
         `view` maps split names to records. Over-length records are dropped, or with
-        truncation="prompt_left" lose their earliest prompt tokens. Empty responses and responses
-        that leave no room for a prompt are always dropped rather than becoming zero-loss examples.
+        truncation="prompt_left" lose their earliest prompt tokens so the prompt fits in
+        `max_length - max(len(response), reserve_response)`. A reserve of zero keeps the
+        prompt-plus-gold bound. Empty responses and responses that leave no room for a prompt
+        are always dropped rather than becoming zero-loss examples.
         """
         spec = preprocessing_spec
+        if type(spec.reserve_response) is not int or spec.reserve_response < 0:
+            raise ValueError("reserve_response must be a non-negative int")
         prepared, dropped, truncated = {}, [], []
         for name in SPLITS:
             kept = []
@@ -158,7 +163,12 @@ class InstructionDataset(DatasetBase):
                 if len(response) >= spec.max_length:
                     dropped.append({"sample_id": r.sample_id, "reason": "response_exceeds_max_length"})
                     continue
-                excess = len(prompt) + len(response) - spec.max_length
+                # Room for the gold response and, when larger, for a later generation.
+                limit = max(len(response), spec.reserve_response)
+                if limit > spec.max_length:
+                    dropped.append({"sample_id": r.sample_id, "reason": "reserve_exceeds_max_length"})
+                    continue
+                excess = len(prompt) + limit - spec.max_length
                 if excess > 0:
                     if spec.truncation != "prompt_left":
                         dropped.append({"sample_id": r.sample_id, "reason": "exceeds_max_length"})
@@ -222,6 +232,32 @@ class InstructionDataset(DatasetBase):
                 attention_mask[i, width - len(prompt):] = True
         return Batch(records, {"input_ids": input_ids, "attention_mask": attention_mask},
                      sum(len(r.inputs["prompt_ids"]) for r in records), 0)
+
+    def collate_prefixes(self, records, lengths):
+        """Left-pad each prompt plus a target prefix. There are no labels.
+
+        `lengths` selects `target["ids"][:length]` in record order. The same sample ID may
+        appear twice, once for each run of a repair test.
+        """
+        records, lengths = tuple(records), tuple(lengths)
+        if len(lengths) != len(records) or any(
+                type(n) is not int or n < 0 for n in lengths):
+            raise ValueError("Prefix lengths must be one non-negative int per record")
+        sequences = []
+        for record, length in zip(records, lengths):
+            target = record.target["ids"]
+            if length > len(target):
+                raise ValueError(f"Prefix length {length} exceeds the target of {record.sample_id}")
+            sequences.append(list(record.inputs["prompt_ids"]) + list(target[:length]))
+        width = max((len(seq) for seq in sequences), default=0)
+        input_ids = torch.full((len(records), width), self.pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((len(records), width), dtype=torch.bool)
+        for i, seq in enumerate(sequences):
+            if seq:
+                input_ids[i, width - len(seq):] = torch.tensor(seq, dtype=torch.long)
+                attention_mask[i, width - len(seq):] = True
+        return Batch(records, {"input_ids": input_ids, "attention_mask": attention_mask},
+                     sum(len(seq) for seq in sequences), 0)
 
     def save(self, path):
         """Write prepared records and a manifest binding their checksum and fingerprint."""
