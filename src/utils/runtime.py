@@ -377,7 +377,7 @@ class PipelineRuntime:
             raise ValueError("Executor token count disagrees with collated batch")
         if not report.success and not report.skip_reason:
             raise ValueError("Skipped update needs an explicit reason")
-        if any(v <= 0 for v in report.loss_counts.values()):
+        if report.skip_reason != "no_active_tokens" and any(v <= 0 for v in report.loss_counts.values()):
             raise ValueError("Loss denominators must be positive")
         self.record_event("execution_cost", role="learner" if model is self.model else "auxiliary",
                           wall_seconds=time.monotonic() - start, measured=report.cost)
@@ -387,7 +387,8 @@ class PipelineRuntime:
     def report_summary(report):
         """Copy report fields for persistence while dropping transient per-example gradient arrays."""
         # Exclude transient arrays before asdict can duplicate a large tensor buffer.
-        diagnostics = {k: v for k, v in report.diagnostics.items() if k != "class_gradients"}
+        diagnostics = {k: v for k, v in report.diagnostics.items()
+                       if k not in {"class_gradients", "token_surprise"}}
         return asdict(replace(report, diagnostics=diagnostics))
 
     def learner_pass_order(self, items, pass_number):

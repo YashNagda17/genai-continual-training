@@ -95,6 +95,16 @@ class Objective:
     kd_temperature: float = 1.0
     kd_temperature_squared: bool = False
     kl_direction: str = "teacher_to_student"
+    token_mode: str = "all"
+    token_allowance: float = 0.0
+
+
+@dataclass(frozen=True)
+class TokenTargets:
+    """Flat float32 CPU baseline and weight, one value per supervised token."""
+    baseline: Any
+    weight: Any
+
 
 @dataclass(frozen=True)
 class TrainingBatch:
@@ -102,6 +112,7 @@ class TrainingBatch:
     origins: tuple[str, ...]
     teacher_targets: ScoreResult | None = None
     teacher_task: str | None = None
+    token_targets: TokenTargets | None = None
 
 
 @dataclass(frozen=True)

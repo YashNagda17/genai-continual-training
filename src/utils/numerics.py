@@ -155,3 +155,66 @@ def continual_metrics(matrix, task_index):
         "backward_transfer": (row[:t] - initial).mean().item(),
         "forgetting": (previous_best - row[:t]).mean().item(),
     }
+
+
+def _as_tokens(value):
+    """Split a string on whitespace, and keep a sequence of token IDs as it is."""
+    if isinstance(value, str):
+        return value.split()
+    if isinstance(value, torch.Tensor):
+        return value.detach().reshape(-1).tolist()
+    return list(value)
+
+
+def _pair_device(left, right, device):
+    if device is not None:
+        return torch.device(device)
+    for value in (left, right):
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return torch.device("cpu")
+
+
+def token_similarity(left, right, device=None):
+    """Return 1 minus the Levenshtein distance divided by the longer length.
+    Both-empty sequences score 1. Strings are split on whitespace.
+    """
+    device = _pair_device(left, right, device)
+    left, right = _as_tokens(left), _as_tokens(right)
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    previous = torch.arange(len(right) + 1, device=device, dtype=torch.float32)
+    for i, item in enumerate(left, start=1):
+        current = previous.new_empty(len(right) + 1)
+        current[0] = i
+        for j, other in enumerate(right, start=1):
+            cost = 0. if item == other else 1.
+            current[j] = torch.minimum(torch.minimum(previous[j] + 1, current[j - 1] + 1),
+                                       previous[j - 1] + cost)
+        previous = current
+    return (1. - previous[-1] / max(len(left), len(right))).item()
+
+
+def rouge_l(prediction, reference, device=None):
+    """Unofficial ROUGE-L F1 over whitespace tokens, with no stemming or synonym table.
+    Both-empty strings score 1.
+    """
+    device = _pair_device(prediction, reference, device)
+    left, right = _as_tokens(prediction), _as_tokens(reference)
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    previous = torch.zeros(len(right) + 1, device=device, dtype=torch.float32)
+    for item in left:
+        current = previous.new_zeros(len(right) + 1)
+        for j, other in enumerate(right, start=1):
+            current[j] = previous[j - 1] + 1 if item == other else torch.maximum(previous[j], current[j - 1])
+        previous = current
+    overlap = previous[-1]
+    precision, recall = overlap / len(left), overlap / len(right)
+    if precision + recall == 0:
+        return 0.0
+    return (2 * precision * recall / (precision + recall)).item()

@@ -32,6 +32,7 @@ from torch.utils.checkpoint import checkpoint
 
 from .model_base import ModelBase
 from ..utils.contracts import ModelInfo, ScoreResult, StepReport, UpdateHooks, fingerprint, model_boundary
+from ..utils import numerics
 from ..utils.numerics import resolve_device
 from ..utils.state import Checkpoints, base_assets, read_json, write_json, tensor_fingerprint
 
@@ -305,7 +306,8 @@ class CausalLMModel(ModelBase):
         numerical_bytes = weight_bytes + trainable * 12
         peak = numerical_bytes + self.settings.working_bytes + self.settings.max_score_bytes
         capabilities = {"loss", "last_layer_gradients", "subset_gradients", "logits", "distillation",
-                        "feature_gradient", "layer_fisher", "freeze_aware"}
+                        "feature_gradient", "layer_fisher", "freeze_aware", "generation",
+                        "token_loss", "prompt_embedding"}
         if lora:
             capabilities.update(("lora_b_gradient", "fixed_zero_lora_b"))
         return ModelInfo(identity, total, trainable, capabilities=frozenset(capabilities),
@@ -641,25 +643,30 @@ class CausalLMModel(ModelBase):
         """Compute one small vocabulary projection in float32 for stable causal cross entropy."""
         return F.cross_entropy(self.module.lm_head(features).float(), labels, reduction="none")
 
-    def _losses(self, features, labels):
-        """Shift once, select supervised positions and compute token means per example.
-        Checkpoint head chunks during autograd so vocabulary-sized intermediates are recomputed
-        rather than retained for the entire sequence. Prompt and padding labels contribute nothing.
+    def _token_nll(self, features, labels):
+        """Return flat causal NLL, the row that owns each token, and the per-row counts.
+        Order is row-major over supervised positions. Prompt and padding labels contribute nothing.
+        Checkpoint head chunks during autograd so vocabulary-sized intermediates are recomputed.
         """
         targets = labels[:, 1:]
         valid = targets != -100
         counts = valid.sum(-1)
         model_boundary(bool((counts > 0).all()), "Every example needs a causally supervised target")
         selected = features[:, :-1][valid]
-        targets = targets[valid]
+        chosen = targets[valid]
         owners = torch.arange(labels.shape[0], device=self.device)[:, None].expand_as(valid)[valid]
         parts = []
-        for start in range(0, len(targets), self.settings.logit_chunk_size):
-            x, y = selected[start:start + self.settings.logit_chunk_size], targets[start:start + self.settings.logit_chunk_size]
-            part = (checkpoint(self._head_loss, x, y, use_reentrant=False) if torch.is_grad_enabled()
-                    else self._head_loss(x, y))
+        for start in range(0, len(chosen), self.settings.logit_chunk_size):
+            stop = start + self.settings.logit_chunk_size
+            part = (checkpoint(self._head_loss, selected[start:stop], chosen[start:stop], use_reentrant=False)
+                    if torch.is_grad_enabled() else self._head_loss(selected[start:stop], chosen[start:stop]))
             parts.append(part)
-        sums = torch.zeros(len(counts), device=self.device).scatter_add(0, owners, torch.cat(parts))
+        return torch.cat(parts), owners, counts
+
+    def _losses(self, features, labels):
+        """Sum the flat token NLL into one mean and one sum per example."""
+        flat, owners, counts = self._token_nll(features, labels)
+        sums = torch.zeros(len(counts), device=self.device).scatter_add(0, owners, flat)
         return sums / counts, sums, counts
 
     @staticmethod
@@ -680,9 +687,9 @@ class CausalLMModel(ModelBase):
         return loss
 
     def _batch_identity(self, payload):
-        """Tie teacher targets to token identities, masks and causal supervision positions."""
-        return fingerprint({k: payload[k].detach().cpu().tolist()
-                            for k in ("input_ids", "attention_mask", "labels")})
+        """Tie scores to token identities and masks. Labels are included when the batch has them."""
+        keys = [key for key in ("input_ids", "attention_mask", "labels") if key in payload]
+        return fingerprint({key: payload[key].detach().cpu().tolist() for key in keys})
 
     def distillation_loss(self, features, payload, targets, objective, origins):
         """Evaluate exact KL(teacher || student) in supervised-token chunks.
@@ -736,6 +743,22 @@ class CausalLMModel(ModelBase):
         """Return one response-token mean per ordered example, without constructing a training graph."""
         with torch.no_grad():
             return self._losses(self._features(payload), payload["labels"])[0].float()
+
+    def score_token_loss(self, payload):
+        """Return detached per-token NLL, flat in row-major order over supervised tokens."""
+        with torch.no_grad():
+            return self._token_nll(self._features(payload), payload["labels"])[0].float()
+
+    def score_prompt_embedding(self, payload):
+        """Return one L2-normalized mean of the final hidden state over attended prompt tokens."""
+        model_boundary("labels" not in payload and "attention_mask" in payload,
+                       "Prompt embeddings need a prompt-only batch")
+        with torch.no_grad():
+            hidden = self._features(payload).float()
+            mask = payload["attention_mask"].to(dtype=hidden.dtype).unsqueeze(-1)
+            mean = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.)
+            norm = torch.linalg.vector_norm(mean, dim=-1, keepdim=True)
+            return mean / torch.where(norm > 0, norm, torch.ones_like(norm))
 
     def score_logits(self, payload, temperature):
         """Buffer temperature-scaled teacher logits on CPU at causally shifted positions.
@@ -799,8 +822,14 @@ class CausalLMModel(ModelBase):
         with self._execution() as execution_mode:
             payload = self._payload(batch)
             start = self._begin_timed_block()
+            if score_spec.kind in {"token_loss", "prompt_embedding"}:
+                model_boundary(score_spec.reduction == "none", f"{score_spec.kind} uses reduction none")
             if score_spec.kind == "loss":
                 values = self.score_loss(payload)
+            elif score_spec.kind == "token_loss":
+                values = self.score_token_loss(payload)
+            elif score_spec.kind == "prompt_embedding":
+                values = self.score_prompt_embedding(payload)
             elif score_spec.kind == "logits":
                 values = self.score_logits(payload, score_spec.temperature)
             else:
@@ -912,13 +941,76 @@ class CausalLMModel(ModelBase):
         self.optimizer.zero_grad(set_to_none=True)
         return success
 
+    def _masked_token_loss(self, flat, targets, objective):
+        """Return the weighted or hinge loss, its detached numerator, and the active count.
+        A zero count means the batch has nothing to practise. The mask is not differentiated.
+        """
+        weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
+        baseline = targets.baseline.detach().to(device=flat.device, dtype=flat.dtype)
+        model_boundary(weight.dtype == flat.dtype and weight.ndim == 1
+                       and tuple(targets.weight.shape) == tuple(targets.baseline.shape)
+                       and targets.weight.dtype == torch.float32 and targets.baseline.dtype == torch.float32
+                       and targets.weight.device.type == "cpu" and targets.baseline.device.type == "cpu",
+                       "Token targets must be flat float32 CPU tensors")
+        if objective.token_mode == "weighted":
+            terms = weight * flat
+            active = weight > 0
+        else:
+            excess = flat - baseline - objective.token_allowance
+            terms = weight * excess.clamp(min=0)
+            active = (weight > 0) & (excess.detach() > 0)
+        denom = int(active.sum().item())
+        numer = 0. if denom == 0 else float(terms.detach().sum().item())
+        if denom == 0:
+            return None, numer, denom
+        return terms.sum() / denom, numer, denom
+
+    def _token_update(self, training, objective, hooks, payload, start, execution_mode):
+        """Train on token weights, or skip the optimizer when the active count is zero.
+        AdamW is not called on that skip, so weight decay cannot move a recovered token.
+        """
+        model_boundary(objective.token_mode in {"weighted", "hinge"}, "Unknown token mode")
+        model_boundary(not objective.separate_means and objective.kd_weight == 0,
+                       "Token modes do not combine with separate means or distillation")
+        targets = training.token_targets
+        model_boundary(targets is not None, "Token modes require token targets")
+        self.apply_freeze(0)
+        features = self._features(payload)
+        flat, _, _ = self._token_nll(features, payload["labels"])
+        model_boundary(flat.numel() == targets.weight.numel() == training.batch.supervised_tokens,
+                       "Token targets must cover every supervised token")
+        surprise = flat.detach().float().cpu().tolist()
+        loss, numer, denom = self._masked_token_loss(flat, targets, objective)
+        diagnostics = {"freeze_prefix": 0, "token_surprise": surprise,
+                       "gradient_subset": hooks.gradient_subset}
+        if denom == 0:
+            success, reason = False, "no_active_tokens"
+            del features, flat
+        else:
+            context = {"tokens": self._batch_identity(payload), "ids": training.batch.ids,
+                       "origins": training.origins, "objective": asdict(objective), "prefix": 0,
+                       "token_targets": fingerprint({"baseline": targets.baseline.detach().cpu().tolist(),
+                                                     "weight": targets.weight.detach().cpu().tolist()})}
+            success = self.optimizer_update(loss, revision_context=context)
+            reason = None if success else "nonfinite_loss_or_gradients"
+            del features, flat, loss
+        cost = self._timing_cost(
+            start, execution_mode=execution_mode, forward_passes=1, per_example_backward_observations=0,
+            process_peak_cpu_bytes=(None if resource is None
+                                     else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024),
+            layer_cost_kind="supplied" if self.settings.backward_costs else "parameter_estimate")
+        return StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
+                          {"supervised": numer}, {"supervised": denom}, diagnostics, cost, reason)
+
     def train(self, k, *, batch_factory, objective, hooks, limits):
         """Consume the supplied finite stream with no internal shuffling or replay decisions.
         Plan freezing before the actual backward, report supervised statistics separately from KL,
         and leave no gradients or live graphs at the checkpoint boundary after each attempt.
+        token_mode all keeps that supervised loss. weighted and hinge use token targets.
         """
         reports, attempts, updates, tokens = [], 0, 0, 0
         hooks = hooks or UpdateHooks()
+        model_boundary(objective.token_mode in {"all", "weighted", "hinge"}, "Unknown token mode")
         with self._execution(mode="training", advance=True) as execution_mode:
             for _ in range(k):
                 for training in batch_factory():
@@ -926,6 +1018,13 @@ class CausalLMModel(ModelBase):
                         return reports
                     start = self._begin_timed_block()
                     payload = self._payload(training.batch)
+                    if objective.token_mode != "all":
+                        report = self._token_update(training, objective, hooks, payload, start, execution_mode)
+                        attempts, updates, tokens = (attempts + 1, updates + int(report.success),
+                                                     tokens + training.batch.valid_tokens)
+                        reports.append(report)
+                        continue
+                    model_boundary(training.token_targets is None, "token_mode all does not take token targets")
                     self.apply_freeze(0)
                     statistics = self.feature_statistics(payload, objective, training.origins) if hooks.plan_update else {}
                     plan = hooks.plan_update(statistics) if hooks.plan_update else None
@@ -961,10 +1060,15 @@ class CausalLMModel(ModelBase):
     def evaluate(self, view, evaluation_spec, progress=None):
         """Evaluate caller-collated held-out records, preserving the learner's numerical state.
         Report token-weighted NLL/perplexity and optionally exact-match generation accuracy.
+        text_metrics names functions in numerics and averages them over generated strings.
         The dataset retains ownership of response masks and prompt-only generation collation.
         """
         size = evaluation_spec.get("batch_size", self.settings.max_batch_size)
+        metric_names = tuple(evaluation_spec.get("text_metrics") or ())
+        if metric_names and "generation" not in evaluation_spec:
+            raise ValueError("text_metrics require generation")
         total, count, correct = 0., 0, 0
+        metric_totals = dict.fromkeys(metric_names, 0.0)
         predictions = []
         with self._execution() as execution_mode:
             timing_start = self._begin_timed_block()
@@ -978,19 +1082,25 @@ class CausalLMModel(ModelBase):
                 count += counts.sum().item()
                 if "generation" in evaluation_spec:
                     generated = self.predict(self.collate_prompts(records), evaluation_spec["generation"])
-                    correct += sum(text.strip() == record.target["text"].strip()
-                                   for text, record in zip(generated["texts"], records))
+                    pairs = list(zip(generated["texts"], records))
+                    correct += sum(text.strip() == record.target["text"].strip() for text, record in pairs)
+                    for name in metric_names:
+                        fn = getattr(numerics, name, None)
+                        model_boundary(callable(fn) and not name.startswith("_"), f"Unknown text metric {name}")
+                        metric_totals[name] += sum(float(fn(text, record.target["text"])) for text, record in pairs)
                     if evaluation_spec.get("return_predictions"):
                         predictions.extend({"id": record.sample_id,
                                             "messages": record.inputs["messages"],
                                             "target": record.target["text"], "prediction": text,
                                             "exact_match": text.strip() == record.target["text"].strip()}
-                                           for text, record in zip(generated["texts"], records))
+                                           for text, record in pairs)
                 if progress is not None:
                     progress(start + len(records), len(view))
         result = {"negative_nll": -total / count, "perplexity": math.exp(min(80., total / count))}
         if "generation" in evaluation_spec:
             result["exact_match"] = correct / len(view)
+        for name, amount in metric_totals.items():
+            result[name] = amount / len(view)
         result.update(self._timing_cost(timing_start, execution_mode=execution_mode))
         if evaluation_spec.get("return_predictions"):
             result["_predictions"] = predictions
@@ -1039,7 +1149,24 @@ class CausalLMModel(ModelBase):
                                           use_cache=True)
             tokens = output[:, payload["input_ids"].shape[1]:].cpu().tolist()
             return {"ids": ids, "texts": self.tokenizer.batch_decode(tokens, skip_special_tokens=True),
-                    "token_ids": tokens, "cost": self._timing_cost(timing_start, execution_mode=execution_mode)}
+                    "token_ids": self._trim_generated(tokens),
+                    "cost": self._timing_cost(timing_start, execution_mode=execution_mode)}
+
+    def _trim_generated(self, rows):
+        """Keep tokens through the first EOS and drop padding. Text decoding stays on the raw rows."""
+        eos = self.tokenizer.eos_token_id
+        pad = self.preprocessing_kwargs()["pad_id"]
+        trimmed = []
+        for row in rows:
+            kept = []
+            for token in row:
+                if token == pad and token != eos:
+                    break
+                kept.append(int(token))
+                if token == eos:
+                    break
+            trimmed.append(kept)
+        return trimmed
 
     def _weights(self, *, changed_only=False):
         """Serialize canonical parameter names once, preserving tied-parameter identity on reload."""
