@@ -18,11 +18,11 @@ Use a closed schema: unknown keys and omitted required values are errors. Valida
 
 Models, method recipes, task sequences, and seeds are explicit independent axes. A list of datasets forming one continual stream is **one task sequence**, not automatically an axis of separate runs. Print the expanded run count, ordered task sequence, and output identity in dry-run output. Reject duplicate scientific run identities.
 
-Each independent run creates fresh learner/optimizer, policy state, replay, and RNG streams. Share only immutable downloaded assets or fingerprinted preprocessing. Default to sequential execution; resource-aware parallel scheduling is a later extension, not necessary architecture.
+Each independent run creates fresh learner/optimizer, policy state, replay, and RNG streams. Share only downloaded assets. Preprocessing settings travel in the prepared manifest. Default to sequential execution; resource-aware parallel scheduling is a later extension, not necessary architecture.
 
 ## Run identity and recovery
 
-- Derive `run_id` from canonical scientific configuration, seed, data/model/preprocessing fingerprints, and implementation/design version; use source checksums without Git. Each execution attempt has a unique `attempt_id` and isolated directory. Operational changes follow [model-weights.md](/design/model-weights.md).
+- Derive `run_id` from the scientific configuration, seed, data, and model. Do not hash source files or design documents. Each execution attempt has a unique `attempt_id` and isolated directory. Operational changes follow [model-weights.md](/design/model-weights.md).
 - Support `resume=auto|required|never`, defaulting to `auto`. `auto` skips a matching completed run with validated outputs, resumes a matching incomplete run from its latest valid checkpoint, and starts fresh only when no prior run exists. `required` fails without a compatible checkpoint. `never` creates a new attempt without overwriting prior artifacts.
 - In `auto`/`required`, an existing incomplete run with no usable checkpoint or incompatible scientific configuration is an error, not a silent restart. Validate manifests and dependencies; a corrupt/torn newest save may fall back to the retained previous checkpoint with an explicit recovery record stating lost progress. Never merge states from different checkpoints.
 - `auto`/`required` select the explicit `attempt_id` or the sole existing attempt; multiple attempts require an explicit choice. Resume reuses that directory, while `never` allocates a new one. An explicitly requested missing attempt is an error.

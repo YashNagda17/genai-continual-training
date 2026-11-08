@@ -52,7 +52,7 @@ Obsolete checkpoint-tree cleanup handles Windows read-only attributes and retrie
 
 Each run writes a resolved JSON manifest and status, a long-form metrics CSV, phase-level cost records, checkpoint references, and selection/replay diagnostics under `results/code/runs/<run_id>/<attempt_id>/`. Add per-example evaluation errors where applicable; publication plots are generated as PDF by code under `src/`, with script/config references in the output manifest.
 
-Artifact utilities implement [checkpoint transactions](/design/model-weights.md), locking, event watermarks, and reference-aware pruning. The run-writer lock is exclusive and non-blocking: POSIX uses `fcntl.flock`, and Windows uses `msvcrt.locking` on one byte. Directory `fsync` is best-effort because some platforms reject directory handles. File `fsync` retries a read/write handle where a read-only handle is rejected. Teacher paths are compared with forward slashes so Windows pruning keeps the same blobs as POSIX. Source and design fingerprints are read as UTF-8. Peak process RSS is null when the OS has no `resource` module. Reference immutable shared blobs rather than copying them on each save.
+Artifact utilities implement [checkpoint transactions](/design/model-weights.md), locking, event watermarks, and reference-aware pruning. The run-writer lock is exclusive and non-blocking: POSIX uses `fcntl.flock`, and Windows uses `msvcrt.locking` on one byte. Directory `fsync` is best-effort because some platforms reject directory handles. File `fsync` retries a read/write handle where a read-only handle is rejected. Teacher paths are compared with forward slashes so Windows pruning keeps the same blobs as POSIX. Peak process RSS is null when the OS has no `resource` module. Reference immutable shared blobs rather than copying them on each save.
 
 Record data preparation, probing, selection, reference-model training, learner training, teacher inference, memory construction, and evaluation separately. Include wall-clock seconds, peak CPU/GPU memory with units and measurement scope, parameter counts, optimizer steps, tokens, replay exposures, storage breakdown, and FLOPs when measured or estimated. Label estimates and unavailable measurements. `gpu_hours = sum(device_active_seconds) / 3600`; synchronized timing must include asynchronous device work.
 
@@ -87,3 +87,41 @@ Runtime additions in `runtime.py`:
 - `_limit_reached` also stops at `spec.identity["max_task_seconds"]` when set, using `progress["seconds"]`. Using `identity` follows `shuffle_training` and leaves `RunSpec`'s fields unchanged. The value is part of scientific identity.
 
 New separately recorded cost categories: selection sampling, selection embedding, answer writing, answer check, surprise forward, repair rollout, noise replica. Each records generations, input tokens, new tokens, and seconds. A generation count alone hides the cost of re-reading a long prompt.
+
+## Summarization plan additions
+
+Used by the [summarization plan](/design/summarization-plan.md). All are additive, so existing callers see no change.
+
+**Records** in `contracts.py`:
+
+`UpdateHooks.token_targets(batch, detached_nll)` optionally constructs token
+targets from the executor's current forward. It is used by G3; the default is
+`None`, preserving older callers. `SummarizationPipeline` in `pipeline_base.py`
+reuses the generic lifecycle, adds split-checked score/generation helpers, and
+records analysis costs. Snapshot-backed auxiliary roles load their layout before
+activation. New job identities bind configuration and input artifacts once at
+setup, without hashing numerical batches.
+
+| Item | Change |
+|---|---|
+| `AdapterPlan` | `trainable`, `new_rank`, `lr_scale`, `identity`, as defined in [models.md](/design/models.md). Plain JSON, with block keys written as `"encoder.7"` strings, since JSON can't keep tuple or integer keys |
+| `GenerationSpec.script_guard` | Optional `{"block": script}` or `{"penalize": script, "penalty": float}`. `None` keeps current behavior |
+| `Record.practice` | Reused for past summaries, adding `past_baseline` and `loss_before` keys. `writer = "english_checkpoint"` |
+
+**Metrics** in `numerics.py`, native and labelled unofficial:
+
+| Function | Definition |
+|---|---|
+| `chrf(hyp, ref, n=6, beta=2)` | Character n-gram F-score from 1 to `n`, with whitespace removed, averaged over orders, on a 0–100 scale. 0 for an empty hypothesis |
+| `script_share(text, script="devanagari")` | Letters in the script divided by all letters. 0 when there are no letters |
+| `paired_bootstrap(a, b, resamples, seed)` | `Δ = mean(a - b)` over paired items, with the 2.5% and 97.5% quantiles of resampled means. Uses its own CPU Torch generator |
+| `interaction(s_a, s_rev, s_blk, s_d)` | `s_d - s_a - (s_rev - s_a) - (s_blk - s_a)` |
+| `top_overlap(rank_1, rank_2, k)` | Size of the intersection of the two top-`k` sets, divided by `k` |
+| `cohen_kappa(r1, r2)` | Agreement between two raters' categorical labels, corrected for chance |
+| `energy_rank(singular_values, fraction)` | Smallest `k` whose kept squared singular values, summed over all projections, reach `fraction` of the total |
+
+`rouge_l` is reused as it is, on whitespace tokens. It handles Hindi, because Hindi separates words with spaces.
+
+**Cost categories:** `pool_scoring`, `pool_generation`, `stop_regeneration`, `probe_pass`, `shrink_generation`, `guard_generation`, and `serving_timing`. Each records rows, input tokens, new tokens, seconds, and **forward-pass units**, where a forward over one row is 1 unit and a training row (forward plus backward) is 3. Training cost is recorded as before, plus peak GPU memory per stage.
+
+**Evaluation:** the task matrix above still applies, with tasks `english` and `hindi`. The current plan also reports forgetting against the English checkpoint, `forget = S_en(English checkpoint) - S_en(arm)`, which is the same quantity for two tasks, along with seed aggregation as stated above.

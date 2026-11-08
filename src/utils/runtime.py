@@ -58,7 +58,7 @@ class PipelineRuntime:
                 model.info.total_parameters, model.info.trainable_parameters):
             raise ValueError("Loaded parameter counts disagree with pre-allocation metadata")
 
-    def acquire_auxiliary(self, role, initialization):
+    def acquire_auxiliary(self, role, initialization, *, checkpoint=None, state_kind="frozen"):
         """Offload the learner before creating and activating one isolated numerical role.
         Repeated requests for the same role reuse it while fitting or scoring is in progress.
         The owner must release that role before switching to another initialization.
@@ -69,7 +69,9 @@ class PipelineRuntime:
             info = self.model.describe_role(role, initialization)
             self.spec.resources.validate_role(info)
             self.auxiliary = self.model.fork(role, initialization)
-            if self.auxiliary is self.model or self.auxiliary.info != info:
+            if checkpoint is not None:
+                self.auxiliary.load(checkpoint, state_kind)
+            if self.auxiliary is self.model or (checkpoint is None and self.auxiliary.info != info):
                 raise ValueError("Auxiliary must be isolated and match advertised metadata")
             self.auxiliary_key = key
             self._activate(self.auxiliary)

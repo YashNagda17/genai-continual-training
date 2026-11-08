@@ -1,10 +1,15 @@
 """Fetch CLINC, Schuster, Bitext, TRACE, and XL-Sum into canonical JSONL."""
 
 from pathlib import Path
+import csv
 import json
 import random
+import sys
 import tarfile
 import zipfile
+
+from huggingface_hub import snapshot_download
+import pyarrow.parquet as pq
 
 from .dataset_instruction import InstructionDataset, SummarizationDataset
 
@@ -266,7 +271,6 @@ class InstructionSource:
     extra = {}
 
     def download(self, root, token=None, revision="main"):
-        from huggingface_hub import snapshot_download
         cache = Path(root) / self.dataset_id / "hub"
         cache.mkdir(parents=True, exist_ok=True)
         kwargs = {"repo_id": self.source, "repo_type": "dataset", "revision": revision,
@@ -293,7 +297,6 @@ class ClincOOSSource(InstructionSource):
              "usage": "Official plus splits, including out-of-scope, as one task."}
 
     def _read(self, snapshot):
-        import pyarrow.parquet as pq
         by_split, names = {}, None
         for split in SPLITS:
             table = pq.read_table(snapshot / "plus" / f"{split}-00000-of-00001.parquet")
@@ -330,7 +333,6 @@ class SchusterSource(InstructionSource):
              "usage": "English intents only. Hub eval is validation. Slots are not supervised."}
 
     def convert(self, snapshot):
-        import pyarrow.parquet as pq
         files = {"train": "train-en.parquet", "eval": "eval-en.parquet", "test": "test-en.parquet"}
         by_split = {split: pq.read_table(snapshot / "en" / name).to_pylist()
                     for split, name in files.items()}
@@ -346,7 +348,6 @@ class BitextSource(InstructionSource):
              "usage": "Synthetic customer-support replies. Split is the seeded group holdout."}
 
     def convert(self, snapshot):
-        import csv
         files = [path for path in snapshot.glob("*.csv") if path.is_file()]
         if len(files) != 1:
             raise ValueError(f"Expected one CSV in {snapshot}, found {len(files)}")
@@ -424,5 +425,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    import sys
     main(sys.argv)

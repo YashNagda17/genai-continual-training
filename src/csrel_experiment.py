@@ -24,6 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.datasets.dataset_instruction import InstructionDataset
+from src.datasets.dataset_sources import CLINC_DOMAINS, load_source
+from src.models.model_causal_lm import CausalLMSettings
+from src.models.model_smollm2 import SmolLM2Model
 from src.pipelines.csrel import CSReLConfig, CSReLPipeline
 from src.pipelines.memory_baselines import MemoryBaselineConfig, MemoryBaselinePipeline
 from src.utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec
@@ -353,11 +357,6 @@ def resolved_config(args):
 
 def load_real_dataset(config):
     """Load SmolLM2 and either the tiny smoke JSONL or the domain CLINC snapshot."""
-    from src.datasets.dataset_instruction import InstructionDataset
-    from src.datasets.dataset_sources import CLINC_DOMAINS, load_source
-    from src.models.model_causal_lm import CausalLMSettings
-    from src.models.model_smollm2 import SmolLM2Model
-
     output = ROOT / config["output"] / config["protocol"]
     if config["protocol"] == "backend-smoke":
         data_path = output / "data" / "records.jsonl"
@@ -509,7 +508,6 @@ def run_arm(config, arm, budget, rounds, model, dataset, raw, tasks):
     model.load(config["initial_weights"], "frozen")
     pipeline, _, _ = make_pipeline(arm, config, rounds, model, dataset, raw)
     if config["protocol"] == "pilot":
-        from src.datasets.dataset_sources import CLINC_DOMAINS
         coverage = {}
         for task in tasks:
             coverage[task] = {}

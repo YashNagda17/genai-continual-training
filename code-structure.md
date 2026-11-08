@@ -30,6 +30,9 @@ src/
 | `CombinedPipeline` | Compose paper components across datasets/models into one hybrid run |
 | `example.py` | Sample run: one local model, one CLINC pass, pipeline evaluation, and a few inferences |
 | `main.py` | Later: resolve and execute the configured model/method/task-sequence run matrix |
+| `summarization_experiment.py` | Current plan: English stage, Hindi arms, analysis jobs, and reports ([summarization-plan.md](/design/summarization-plan.md)) |
+
+The current plan adds `models/model_seq2seq.py`, `models/model_mt5.py`, `SummarizationDataset` in `datasets/dataset_instruction.py`, and `pipelines/revision.py`, `pipelines/adapter_room.py`, and `pipelines/generation_shrink.py`. These are project mechanisms, not paper methods, but they follow the same `PipelineBase` contract.
 
 Detailed interfaces and ownership: [design/README.md](/design/README.md).
 

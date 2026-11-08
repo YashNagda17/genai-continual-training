@@ -16,8 +16,11 @@ import tempfile
 import time
 
 import torch
+from huggingface_hub import snapshot_download
+from safetensors.torch import load_file
 from torch import nn
 from torch.nn import functional as F
+from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer, LogitsProcessor
 
 from .model_base import ModelBase
 from ..utils.contracts import (
@@ -220,7 +223,6 @@ class Seq2SeqLMModel(ModelBase):
         if self._prepared:
             return
         if self.config is None or self._tokenizer is None or self.model_factory is None:
-            from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer
             if self.config is None:
                 self.config = AutoConfig.from_pretrained(
                     self.model_id, revision=self.revision, cache_dir=self.cache_dir)
@@ -329,20 +331,23 @@ class Seq2SeqLMModel(ModelBase):
             if self.expected_parameters is not None and self.untie_head:
                 model_boundary(base == self.expected_parameters,
                                f"{self.model_id} has {base} base parameters, expected {self.expected_parameters}")
-            self._profiles[key] = (_count(module), _count(module, trainable_only=True), base)
+            adapter_names = _adapter_parameter_names(module)
+            adapters = sum(p.numel() for name, p in module.named_parameters() if name in adapter_names)
+            self._profiles[key] = (_count(module), _count(module, trainable_only=True), base, adapters)
         return self._profiles[key]
 
     def describe_role(self, role, initialization):
         saved_role, self.role = self.role, role
         try:
-            total, trainable, _base = self._profile()
+            total, trainable, _base, adapters = self._profile()
         finally:
             self.role = saved_role
         identity = f"{self.model_id}:{role}:{initialization}"
         weight_bytes = total * 4
-        saved = trainable if role != "serving" and not self._save_full_weights else total
+        saved = adapters if role != "serving" and not self._save_full_weights else total
         peak = weight_bytes + trainable * 12 + self.settings.working_bytes + self.settings.max_score_bytes
-        capabilities = frozenset({"example_loss", "token_loss", "generation", "probe_gradient"})
+        capabilities = frozenset({"example_loss", "token_loss", "generation", "probe_gradient", "token_weight_hook",
+                                  "adapter_plans", "adapter_updates", "adapter_shrink", "zero_probe"})
         blocks = self.config.num_layers + self.config.num_decoder_layers
         return ModelInfo(identity, total, trainable, capabilities=capabilities,
                          cpu_bytes=peak, accelerator_bytes=peak if self.device.type != "cpu" else 0,
@@ -371,7 +376,6 @@ class Seq2SeqLMModel(ModelBase):
     def _assets(self):
         if not self.pretrained:
             return
-        from huggingface_hub import snapshot_download
         self._base_path = Path(snapshot_download(
             self.model_id, revision=self.revision, cache_dir=self.cache_dir,
             allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "pytorch_model.bin"]))
@@ -426,7 +430,6 @@ class Seq2SeqLMModel(ModelBase):
         path = self._base_path / "pytorch_model.bin"
         safetensors = list(self._base_path.glob("*.safetensors"))
         if safetensors:
-            from safetensors.torch import load_file
             state = load_file(safetensors[0], device="cpu")
         else:
             model_boundary(path.is_file(), f"{self.model_id} has no pytorch_model.bin or safetensors")
@@ -634,10 +637,9 @@ class Seq2SeqLMModel(ModelBase):
         with self._execution():
             payload = self._payload(batch)
             start = self._begin_timed_block()
-            if score_spec.kind in {"example_loss", "loss"}:
-                values = self._losses(payload)[0].detach().float()
-            elif score_spec.kind == "token_loss":
-                values = self._losses(payload)[3].detach().float()
+            if score_spec.kind in {"example_loss", "loss", "token_loss"}:
+                with torch.no_grad():
+                    values = self._losses(payload)[3 if score_spec.kind == "token_loss" else 0].detach().float()
             elif score_spec.kind == "probe_gradient":
                 values = self._probe_gradient(payload, score_spec)
             else:
@@ -685,12 +687,19 @@ class Seq2SeqLMModel(ModelBase):
         self.optimizer.zero_grad(set_to_none=True)
         return success
 
-    def _weighted_loss(self, flat, targets):
+    def _weighted_loss(self, flat, targets, counts=None):
         weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
+        model_boundary(weight.shape == flat.shape, "Token weights must align with supervised tokens")
         active = weight > 0
         if int(active.sum().item()) == 0:
             return None, 0.0, 0
         terms = weight * flat
+        if counts is not None:
+            owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts)
+            sums = flat.new_zeros(len(counts)).scatter_add(0, owners, terms)
+            row_counts = flat.new_zeros(len(counts)).scatter_add(0, owners, active.to(flat.dtype))
+            means = sums[row_counts > 0] / row_counts[row_counts > 0]
+            return means.mean(), float(means.detach().sum()), len(means)
         return terms.sum() / active.sum(), float(terms.detach().sum().item()), int(active.sum().item())
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
@@ -709,7 +718,11 @@ class Seq2SeqLMModel(ModelBase):
                     means, sums, counts, flat = self._losses(self._payload(training.batch))
                     diagnostics = {"plan": self._plan_fingerprint}
                     if objective.token_mode == "weighted":
-                        loss, numer, denom = self._weighted_loss(flat, training.token_targets)
+                        targets = (hooks.token_targets(training.batch, flat.detach())
+                                   if hooks and hooks.token_targets else training.token_targets)
+                        model_boundary(targets is not None, "Weighted training requires token targets")
+                        row_counts = counts if hooks and hooks.token_targets and objective.reduction == 'per_example_mean' else None
+                        loss, numer, denom = self._weighted_loss(flat, targets, row_counts)
                         diagnostics["token_surprise"] = flat.detach().float().tolist()
                     else:
                         model_boundary(training.token_targets is None, "Unweighted training takes no token targets")
@@ -774,7 +787,6 @@ class Seq2SeqLMModel(ModelBase):
         guard = None if spec is None else spec.get("script_guard")
         if not guard:
             return None
-        from transformers import LogitsProcessor
         masks = self._script_masks()
         blocked = masks[guard["block"]] if "block" in guard else None
         penalized = masks[guard["penalize"]] if "penalize" in guard else None
@@ -829,6 +841,28 @@ class Seq2SeqLMModel(ModelBase):
         return {name: module.delta().detach() for name, module in self.module.named_modules()
                 if isinstance(module, Seq2SeqLoRA)}
 
+    def reset_probe(self):
+        """Freeze the loaded checkpoint's function beneath a fresh zero-B probe."""
+        model_boundary(self.role == "probe", "Reset only an isolated probe role")
+        self.activate()
+        self._clear_cuts()
+        with torch.no_grad():
+            for name, child in self.module.named_modules():
+                if isinstance(child, Seq2SeqLoRA):
+                    child.base.weight.add_(child.delta().to(child.base.weight.dtype))
+                    child.clear_extra()
+                    _init_A(child.A, _seed_for(self.settings.seed, name))
+                    child.B.zero_()
+        self._new_rank, self._lr_scale, self._trainable = {}, {}, None
+        self._plan = self._plan_fingerprint = None
+        self._save_full_weights = True
+        self._mark_adapters(self.module)
+        self._profiles.clear()
+        self.optimizer = None
+        self._reset_optimizer()
+        self.steps = 0
+        self.rng_state = self._new_rng()
+
     def shrink_adapters(self, k):
         """Replace every adapter by the top-k SVD factors of its effective update, at scale 1."""
         self.activate()
@@ -848,6 +882,7 @@ class Seq2SeqLMModel(ModelBase):
         self.settings = replace(self.settings, rank=k, alpha=float(k))
         self._new_rank = {}
         self._profiles.clear()
+        self._apply_mask(self.module)
         self.steps = 0
         self.weight_revision += 1
         self._weights_identity = "0"

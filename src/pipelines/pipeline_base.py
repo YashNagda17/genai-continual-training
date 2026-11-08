@@ -3,7 +3,12 @@
 from abc import ABC, abstractmethod
 import copy
 import random
+from dataclasses import asdict
 
+import torch
+
+from ..datasets.dataset_instruction import InstructionPreprocessing
+from ..utils.contracts import fingerprint
 from ..utils.runtime import PipelineRuntime
 from ..utils.state import save_weights, tuple_tree
 from ..utils.numerics import resolve_device
@@ -38,7 +43,6 @@ class PipelineBase(PipelineRuntime, ABC):
         Official splits remain unless split_spec sets validation_fraction. Truncation comes from
         the source manifest unless split_spec overrides it. The model must implement attach_instruction.
         """
-        from ..datasets.dataset_instruction import InstructionPreprocessing
         spec = {"validation_fraction": 0.0, "seed": 0}
         if split_spec:
             spec.update(split_spec)
@@ -177,3 +181,107 @@ class PipelineBase(PipelineRuntime, ABC):
     @abstractmethod
     def finish_task(self):
         """Propose the complete next replay membership."""
+
+
+class SummarizationPipeline(PipelineBase):
+    """Shared checkpoint/cost plumbing for the three independent summarization jobs."""
+
+    def input_identity(self):
+        return {}
+
+    def run(self, context):
+        import time
+        from pathlib import Path
+        from ..utils.state import read_json, write_json
+        started = time.perf_counter()
+        try:
+            return super().run(context)
+        finally:
+            path = Path(context.output) / 'run.json'
+            if path.is_file() and hasattr(self, 'artifacts'):
+                with self.artifacts.lock():
+                    manifest = read_json(path)
+                    if manifest['identity'] == self.artifacts.identity:
+                        elapsed = time.perf_counter() - started
+                        costs = [event.get('measured', {}) for event in getattr(self, 'events', ())]
+                        peaks = [cost.get('peak_device_allocated_bytes') or cost.get('process_peak_cpu_bytes')
+                                 for cost in costs]
+                        measured = [value for value in peaks if value is not None]
+                        manifest.update(wall_clock_seconds=manifest.get('wall_clock_seconds', 0) + elapsed,
+                                        gpu_hours=manifest.get('gpu_hours', 0) + (elapsed / 3600 if self.device.type != 'cpu' else 0),
+                                        peak_memory_mb=max(measured) / 1024 ** 2 if measured else None,
+                                        model_params=self.model.info.total_parameters, inference_latency_ms=None,
+                                        result_type='null', result_reason='No scientific comparison assessed')
+                        write_json(path, manifest)
+
+    def bind(self, context):
+        super().bind(context)
+        self.resolved.update(inputs=self.input_identity(), preprocessing=self.dataset.fingerprint,
+                             source=self.dataset.manifest.get('source', {}), torch=str(torch.__version__))
+        self.resolved.update(implementation='summarization-pipelines-v1',
+                             model_settings=asdict(self.model.settings) if hasattr(self.model, 'settings') else None,
+                             model_revision=getattr(self.model, 'revision', None),
+                             model_config=self.model.config.to_dict() if getattr(self.model, 'config', None) is not None else None)
+        # Once per bind; numerical forwards never hash tokens or parameters.
+        self.artifacts.identity = fingerprint(self.resolved)
+
+    def _commit(self):
+        if self.context is not None:
+            self.boundary(force=True)
+
+    def _cost(self, category, records, measured, generated=()):
+        details = {"category": category, "rows": len(records),
+                   "input_tokens": sum(len(r.inputs.get("ids", ())) for r in records),
+                   "new_tokens": sum(map(len, generated)),
+                   "forward_pass_units": len(records) * (3 if category == 'probe_pass' else 1),
+                   "measured": measured}
+        if self.context is not None:
+            self.record_event("analysis_cost", **details)
+        return details
+
+    def _score(self, records, spec, category, model=None):
+        records = tuple(records)
+        if any(r.split != "train" for r in records):
+            raise ValueError("Policy scoring requires training records")
+        batch = self.dataset.collate(records)
+        result = (model or self.model).score(batch, spec).validate(batch, spec)
+        values = result.values
+        tensors = [values] if torch.is_tensor(values) else values["gradients"]
+        if any(not torch.isfinite(value).all() for value in tensors):
+            raise ValueError("Nonfinite policy scores")
+        self._cost(category, records, result.cost)
+        return values
+
+    def _generate(self, records, category, model=None, *, held_out=False, guard=None):
+        records = tuple(records)
+        if any((r.split not in {"validation", "test"}) if held_out else r.split != "train" for r in records):
+            raise ValueError("Generation view has the wrong data split")
+        spec = dict(self.config.generation)
+        if guard:
+            spec["script_guard"] = guard
+        batch = self.dataset.collate_sources(records)
+        result = (model or self.model).predict(batch, spec)
+        if tuple(result["ids"]) != batch.ids:
+            raise ValueError("Generation changed row order")
+        self._cost(category, records, result["cost"], result["token_ids"])
+        return result
+
+    def held_out(self, language, split):
+        named = self.dataset.views.get(f"{language}/{split}")
+        rows = tuple(named if named is not None else
+                     (r for r in self.dataset.views.get(split, ()) if r.task_id == language))
+        if not rows or any(r.split != split or r.task_id != language for r in rows):
+            raise ValueError(f"Required {language} {split} view is missing or invalid")
+        return rows
+
+    def _open_view(self):
+        return ()  # Analysis jobs never open a training archive.
+
+    def open_task(self):
+        pass
+
+    def finish_task(self):
+        return ()
+
+    def _evaluate_seen(self):
+        pass  # Each job owns its explicit validation/reporting phases.

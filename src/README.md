@@ -192,3 +192,46 @@ GENAI_SETUP_TESTS=1 python -m unittest src.tests.test_pipelines.SetupModelTests 
 The compact suite checks paper equations, signed similarities, round-dependent coreset rankings, source/teacher coherence, native versus hybrid exposure, shared learner and weight/policy handoff, two-task standalone/hybrid runs, budgets, retention and representative recovery failures. It uses a two-coordinate Torch model with autograd SGD and optional KL. Small utility checks cover mocked CUDA/ROCm/XPU routing, dtype/autograd preservation and local sampling RNG. The setup check covers one short forward of each cached model on the resolved device. Transformer gradients, actual LoRA-B semantics, production KD, pinned-author-code equivalence, and scientific experiments remain unverified by the routine suite.
 
 The sample entry point is `python -m src.example`: local SmolLM2, one CLINC pass through `CombinedPipeline`, official-test evaluation, and a few generated intents. Each launch deletes `results/sample/clinc-smollm2` and starts over. The full experiment matrix in [main.md](/design/main.md) is still a later caller.
+
+## Summarization pipelines
+
+The current [plan](/Idea_Refined_2.md) has three independent implementations:
+
+- [RevisionPipeline](/src/pipelines/revision.py): English validation checkpoint selection and immutable past-summary pool; Hindi-only, random, loss-increase, drift, past-summary, repair/stop, full-English, and extra-random-step policies. Hindi updates use a combined per-example mean. G3 computes weights from the same forward's detached NLL and preserves that per-example reduction.
+- [AdapterRoomPipeline](/src/pipelines/adapter_room.py): two disjoint probe samples, cell/block maps and the stability check, C2 block plans, and E's extra-rank placements. A probe folds the saved English update into its frozen base before installing fresh zero-B factors. It never copies the evolving Hindi learner.
+- [GenerationShrinkPipeline](/src/pipelines/generation_shrink.py): validation-only energy/generation rank search, starting every candidate from the original checkpoint, with an immutable inference export.
+
+All use `RunContext`, `RunSpec`, the existing rolling checkpoint manager, and injected model/dataset adapters. `run.json`, `metrics.csv`, and `events.json` record progress and costs. Analysis sweeps save after each batch. Completed English, Hindi, pool, and shrink artifacts publish atomically and survive recovery-checkpoint pruning. The configuration, input references, preprocessing, model settings, Torch version, and device bind resume identity once at setup.
+
+Use a preprocessed `SummarizationDataset` with explicit `english/train`, `hindi/train`, `english/pool`, and per-language validation/test views. The English pool must be inside English training. A Hindi policy reads Hindi training and the supplied fixed pool; only `selector="full"` opens full English training. The model's batch bound must cover current plus replay (32 rows for the scientific full-English control).
+
+```python
+from src.pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
+from src.utils.contracts import RunContext
+
+# model/dataset and the two RunSpecs are supplied by the caller.
+# English spec: task_ids=("english",); Hindi spec: task_ids=("hindi",).
+# Match spec.batch_size to hindi_batch, and Hindi spec.passes to hindi_passes.
+english = RevisionPipeline(
+    RevisionConfig("english"), pool=dataset.pool_view())
+english.run(RunContext(english_model, dataset, english_spec, english_output))
+checkpoint = english_output / english.policy["english_checkpoint"]
+pool = load_pool(english_output / "pinned" / "pool")
+
+hindi = RevisionPipeline(
+    RevisionConfig("hindi", selector="loss", hindi_passes=hindi_spec.passes),
+    pool=pool, english_checkpoint=checkpoint)
+hindi.run(RunContext(fresh_hindi_model, dataset, hindi_spec, hindi_output))
+```
+
+`AdapterRoomPipeline.adapter_plan("late")` and `adapter_plan("early_late")` return `AdapterPlan` records. For E, build the complete family, then pass it through `validate_room_plans`; only the returned, matched plans may enter Hindi training. The plan's illustrative 659,456 versus 638,976 counts fail its 3% rule; that family is rejected until its allocation is resolved before pre-registration.
+
+For maps, provide the fixed `pool`, Hindi training rows, and English/Hindi checkpoint paths to the constructor. For shrinking, provide a finished checkpoint and `ShrinkConfig(full_rank=...)`, including extra rank in that upper bound. Both analysis jobs accept a single-task `RunSpec`; they do not open training archives. Validation/test predictions remain reporting artifacts; test data never controls ranking or shrinking.
+
+Run all tiny CPU checks, with no downloads:
+
+```sh
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest src.tests.test_summarization -v
+```
+
+The scientific matrix runner (`src/summarization_experiment.py`), pre-registration and winner/gate orchestration, serving benchmark, multi-seed aggregation, and publication reports/plots remain a separate implementation step. The pipeline APIs do not establish scientific results or validate those unimplemented runner controls. The Qwen fallback still needs the model operations listed in the design before these pipelines can use it.

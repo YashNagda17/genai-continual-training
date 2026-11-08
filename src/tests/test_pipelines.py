@@ -11,6 +11,11 @@ from unittest.mock import patch
 
 import torch
 
+from ..models.model_causal_lm import CausalLMSettings
+from ..models.model_lfm25 import LFM25Model
+from ..models.model_qwen3 import Qwen3Model
+from ..models.model_smollm2 import SmolLM2Model
+
 from .fakes import Controller, TinyDataset, TinyModel, record
 from ..combined_pipeline import CombinedPipeline
 from ..pipelines.al_sar import ALSARConfig, ALSARPipeline
@@ -406,10 +411,6 @@ class SetupModelTests(unittest.TestCase):
     """
 
     def test_models_load_and_forward_on_device(self):
-        from ..models.model_causal_lm import CausalLMSettings
-        from ..models.model_lfm25 import LFM25Model
-        from ..models.model_qwen3 import Qwen3Model
-        from ..models.model_smollm2 import SmolLM2Model
         settings = CausalLMSettings(rank=4, alpha=8, max_length=32, max_batch_size=1,
                                     working_bytes=64 * 1024 ** 2, max_score_bytes=64 * 1024 ** 2)
         for cls in (SmolLM2Model, LFM25Model, Qwen3Model):

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from dataclasses import replace
+from random import Random
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from ..datasets.dataset_sources import CLINC_DOMAINS, clinc_domain_rows
 from ..pipelines.csrel import CSReLConfig, CSReLPipeline
 from ..pipelines.memory_baselines import MemoryBaselineConfig, MemoryBaselinePipeline
 from ..utils.contracts import ReplayBudget
+from ..utils.runtime import PipelineRuntime
 from ..utils.state import Checkpoints, checksums, replace_artifact
 
 
@@ -27,8 +29,6 @@ def baseline(method):
 
 class SelectionTests(unittest.TestCase):
     def test_shuffled_pass_membership_and_independent_replay_rng(self):
-        from random import Random
-        from ..utils.runtime import PipelineRuntime
         runtime = PipelineRuntime()
         runtime.spec = SimpleNamespace(seed=17, identity={"shuffle_training": True})
         runtime.task_index = 1

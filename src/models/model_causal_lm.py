@@ -17,9 +17,11 @@ import tempfile
 import time
 
 import torch
+from huggingface_hub import snapshot_download
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .model_base import ModelBase
 from ..utils.contracts import ModelInfo, ScoreResult, StepReport, UpdateHooks, model_boundary
@@ -143,7 +145,6 @@ class CausalLMModel(ModelBase):
         if self._prepared:
             return
         if self.config is None or self._tokenizer is None or self.model_factory is None:
-            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
             if self.config is None:
                 self.config = AutoConfig.from_pretrained(self.model_id, revision=self.revision,
                                                         cache_dir=self.cache_dir)
@@ -309,7 +310,6 @@ class CausalLMModel(ModelBase):
     def _assets(self):
         """Resolve the base snapshot and record its size. The revision string is used as given."""
         if self.pretrained:
-            from huggingface_hub import snapshot_download
             self._base_path = Path(snapshot_download(
                 self.model_id, revision=self.revision, cache_dir=self.cache_dir,
                 allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]))
@@ -356,7 +356,6 @@ class CausalLMModel(ModelBase):
         load_dtype = self._load_dtype()
         devices = [] if self.device.type == "cpu" else [self.device]
         if self.pretrained:
-            from transformers import AutoModelForCausalLM
             module = AutoModelForCausalLM.from_pretrained(
                 self._base_path, dtype=load_dtype, attn_implementation="eager", use_safetensors=True)
         else:

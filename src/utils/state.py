@@ -11,6 +11,11 @@ import stat
 import time
 import uuid
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 from .contracts import Record, training_records
 
 
@@ -91,7 +96,6 @@ def _lock_handle(handle):
     POSIX keeps fcntl.flock. Windows locks a single byte because fcntl is absent.
     """
     if os.name == "nt":
-        import msvcrt
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"\0")
@@ -99,18 +103,15 @@ def _lock_handle(handle):
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         return
-    import fcntl
     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def _unlock_handle(handle):
     """Release the lock taken by _lock_handle."""
     if os.name == "nt":
-        import msvcrt
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         return
-    import fcntl
     fcntl.flock(handle, fcntl.LOCK_UN)
 
 
@@ -199,39 +200,55 @@ class Checkpoints:
         return relative
 
     def pin(self, model, record):
-        """Save the English checkpoint under its prefix. A second call returns that directory.
-
-        Rolling prune does not remove it.
-        """
+        """Publish a complete immutable English checkpoint for one prefix variant."""
         if record.get("kind") != "english" or record.get("writer") != "english_checkpoint":
             raise ValueError("Only the English stage can pin the English checkpoint")
-        destination = self.root / "pinned" / "english" / str(record["prefix"])
-        if (destination / "metadata.json").is_file():
-            return destination.relative_to(self.root).as_posix()
-        with self.lock():
-            self.reserve(model.info.checkpoint_bytes + 65536)
-            destination.mkdir(parents=True, exist_ok=True)
-            model.save(destination, "english", record=record)
-            return destination.relative_to(self.root).as_posix()
+        prefix = str(record["prefix"])
+        if prefix in {"", ".", ".."} or "/" in prefix or "\\" in prefix:
+            raise ValueError("Prefix artifact names must be single path components")
+        destination = self.root / "pinned" / "english" / prefix
+        return self.pin_artifact(destination, model.info.checkpoint_bytes + 65536,
+                                  lambda path: model.save(path, "english", record=record))
 
     def pin_pool(self, records, *, english_checkpoint):
-        """Write the English pool once, next to that checkpoint.
-
-        A second call returns the existing pool. A Hindi run has no writer that can replace it.
-        """
-        required = {"id", "summary", "baseline", "loss_before"}
+        """Publish the pool once; committed answers are never regenerated or replaced."""
         rows = [dict(row) for row in records]
-        for row in rows:
-            if not required <= set(row):
-                raise ValueError("Pool record needs a summary, a baseline, and loss_before")
-        destination = self.root / "pinned" / "pool"
-        manifest_path = destination / "manifest.json"
-        if manifest_path.is_file():
-            return destination.relative_to(self.root).as_posix()
+        if any(not {"id", "summary", "baseline", "loss_before"} <= set(row) for row in rows):
+            raise ValueError("Pool record needs a summary, a baseline, and loss_before")
+        payload = {"english_checkpoint": english_checkpoint, "writer": "english_checkpoint", "records": rows}
+        return self.pin_artifact(self.root / "pinned" / "pool", len(json.dumps(payload).encode()) + 65536,
+                                  lambda path: write_json(path / "manifest.json", payload))
+
+    def pin_artifact(self, destination, estimate, writer):
+        """Atomically publish one immutable run-owned artifact using the supplied writer."""
+        destination = Path(destination)
+        if destination.resolve() == self.root.resolve() or not destination.resolve().is_relative_to(self.root.resolve()):
+            raise ValueError('Pinned artifacts must stay inside their attempt')
         with self.lock():
-            destination.mkdir(parents=True, exist_ok=True)
-            write_json(manifest_path, {"english_checkpoint": english_checkpoint,
-                                       "writer": "english_checkpoint", "records": rows})
+            complete = destination / "complete.json"
+            if complete.is_file():
+                if checksums(destination) != read_json(complete)["files"]:
+                    raise ValueError("Pinned artifact is corrupt")
+                return destination.relative_to(self.root).as_posix()
+            if destination.exists():
+                raise ValueError("Pinned artifact is incomplete; preserve it for recovery inspection")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            for abandoned in destination.parent.glob(f".stage-pin-{destination.name}-*"):
+                self._remove_owned(abandoned)
+            self.reserve(estimate)
+            stage = destination.with_name(f".stage-pin-{destination.name}-{uuid.uuid4().hex}")
+            stage.mkdir()
+            try:
+                writer(stage)
+                synchronize(stage)
+                write_json(stage / "complete.json", {"files": checksums(stage)})
+                self.reserve(0)
+                replace_artifact(stage, destination)
+                _fsync_directory(destination.parent)
+            except BaseException:
+                if stage.exists():
+                    self._remove_owned(stage)
+                raise
             return destination.relative_to(self.root).as_posix()
 
     def publish(self, state, learner, auxiliary, dependencies, *, completed=False):
@@ -384,6 +401,7 @@ class ReplayStore:
         declared_bytes = sum(r.storage_bytes for r in self.records)
         serialized_bytes = len(json.dumps(self.state_dict(), allow_nan=False).encode()) if self.records else 0
         self.usage = {"examples": len(self.records), "tokens": sum(r.tokens for r in self.records),
+                      "answer_tokens": sum(len(r.practice.get('answer_ids', ())) for r in self.records if r.practice),
                       "bytes": max(declared_bytes, serialized_bytes)}
         if budget.examples is not None and len(self.records) > budget.examples:
             raise ValueError("Replay example budget exceeded")

@@ -80,3 +80,24 @@ The [generation replay recipe](/design/generation-replay.md) adds these capabili
 Method identity gains one status, `project`: a mechanism we define ourselves, with no source PDF or paper section to record. `RepairStopPipeline` uses it, and the full recipe stays `hybrid`.
 
 `PipelineBase` gains a default `token_targets(batch)` hook returning `None`. `RepairStopPipeline` is the one component without a standalone lifecycle, because it is not a paper method and needs a writer and a router. Its independent run is the composer's `repair_only` arm.
+
+## Summarization plan additions
+
+The [summarization plan](/design/summarization-plan.md) adds three pipelines, with the same rule that proposals never mutate shared state.
+
+| Capability | Input -> output | Owner |
+|---|---|---|
+| `write_past` | Pool records -> records with past summaries and baselines | `RevisionPipeline` |
+| `rank_pool`, `replay_slots` | Pool, selector -> ranking, slot IDs per batch | `RevisionPipeline` |
+| `retire`, `token_targets` | Active rows, regenerated summaries -> retired IDs; replay batch -> weights | `RevisionPipeline` |
+| `location_maps` | Saved checkpoint, probe rows -> change, pull, and clash maps | `AdapterRoomPipeline` |
+| `adapter_plan` | Arm, maps -> `AdapterPlan` | `AdapterRoomPipeline` |
+| `shrink_search` | Finished checkpoint, validation views -> `k_E`, `k_G`, shrunk weights | `GenerationShrinkPipeline` |
+
+- `RevisionPipeline` has a standalone lifecycle with two stages: `english`, then `hindi`. The Hindi stage is a new run that loads the English checkpoint's weights.
+- `AdapterRoomPipeline` and `GenerationShrinkPipeline` don't train. `location_maps` and `shrink_search` are analysis jobs. `adapter_plan` returns a record that the Hindi stage applies before training.
+- The placement and shrink rules are in [summarization-experiments.md](/design/summarization-experiments.md). The model operations they call are in [models.md](/design/models.md).
+- The experiment runner composes the three pipelines. They never import each other.
+- These are deliberately **not** composed in `CombinedPipeline` or `GenerationReplayPipeline`. The current plan uses neither.
+
+Method identity: X, A, the full-English reference, C1, and C2 are `ablation`. B is `adaptation`. G1, G2, G3, E, and F are `project`.

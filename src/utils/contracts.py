@@ -1,6 +1,6 @@
 """Backend-independent boundary records. Payloads persisted in replay must be JSON."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 import hashlib
 import json
@@ -27,6 +27,18 @@ class Record:
     storage_bytes: int
     class_id: str | None = None
     group_id: str | None = None
+    practice: dict | None = None
+
+
+def practice_record(record, cut=None):
+    """Use a retained past answer while preserving the observation and its source."""
+    if record.practice is None:
+        return record
+    ids = record.practice["answer_ids"]
+    ids = ids if cut is None else ids[:cut]
+    updated = replace(record, target={"text": record.practice["answer_text"], "ids": list(ids)},
+                      tokens=record.tokens - len(record.target["ids"]) + len(ids))
+    return replace(updated, storage_bytes=len(json.dumps(asdict(updated), ensure_ascii=False).encode()))
 
 
 def training_records(records, task_id=None):
@@ -146,6 +158,7 @@ class FreezePlan:
 class UpdateHooks:
     plan_update: Callable[[dict], FreezePlan] | None = None
     gradient_subset: str = ""
+    token_targets: Callable | None = None
 
 
 @dataclass(frozen=True)

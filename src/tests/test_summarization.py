@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import torch
+from transformers import MT5Config, MT5ForConditionalGeneration
 
 from ..datasets.dataset_instruction import Seq2SeqPreprocessing, SummarizationDataset
 from ..datasets.dataset_sources import (
@@ -56,7 +57,6 @@ class Batch:
 
 
 def configuration():
-    from transformers import MT5Config
     return MT5Config(vocab_size=32, d_model=32, d_ff=64, d_kv=8, num_heads=4, num_layers=2,
                      num_decoder_layers=2, dropout_rate=0.0, feed_forward_proj="gated-gelu",
                      tie_word_embeddings=False, decoder_start_token_id=0, eos_token_id=1,
@@ -64,7 +64,6 @@ def configuration():
 
 
 def model():
-    from transformers import MT5ForConditionalGeneration
     settings = Seq2SeqSettings(rank=4, alpha=8.0, learning_rate=0.05, max_source_length=8,
                                max_target_length=8, max_batch_size=4, seed=3)
     role = TinyMT5(settings, device="cpu", pretrained=False, config=configuration(),
@@ -161,6 +160,25 @@ class SummarizationModelTests(unittest.TestCase):
             self.assertEqual(role.steps, restored.steps)
         role.release()
         restored.release()
+
+    def test_zero_probe_preserves_the_loaded_checkpoint_function(self):
+        learner = model()
+        learner.activate()
+        train_once(learner)
+        probe = learner.fork("probe", "english-zero-B")
+        probe.set_weights(learner.get_weights())
+        probe.module.eval()
+        payload = batch(labels()).payload
+        before = probe._forward(payload).logits.detach()
+        probe.reset_probe()
+        after = probe._forward(payload).logits.detach()
+        torch.testing.assert_close(before, after, atol=1e-4, rtol=1e-4)
+        for name, parameter in probe.module.named_parameters():
+            if name.endswith(".B"):
+                self.assertTrue(torch.equal(parameter, torch.zeros_like(parameter)))
+        self.assertTrue(probe._save_full_weights)
+        learner.release()
+        probe.release()
 
     def test_documented_adapter_counts(self):
         encoder, decoder, rank = 8192, 11776, 16
@@ -324,6 +342,22 @@ class SummarizationModelTests(unittest.TestCase):
             copied.activate()
             self.assertEqual(copied.steps, steps)
 
+    def test_partial_pinned_checkpoint_is_never_published(self):
+        role = model()
+        role.activate()
+        with tempfile.TemporaryDirectory() as directory:
+            manager = Checkpoints(directory, 'tiny')
+            record = {'kind': 'english', 'writer': 'english_checkpoint', 'prefix': 'plain'}
+            def partial(path, *args, **kwargs):
+                (Path(path) / 'weights.pt').write_bytes(b'partial')
+                raise OSError('interrupted write')
+            with patch.object(role, 'save', side_effect=partial), self.assertRaises(OSError):
+                manager.pin(role, record)
+            self.assertFalse((Path(directory) / 'pinned' / 'english' / 'plain').exists())
+            published = manager.pin(role, record)
+            self.assertTrue((Path(directory) / published / 'complete.json').is_file())
+        role.release()
+
 
 def _encode(text):
     return [ord(character) % 30 + 2 for character in text] + [1]
@@ -362,7 +396,6 @@ class SummarizationDatasetTests(unittest.TestCase):
         return dataset, prepared, report
 
     def test_prefix_truncation_and_batches(self):
-        import json as json_module
         with tempfile.TemporaryDirectory() as directory:
             source = _write_rows(Path(directory) / "src")
             plain, _prepared, report = self._prepared(source)
@@ -394,6 +427,242 @@ class SummarizationDatasetTests(unittest.TestCase):
             self.assertEqual([record.sample_id for record in restored.pool_view()], ["english/1"])
             self.assertEqual(restored.fingerprint, plain.fingerprint)
             self.assertEqual(json.loads((saved / "manifest.json").read_text())["schema"], "summarization")
+
+
+class SummarizationPipelineTests(unittest.TestCase):
+    def fixture(self):
+        from ..utils.contracts import Record
+        dataset = SummarizationDataset()
+        dataset.manifest = {"preprocessing": {"pad_id": 0, "eos_id": 1, "identity": {"tokenizer": "tiny"}}}
+        dataset.views = {}
+        for split in ("train", "validation", "test"):
+            rows = []
+            for language in ("english", "hindi"):
+                for index in range(4 if split == "train" else 2):
+                    rows.append(Record(f"{language}/{split}/{index}", "tiny", "v1", str(index), language,
+                                       len(rows), split, {"ids": [3, 4 + index, 1], "text": "article", "language": language},
+                                       {"ids": [4, 5, 1] if index % 2 else [4, 1], "text": "a short English news summary"},
+                                       6, 200))
+            dataset.views[split] = tuple(rows)
+        dataset.expose("english/pool", [r.sample_id for r in dataset.training_view("english")])
+        return dataset
+
+    def run_spec(self, stage, passes=1):
+        from ..utils.contracts import RunSpec, ReplayBudget, ResourceBudget
+        return RunSpec((stage,), 11, 2, 100, 100, 100000, passes, "repeat_admitted", "per_example_mean",
+                       ReplayBudget(4, 10000, 1000000), ResourceBudget(10_000_000_000, 0), 1,
+                       {"protocol": "smoke"}, {})
+
+    def context(self, dataset, stage, output, passes=1):
+        from ..utils.contracts import RunContext
+        return RunContext(model(), dataset, self.run_spec(stage, passes), output)
+
+    def english(self, directory, dataset):
+        from ..pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
+        config = RevisionConfig("english", hindi_batch=2, analysis_batch=2,
+                                generation={"max_new_tokens": 3})
+        pipeline = RevisionPipeline(config, pool=dataset.pool_view())
+        pipeline.run(self.context(dataset, "english", directory))
+        checkpoint = Path(directory) / pipeline.policy["english_checkpoint"]
+        return checkpoint, load_pool(Path(directory) / "pinned" / "pool")
+
+    def test_metrics_and_plan_arithmetic(self):
+        from ..utils.numerics import chrf, script_share, energy_rank, paired_bootstrap, cohen_kappa, interaction, top_overlap
+        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+        self.assertEqual(chrf("a b", "ab"), 100)
+        self.assertAlmostEqual(chrf("ab", "ac", n=1), 50)
+        self.assertEqual(script_share("aअ!"), 0.5)
+        self.assertEqual(energy_rank([torch.tensor([3., 1.]), torch.tensor([2., 0.])], .9), 1)
+        self.assertEqual(interaction(0, 3, 2, 3), -2)
+        self.assertEqual(top_overlap(["a", "b"], ["b", "a"], 2), 1)
+        self.assertEqual(cohen_kappa([1, 1, 2, 2], [1, 2, 2, 2]), .5)
+        self.assertEqual(paired_bootstrap([1, 3], [0, 1], 20, 7), paired_bootstrap([1, 3], [0, 1], 20, 7))
+        pipeline = AdapterRoomPipeline(AdapterRoomConfig(.5))
+        self.assertEqual(pipeline.adapter_plan("all").identity["trainable_parameters"], 2555904)
+        self.assertEqual(pipeline.adapter_plan("late").identity["trainable_parameters"], 638976)
+        self.assertEqual(pipeline.adapter_plan("early_late").identity["trainable_parameters"], 638976)
+        maps = {"stable": True, "blocks": {f"{stack}.{i}": (-.5 if stack == "decoder" and i >= 5 else .2)
+                                               for stack in ("encoder", "decoder") for i in range(1, 9)}}
+        placed = pipeline.adapter_plan("room_placed_slow", maps=maps)
+        spread = pipeline.adapter_plan("room_spread", maps=maps)
+        self.assertEqual(set(placed.new_rank.values()), {14})
+        self.assertEqual(set(placed.lr_scale.values()), {.5})
+        self.assertEqual(placed.identity["new_parameters"], 659456)
+        self.assertEqual(spread.identity["new_parameters"], 638976)
+        with self.assertRaises(ValueError):
+            pipeline.validate_room_plans([placed, spread])
+        self.assertIsNone(pipeline.adapter_plan("room_placed", maps={"stable": False}))
+
+    def test_revision_rank_slots_filter_and_same_forward_weights(self):
+        from dataclasses import replace
+        from ..pipelines.revision import RevisionConfig, RevisionPipeline
+        dataset = self.fixture()
+        rows = tuple(replace(r, practice={"answer_text": "a short English news summary", "answer_ids": r.target["ids"],
+                            "baseline": [.6] * len(r.target["ids"]), "past_baseline": [.6] * len(r.target["ids"]),
+                            "loss_before": .6 if i == 0 else 2.5, "writer": "english_checkpoint"})
+                     for i, r in enumerate(dataset.pool_view()))
+        pipeline = RevisionPipeline(RevisionConfig("hindi", selector="loss", repair_stop=True, hindi_batch=2,
+            warmup_fraction=0, analysis_batch=4), model=model(), dataset=dataset, pool=rows)
+        pipeline._score = lambda *args: torch.tensor([1.4, 2.6, 2.6, 2.6])
+        self.assertEqual(pipeline.rank_pool()[0], rows[0].sample_id)
+        slots = pipeline.replay_slots(2)
+        self.assertEqual(len({r.sample_id for r in slots}), 2)
+        self.assertEqual(slots[0].sample_id, rows[0].sample_id)
+        batch_ = dataset.collate((dataset.training_view("hindi")[0], rows[0]))
+        targets = pipeline.token_targets(batch_, torch.tensor([1., 2., .6, 1.6]))
+        self.assertTrue(torch.equal(targets.weight[:2], torch.ones(2)))
+        self.assertAlmostEqual(float(targets.weight[2:].mean()), 1)
+        self.assertGreater(float(targets.weight[-1]), float(targets.weight[-2]))
+        worse = replace(rows[1], practice={**rows[1].practice, "answer_text": "the the the weather"})
+        filtered = pipeline.filter_past((rows[0], worse, *rows[2:]))
+        self.assertNotIn(worse.sample_id, {r.sample_id for r in filtered})
+        pipeline.policy["active"] = [rows[0].sample_id]
+        pipeline.progress = {"steps": 1}
+        pipeline._generate = lambda *args: {"texts": [rows[0].practice["answer_text"]]}
+        self.assertIn(rows[0].sample_id, pipeline.retire())
+        self.assertNotEqual(pipeline.replay_slots(2)[0].sample_id, rows[0].sample_id)
+        # The hook's all-one weights must preserve the combined per-example objective
+        # even when summaries have different numbers of supervised tokens.
+        plain, weighted = model(), model()
+        batch_ = dataset.collate((rows[0], rows[1]))
+        from ..utils.contracts import UpdateHooks
+        training = TrainingBatch(batch_, ("current", "current"))
+        plain.train(1, batch_factory=lambda: [training], objective=Objective("per_example_mean"), hooks=None,
+                    limits=TrainLimits(1, 1, 100))
+        hook = UpdateHooks(token_targets=lambda batch, nll: TokenTargets(torch.zeros_like(nll), torch.ones_like(nll)))
+        weighted.train(1, batch_factory=lambda: [training], objective=Objective("per_example_mean", token_mode="weighted"),
+                       hooks=hook, limits=TrainLimits(1, 1, 100))
+        left, right = plain.get_weights(), weighted.get_weights()
+        for name in left["parameters"]:
+            torch.testing.assert_close(left["parameters"][name], right["parameters"][name])
+        plain.release()
+        weighted.release()
+
+    def test_english_hindi_maps_and_shrink_smoke(self):
+        from ..pipelines.revision import RevisionConfig, RevisionPipeline
+        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+        from ..pipelines.generation_shrink import ShrinkConfig, GenerationShrinkPipeline
+        with tempfile.TemporaryDirectory() as directory:
+            root, dataset = Path(directory), self.fixture()
+            english, pool = self.english(root / "english", dataset)
+            revision = RevisionPipeline(RevisionConfig("hindi", selector="loss", hindi_batch=2, analysis_batch=2,
+                generation={"max_new_tokens": 3}), pool=pool, english_checkpoint=english)
+            result = revision.run(self.context(dataset, "hindi", root / "hindi"))
+            self.assertEqual(result.counters["steps"], 2)
+            self.assertEqual(len(result.metrics), 8)
+            self.assertEqual(result.counters["attempts"], 2)
+            hindi = root / "hindi" / "hindi"
+            maps = AdapterRoomPipeline(AdapterRoomConfig(-1, sample_size=1, analysis_batch=1, encoder_blocks=2, decoder_blocks=2),
+                pool=pool, hindi=dataset.training_view("hindi"), english_checkpoint=english, hindi_checkpoint=hindi)
+            maps.run(self.context(dataset, "analysis", root / "maps"))
+            self.assertEqual(len(maps.policy["result"]["samples"]), 2)
+            self.assertEqual(len(maps.policy["result"]["blocks"]), 4)
+            shrink = GenerationShrinkPipeline(ShrinkConfig(4, tolerance=100, grid=(2, 1), analysis_batch=2,
+                generation={"max_new_tokens": 3}), checkpoint=hindi)
+            shrink.run(self.context(dataset, "analysis", root / "shrink"))
+            self.assertEqual(shrink.policy["result"]["k_G"], 1)
+            self.assertTrue((root / "shrink" / "shrunk-adapter" / "weights.pt").is_file())
+            with self.assertRaises(ValueError):
+                GenerationShrinkPipeline(ShrinkConfig(4), validation={
+                    "english": dataset.evaluation_view("english"), "hindi": dataset.evaluation_view("hindi")})._views()
+
+    def test_resume_rank_and_pending_replay_match_uninterrupted(self):
+        from dataclasses import replace
+        from ..pipelines.revision import RevisionConfig, RevisionPipeline
+        with tempfile.TemporaryDirectory() as directory:
+            root, dataset = Path(directory), self.fixture()
+            english, pool = self.english(root / "english", dataset)
+            config = RevisionConfig("hindi", selector="loss", hindi_batch=2, analysis_batch=1,
+                                    generation={"max_new_tokens": 3})
+            baseline = RevisionPipeline(config, pool=pool, english_checkpoint=english)
+            baseline.run(self.context(dataset, "hindi", root / "baseline"))
+            interrupted = RevisionPipeline(config, pool=pool, english_checkpoint=english)
+            score, calls = interrupted._score, []
+            def fail_after_committed_batch(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt()
+                return score(*args, **kwargs)
+            interrupted._score = fail_after_committed_batch
+            with self.assertRaises(KeyboardInterrupt):
+                interrupted.run(self.context(dataset, "hindi", root / "resumed"))
+            restored = RevisionPipeline(config, pool=pool, english_checkpoint=english)
+            restored.run(self.context(dataset, "hindi", root / "resumed"))
+            self.assertEqual(restored.counters, baseline.counters)
+            self.assertEqual(restored.policy["ranking"], baseline.policy["ranking"])
+            events = lambda pipeline: [event["ids"] for event in pipeline.events if event["kind"] == "learner_update"]
+            self.assertEqual(events(restored), events(baseline))
+            left, right = restored.model.get_weights(), baseline.model.get_weights()
+            for name in left["parameters"]:
+                self.assertTrue(torch.equal(left["parameters"][name], right["parameters"][name]), name)
+            restored.model.release()
+            baseline.model.release()
+
+
+    def test_writing_and_stop_regeneration_resume_at_batch_boundaries(self):
+        from ..pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
+        with tempfile.TemporaryDirectory() as directory:
+            root, dataset = Path(directory), self.fixture()
+            english, pool = self.english(root / "english", dataset)
+            for category in ("pool_generation", "stop_regeneration"):
+                stage = "english" if category == "pool_generation" else "hindi"
+                config = RevisionConfig(stage, selector="random" if stage == "english" else "loss",
+                    repair_stop=stage == "hindi", warmup_fraction=0, refresh_steps=1,
+                    top_fraction=1, hindi_batch=2, analysis_batch=1, generation={"max_new_tokens": 3})
+                arguments = {"pool": dataset.pool_view()} if stage == "english" else {
+                    "pool": pool, "english_checkpoint": english}
+                baseline = RevisionPipeline(config, **arguments)
+                baseline.run(self.context(dataset, stage, root / (category + "-baseline")))
+                interrupted = RevisionPipeline(config, **arguments)
+                generate, calls = interrupted._generate, []
+                def fail_in_second_batch(records, event_category, *args, **kwargs):
+                    if event_category == category:
+                        calls.append(1)
+                        if len(calls) == 2:
+                            raise KeyboardInterrupt()
+                    return generate(records, event_category, *args, **kwargs)
+                interrupted._generate = fail_in_second_batch
+                output = root / (category + "-resume")
+                with self.assertRaises(KeyboardInterrupt):
+                    interrupted.run(self.context(dataset, stage, output))
+                restored = RevisionPipeline(config, **arguments)
+                restored.run(self.context(dataset, stage, output))
+                self.assertEqual(restored.counters, baseline.counters)
+                self.assertEqual(restored.policy["retired"], baseline.policy["retired"])
+                if stage == "english":
+                    a = load_pool(output / "pinned" / "pool")
+                    b = load_pool(root / (category + "-baseline") / "pinned" / "pool")
+                    self.assertEqual([r.practice for r in a], [r.practice for r in b])
+                else:
+                    a, b = restored.model.get_weights(), baseline.model.get_weights()
+                    for name in a["parameters"]:
+                        self.assertTrue(torch.equal(a["parameters"][name], b["parameters"][name]), name)
+                restored.model.release()
+                baseline.model.release()
+
+    def test_shrink_search_stops_downward_and_recovers_upward(self):
+        from ..pipelines.generation_shrink import ShrinkConfig, GenerationShrinkPipeline
+        with tempfile.TemporaryDirectory() as directory:
+            root, dataset = Path(directory), self.fixture()
+            source = model()
+            train_once(source)
+            source.save_hindi_checkpoint(root / "source")
+            source.release()
+            for direction in ("down", "up"):
+                shrink = GenerationShrinkPipeline(ShrinkConfig(4, grid=(3, 1), tolerance=1), checkpoint=root / "source")
+                seen = []
+                def scores(candidate):
+                    rank = candidate.settings.rank
+                    seen.append(rank)
+                    passed = rank >= (2 if direction == "down" else 3)
+                    return {lang: dict.fromkeys(("rouge_l", "chrf", "right_language"), 100. if passed else 50.)
+                            for lang in ("english", "hindi")}
+                shrink._evaluate_rank = scores
+                with patch("src.pipelines.generation_shrink.energy_rank", return_value=2):
+                    shrink.run(self.context(dataset, "analysis", root / direction))
+                self.assertEqual(seen, [4, 2, 1] if direction == "down" else [4, 2, 3])
+                self.assertEqual(shrink.policy["result"]["k_G"], 2 if direction == "down" else 3)
+                shrink.model.release()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 """Torch policy arithmetic, device routing and shared metrics."""
 
+from collections import Counter
 import sys
+import unicodedata
 
 import torch
 
@@ -218,3 +220,89 @@ def rouge_l(prediction, reference, device=None):
     if precision + recall == 0:
         return 0.0
     return (2 * precision * recall / (precision + recall)).item()
+
+
+def chrf(hyp, ref, n=6, beta=2):
+    """Unofficial character n-gram F-beta, effective orders, on a 0–100 scale."""
+    hyp, ref = ''.join(hyp.split()), ''.join(ref.split())
+    if not hyp or not ref:
+        return 0.0
+    if n < 1 or beta <= 0:
+        raise ValueError('Positive n and beta required')
+    precision, recall = [], []
+    for order in range(1, min(n, len(hyp), len(ref)) + 1):
+        left = Counter(hyp[i:i + order] for i in range(len(hyp) - order + 1))
+        right = Counter(ref[i:i + order] for i in range(len(ref) - order + 1))
+        overlap = sum((left & right).values())
+        precision.append(overlap / sum(left.values()))
+        recall.append(overlap / sum(right.values()))
+    p, r = sum(precision) / len(precision), sum(recall) / len(recall)
+    return 100 * (1 + beta ** 2) * p * r / (beta ** 2 * p + r) if p + r else 0.0
+
+
+def script_share(text, script='devanagari'):
+    """Fraction of letters in a Unicode script; punctuation is ignored."""
+    letters = [c for c in text if c.isalpha()]
+    return sum(script.upper() in unicodedata.name(c, '') for c in letters) / len(letters) if letters else 0.0
+
+
+def energy_rank(singular_values, fraction=0.9):
+    """Shared rank reaching the aggregate squared-singular-value energy target."""
+    if not 0 < fraction <= 1:
+        raise ValueError('Energy fraction must be in (0, 1]')
+    values = list(singular_values.values()) if isinstance(singular_values, dict) else singular_values
+    if isinstance(values, torch.Tensor) and values.ndim == 1:
+        values = [values]
+    if not len(values):
+        return 1
+    if isinstance(values[0], (int, float)):
+        values = [values]
+    rows = [tensor(row) for row in values]
+    energy = rows[0].new_zeros(max(row.numel() for row in rows))
+    for row in rows:
+        energy[:row.numel()] += row.square()
+    total = energy.sum()
+    if total == 0:
+        return 1
+    return min(len(energy), int(torch.searchsorted(energy.cumsum(0), fraction * total)) + 1)
+
+
+def paired_bootstrap(a, b, resamples=1000, seed=0):
+    """Paired mean difference with a percentile 95% bootstrap interval."""
+    if len(a) != len(b) or not len(a) or resamples < 1:
+        raise ValueError('Nonempty paired vectors and positive resamples required')
+    delta = tensor(a, 'cpu') - tensor(b, 'cpu')
+    generator = torch.Generator().manual_seed(seed)
+    means = torch.stack([delta[torch.randint(len(delta), (len(delta),), generator=generator)].mean()
+                         for _ in range(resamples)])
+    low, high = torch.quantile(means, torch.tensor([0.025, 0.975])).tolist()
+    return {'delta': float(delta.mean()), 'low': low, 'high': high, 'resamples': resamples}
+
+
+def interaction(s_a, s_rev, s_blk, s_d):
+    return s_d - s_rev - s_blk + s_a
+
+
+def top_overlap(rank_1, rank_2, k):
+    if k < 1 or min(len(rank_1), len(rank_2)) < k:
+        raise ValueError('Rankings must each contain at least k rows')
+    return len(set(rank_1[:k]) & set(rank_2[:k])) / k
+
+
+def cohen_kappa(r1, r2):
+    if not r1 or len(r1) != len(r2):
+        raise ValueError('Nonempty paired ratings required')
+    left, right = Counter(r1), Counter(r2)
+    observed = sum(a == b for a, b in zip(r1, r2)) / len(r1)
+    chance = sum(left[key] * right[key] for key in set(left) | set(right)) / len(r1) ** 2
+    return (observed - chance) / (1 - chance) if chance < 1 else None
+
+
+def summary_metrics(predictions, references, language):
+    """Summarization decision metrics, all on a 0–100 scale."""
+    if not predictions or len(predictions) != len(references):
+        raise ValueError('Nonempty aligned summaries required')
+    return {'rouge_l': 100 * sum(rouge_l(a, b) for a, b in zip(predictions, references)) / len(predictions),
+            'chrf': sum(chrf(a, b) for a, b in zip(predictions, references)) / len(predictions),
+            'right_language': 100 * sum((script_share(text) > 0.5) == (language == 'hindi')
+                                        for text in predictions) / len(predictions)}

@@ -4,11 +4,17 @@ Owns `src/datasets/`, `dataset_base.py`, and one concrete subclass per source fo
 
 Produce identifiable, reproducible records and causal task views. Dataset code does not decide replay membership, importance scores, optimization, or paper-specific task grouping.
 
+The two concrete formats share local JSONL I/O and finite views through a private
+base in `dataset_instruction.py`. Native Torch padding is shared there too; causal
+and encoder-decoder masks remain separate. Manifests hold plain settings rather
+than hashes. Missing instruction groups use the exact message content so duplicate
+prompts stay together without grouping every unlabeled row into one group.
+
 ## Record contract
 
 A canonical record contains `sample_id`, `dataset_id`, source revision/row identity, `task_id`, arrival position, split, input payload, target payload, and optional group/format metadata. Identity is stable across tokenization, shuffling, and resume. Preserve a source ID and duplicate-group ID when distinct observations share content; a content hash alone is not a unique observation ID.
 
-For instruction tuning, preserve message roles and the supervised response separately. Rendering and tokenization may change representation, never the underlying target or provenance. Model-specific preprocessing receives a pinned tokenizer, template, truncation policy, and loss-mask policy; these enter the prepared-view fingerprint.
+For instruction tuning, preserve message roles and the supervised response separately. Rendering and tokenization may change representation, never the underlying target or provenance. Model-specific preprocessing receives a tokenizer, template, truncation policy, and loss-mask policy. Those settings are stored in the prepared manifest.
 
 ## Base-class operations
 
@@ -22,7 +28,7 @@ For instruction tuning, preserve message roles and the supervised response separ
 
 `load()` must also support reloading a saved manifest and verifying referenced artifacts. Keep views immutable; iterator cursors belong to the caller so two runs cannot advance each other's data.
 
-The injected Python adapter additionally exposes `training_view(task_id)`, `evaluation_view(task_id)`, and `collate(records)`. Views are immutable tuples of canonical records; the initial implementation accepts finite task chunks. Canonical payloads and metadata must be JSON-serializable (large assets may use content-addressed references, whose backing bytes must be included in resource estimates). Collation creates backend tensors, masks, and counts without changing record order. The pipeline fetches only the open task's training view, and opens held-out views only in evaluation. `fingerprint` binds source, splits, preprocessing, and task membership for resume.
+The injected Python adapter additionally exposes `training_view(task_id)`, `evaluation_view(task_id)`, and `collate(records)`. Views are immutable tuples of canonical records; the initial implementation accepts finite task chunks. Canonical payloads and metadata must be JSON-serializable (large assets may use content-addressed references, whose backing bytes must be included in resource estimates). Collation creates backend tensors, masks, and counts without changing record order. The pipeline fetches only the open task's training view, and opens held-out views only in evaluation. The prepared manifest records the source, the splits, the preprocessing settings, and the task membership.
 
 ## Split and exposure rules
 
@@ -46,7 +52,7 @@ Variable-length collation must preserve ID alignment. Packing is optional and re
 
 Used by the [generation replay recipe](/design/generation-replay.md). Datasets stay unaware of practice answers.
 
-- `InstructionPreprocessing.reserve_response: int = 0`. With `prompt_left`, keep `len(prompt) <= max_length - max(len(response), reserve_response)`. Today's rule fills `max_length` with prompt plus gold, so on a long-prompt row `predict` has no room to generate and raises its sequence bound. The value enters the prepared-view fingerprint. Zero preserves current behavior.
+- `InstructionPreprocessing.reserve_response: int = 0`. With `prompt_left`, keep `len(prompt) <= max_length - max(len(response), reserve_response)`. Today's rule fills `max_length` with prompt plus gold, so on a long-prompt row `predict` has no room to generate and raises its sequence bound. The value is stored in the prepared manifest. Zero preserves current behavior.
 - `InstructionDataset.collate_prefixes(records, lengths)`. Left-pads `prompt_ids + target["ids"][:length]`, with no labels, in record order. Repeated IDs are allowed, for the two runs of a repair test.
 - `collate` needs no change. A row from `practice_record` already carries its answer or cut as `target`, and its count as `tokens`.
 - The dataset may not assign groups. Question groups are a policy decision in [answer-selection.md](/design/answer-selection.md). `class_id` stays genuine labels only.
@@ -54,7 +60,7 @@ Used by the [generation replay recipe](/design/generation-replay.md). Datasets s
 
 ## Summarization plan additions
 
-Used by the [summarization plan](/design/summarization-plan.md). Summarization records need encoder-decoder processing, so they get their own subclass, `SummarizationDataset(DatasetBase)` in `src/datasets/dataset_summarization.py`. `InstructionDataset` is unchanged.
+Used by the [summarization plan](/design/summarization-plan.md). Summarization records need encoder-decoder processing, so `SummarizationDataset` and `Seq2SeqPreprocessing` live in [dataset_instruction.py](/src/datasets/dataset_instruction.py), beside `InstructionDataset`. The XL-Sum fetch and `load_source` stay in [dataset_sources.py](/src/datasets/dataset_sources.py). `InstructionDataset` is unchanged.
 
 **Record.** `input = {"text": article}`, `target = {"text": summary}`, and `metadata.language` (`english`, `hindi`, and later `marathi`, `gujarati`). `task_id` is the language. `sample_id` comes from XL-Sum's article ID and language, so the same article never gets two IDs.
 
@@ -64,7 +70,7 @@ Used by the [summarization plan](/design/summarization-plan.md). Summarization r
 |---|---|
 | `tokenizer` | The pinned mT5 tokenizer |
 | `max_source`, `max_target` | 256 and 64 in the plan. The source keeps its **first** tokens, since news puts facts first. The target keeps its first tokens, and the row records `target_truncated` |
-| `prefix` | `None`, or a template such as `"summarize in {language}: "`, prepended to the article before tokenizing. G4 uses it. It enters the prepared-view fingerprint |
+| `prefix` | `None`, or a template such as `"summarize in {language}: "`, prepended to the article before tokenizing. G4 uses it. The template is stored in the prepared manifest |
 
 Rows with an empty article or summary are dropped with a recorded reason. Truncation counts are reported per language.
 

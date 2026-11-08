@@ -241,3 +241,21 @@ Audit: [pilot-600-audit](/results/experiments/pilot-600-audit.md). All four arms
 ## [2026-11-04] Pre-push verification
 
 Saved portable one-seed pilot metrics and audit under results/experiments/. Verified Python syntax for eight changed modules, staged whitespace integrity, and exclusion of dataset/model/raw-run outputs. Ran `python -m unittest src.tests.test_csrel_baselines src.tests.test_pipelines`: 42 tests in 236.858 seconds, OK with one skipped. These are fixture/orchestration checks; shuffled real-model performance and Kaggle execution remain unverified. No language-model training was launched during this verification. Kaggle notebook creation is pending and is not included in this commit.
+
+---
+
+## [2026-11-08] Summarization Pipeline Components
+
+**Stage:** code-generator.
+**Code report:** [summarization pipeline implementation](/results/code/Codegen-summarization-pipelines-2026-11-08.md).
+**Source:** [revision](/src/pipelines/revision.py), [adapter room](/src/pipelines/adapter_room.py), [generation shrink](/src/pipelines/generation_shrink.py), and the [callable guide](/src/README.md).
+**Inputs:** [Idea_Refined_2.md](/Idea_Refined_2.md), [revision contract](/design/revision.md), [experiment contract](/design/summarization-experiments.md), and [summarization guardrails](/design/summarization-plan.md).
+
+**Implemented:** English validation checkpoint selection and immutable past-summary pool; fixed-pass Hindi revision, loss/drift ranking, past-text filtering, G3 same-forward token weights and retirement, full-English and extra-random controls; C1 maps/stability, C2/E plans, and F's bidirectional generation-tested shrink search. Shared metrics, split checks, role isolation, complete numerical recovery, frozen-adapter storage estimates, and atomic pinned exports support these components. Components remain independent and use the existing lifecycle.
+
+**Outputs:** attempt configuration/status/compute JSON, metrics CSV, event JSON, guarded/unguarded predictions, location-map JSON, shrink-table JSON, and immutable English/pool/Hindi/shrunk artifacts. Scientific comparison status remains unassessed. No publication PDF or scientific-result claim is produced.
+
+**Validation:** 77 tests ran in 122.588 seconds; all executed tests passed and one setup test skipped. The final focused rerun passed all 6 pipeline tests in 41.668 seconds after identity/retention changes. Local tiny mT5 tests cover English→Hindi execution, maps, both shrink-search directions, same-forward weighted-loss equivalence, zero-probe function preservation, interrupted ranking/past-summary writing/stop regeneration, and a torn pinned write. Python compilation and whitespace checks passed. No model/data download or production GPU run was performed.
+
+**Remaining:** scientific matrix CLI, pre-registration and C1-prediction gates, D/E winner composition, serving benchmark, seed aggregation, manual-check sheets, and publication reports. Interrupted probe/shrink analysis jobs and CUDA/XPU execution remain unverified. E's illustrative 659,456 versus 638,976 parameter counts exceed the required 3% match and are rejected.
+**Next action:** implement the experiment runner against these tested pipeline APIs, then run the real pilot before any scientific arm.

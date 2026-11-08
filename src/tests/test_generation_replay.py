@@ -5,6 +5,7 @@ import unittest
 
 import torch
 from torch.nn import functional as F
+from transformers import Lfm2Config, Lfm2ForCausalLM, LlamaConfig, LlamaForCausalLM
 
 from ..datasets.dataset_instruction import InstructionDataset, InstructionPreprocessing
 from ..models.model_causal_lm import CausalLMModel, CausalLMSettings
@@ -165,12 +166,10 @@ def _settings():
 
 def _config(kind):
     if kind == "llama":
-        from transformers import LlamaConfig
         config = LlamaConfig(vocab_size=32, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
                              num_attention_heads=2, num_key_value_heads=2, max_position_embeddings=32,
                              attention_dropout=0.0, bos_token_id=1, eos_token_id=2, pad_token_id=0)
     else:
-        from transformers import Lfm2Config
         config = Lfm2Config(vocab_size=32, hidden_size=16, intermediate_size=32, num_hidden_layers=2,
                             num_attention_heads=2, num_key_value_heads=2, max_position_embeddings=32,
                             full_attn_idxs=[0], bos_token_id=1, eos_token_id=2, pad_token_id=0)
@@ -180,9 +179,7 @@ def _config(kind):
 
 def _factory(kind):
     if kind == "llama":
-        from transformers import LlamaForCausalLM
         return LlamaForCausalLM
-    from transformers import Lfm2ForCausalLM
     return Lfm2ForCausalLM
 
 

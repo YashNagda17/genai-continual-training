@@ -61,3 +61,24 @@ Evidence required for the [generation replay recipe](/design/generation-replay.m
 | Measurement | Every generation and forward appears in one cost category; `max_task_seconds` stops at a safe boundary |
 
 Do not treat these as evidence for retention, cost, or the main claim. Only the [first test and arms](/design/generation-replay-experiments.md) can show that.
+
+## Summarization plan additions
+
+Evidence required for the [summarization plan](/design/summarization-plan.md), in `src/tests/test_summarization.py`. Use a tiny `MT5Config` built locally (for example 2 encoder and 2 decoder blocks, `d_model` 32, a vocabulary of a few hundred tokens), with no downloads. Worked numbers come from [Idea_Refined_2.md](/Idea_Refined_2.md), which were made up to show the method, so these check arithmetic, not behavior.
+
+| Area | Evidence required |
+|---|---|
+| Metrics | `chrf` by hand on a short pair, and 100 for identical strings; `script_share` on Latin, Devanagari, and mixed text; `paired_bootstrap` reproducible from its seed; `interaction(0, 3, 2, 3) = -2`; `top_overlap` of two hand rankings; `cohen_kappa` by hand; `energy_rank` on given singular values |
+| Revision | B's ranking from the plan's table (Election +0.8 first, Science +0.1 low); drift `= 1` for a slipped summary; the half-ranked, half-random slot rule with stable ties and no duplicate in a batch; the G2 filter keeps and drops the plan's two rows; G3 weights average 1 per row and equal 1 when nothing got worse; the stop rule retires only at `sim >= 0.9` in English, and the next-ranked row takes the slot |
+| Access | In the Hindi stage, only Hindi training rows and pool rows reach policy code; test rows are refused at every collation; validation reaches only declared decisions |
+| Adapter plans | Trainable counts 2,555,904, 638,976, and 638,976 on the real per-rank costs (computed, not loaded); frozen adapters get no gradient and no optimizer update; with only late blocks trainable, no gradient is computed for earlier encoder blocks; new rank leaves outputs unchanged at the first step; E's rank arithmetic gives 14 and 659,456 for four decoder blocks, and 4 and 638,976 for the spread; `lr_scale` is 50% at agreement −0.5 and stops at the floor |
+| Probe | Probe gradients leave the learner's weights, optimizer state, and RNG unchanged; grouped by cell and by block, they sum to the flat gradient |
+| Shrink | Full-rank shrink reproduces outputs within tolerance, including the LoRA scale; `k_E` from the energy rule; the search steps down and stops at the first failure, or steps up when `k_E` fails |
+| Generation | The script guard never emits a blocked token, and never masks EOS; greedy `predict` is deterministic; the merged copy matches unmerged outputs within tolerance; the prefix is stored on the prepared view |
+| Model execution | Per-example seq2seq loss equals separate forwards; labels padded with `-100` don't count; bf16 or fp32 load, never fp16 |
+| Recovery | Interrupt during past-summary writing, rescoring, and stop regeneration; compare with an uninterrupted run; the English checkpoint artifact is identical across all Hindi runs |
+| Pre-registration | A scientific Hindi job is refused when the file is missing or its settings differ; C2 scientific jobs are refused before `c1_prediction.json` exists |
+
+`SetupModelTests` gains one mT5-small case: load the pinned snapshot, check 300,176,768 parameters with an untied head, and run one forward and one greedy summary. It stays skipped unless `GENAI_SETUP_TESTS=1`.
+
+These checks aren't evidence for retention, cost, or the main claims. Only the [scientific runs](/design/summarization-experiments.md) can show those.

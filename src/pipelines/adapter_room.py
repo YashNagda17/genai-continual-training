@@ -1,0 +1,224 @@
+"""C1 location maps, C2 block plans, and E's matched extra-rank plans."""
+
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+import torch
+
+from .pipeline_base import SummarizationPipeline
+from ..utils.contracts import AdapterPlan, ScoreSpec
+from ..utils.numerics import cosine
+from ..utils.state import write_json
+
+
+@dataclass(frozen=True)
+class AdapterRoomConfig:
+    stability_threshold: float
+    seed: int = 0
+    sample_size: int = 64
+    analysis_batch: int = 8
+    encoder_blocks: int = 8
+    decoder_blocks: int = 8
+    shared_rank: int = 16
+    new_room_budget: int = 638976
+    gamma: float = 1.0
+    floor: float = 0.25
+    match_tolerance: float = 0.03
+    generation: dict = field(default_factory=lambda: {'max_new_tokens': 64, 'do_sample': False})
+
+    def __post_init__(self):
+        if not -1 <= self.stability_threshold <= 1 or not 0 < self.floor <= 1 or self.gamma < 0:
+            raise ValueError('Invalid map threshold or learning-rate rule')
+        if any(type(v) is not int or v < 1 for v in (self.sample_size, self.analysis_batch,
+                self.encoder_blocks, self.decoder_blocks, self.shared_rank, self.new_room_budget)):
+            raise ValueError('Positive sizes, ranks, and budget required')
+        if not 0 <= self.match_tolerance < 1:
+            raise ValueError('Invalid parameter-match tolerance')
+
+
+def cell_of(name):
+    pieces = name.split('.')
+    stack, block = pieces[0], int(pieces[2])
+    part = {'SelfAttention': 'self_attention', 'EncDecAttention': 'cross_attention',
+            'DenseReluDense': 'feed_forward'}[pieces[-2]]
+    band = block // 2 * 2 + 1
+    return f'{stack}.{part}.{band}-{band + 1}'
+
+
+def spearman(left, right):
+    def ranks(values):
+        values = torch.as_tensor(values, dtype=torch.float32)
+        order = values.argsort()
+        ranks = torch.empty_like(values)
+        start = 0
+        while start < len(order):
+            end = start + 1
+            while end < len(order) and values[order[end]] == values[order[start]]:
+                end += 1
+            ranks[order[start:end]] = (start + end - 1) / 2
+            start = end
+        return ranks - ranks.mean()
+    a, b = ranks(left), ranks(right)
+    return cosine(a, b) if a.norm() > 0 and b.norm() > 0 else None
+
+
+class AdapterRoomPipeline(SummarizationPipeline):
+    def __init__(self, config, model=None, dataset=None, *, pool=(), hindi=(),
+                 english_checkpoint=None, hindi_checkpoint=None):
+        super().__init__(config, model, dataset)
+        self.rng.seed(config.seed)
+        self.pool, self.hindi = tuple(pool), tuple(hindi)
+        self.english_checkpoint, self.hindi_checkpoint = english_checkpoint, hindi_checkpoint
+        self.policy = {'samples': None, 'sample_index': 0, 'maps': [], 'work': {}, 'change': {}, 'result': None}
+
+    def input_identity(self):
+        return {'method_status': 'ablation', 'english_checkpoint': str(self.english_checkpoint), 'hindi_checkpoint': str(self.hindi_checkpoint),
+                'pool': [r.sample_id for r in self.pool], 'hindi': [r.sample_id for r in self.hindi]}
+
+    def required_capabilities(self):
+        return {'probe_gradient', 'adapter_updates', 'zero_probe'}
+
+    def _change_map(self, path, kind):
+        role = self.acquire_auxiliary('analysis', str(path), checkpoint=path, state_kind=kind)
+        result = {}
+        for name, value in role.effective_updates().items():
+            cell = cell_of(name)
+            result[cell] = result.get(cell, 0.0) + float(torch.linalg.vector_norm(value))
+        self.release_auxiliary()
+        return result
+
+    def _mean_gradient(self, rows, view, key, probe):
+        work = self.policy['work'].setdefault(key, {'cursor': 0, 'sum': {}, 'groups': None})
+        while work['cursor'] < len(rows):
+            part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
+            values = self._score(part, ScoreSpec('probe_gradient', 'per_example_mean', parameter_view=view),
+                                 'probe_pass', probe)
+            groups = list(values['groups'])
+            if work['groups'] is not None and groups != work['groups']:
+                raise ValueError('Probe group layout changed during a sweep')
+            work['groups'] = groups
+            for group, gradient in zip(groups, values['gradients']):
+                previous = torch.as_tensor(work['sum'].get(group, [0.0] * gradient.numel()),
+                                           device=gradient.device, dtype=gradient.dtype)
+                work['sum'][group] = (previous + len(part) * gradient).tolist()
+            work['cursor'] += len(part)
+            self._commit()
+        return {group: torch.tensor(value, device=probe.device) / len(rows) for group, value in work['sum'].items()}
+
+    def location_maps(self):
+        if self.policy['result'] is not None:
+            return self.policy['result']
+        if any(r.split != 'train' or r.task_id != 'english' or not r.practice
+               or r.practice.get('writer') != 'english_checkpoint' for r in self.pool):
+            raise ValueError('C1 English probes may read only the fixed English pool')
+        if any(r.split != 'train' or r.task_id != 'hindi' for r in self.hindi):
+            raise ValueError('C1 Hindi probes require Hindi training rows')
+        n = self.config.sample_size
+        if any(len({r.sample_id for r in rows}) != len(rows) for rows in (self.pool, self.hindi)):
+            raise ValueError('Probe samples require unique observation IDs')
+        if min(len(self.pool), len(self.hindi)) < 2 * n:
+            raise ValueError('C1 needs two disjoint samples per language')
+        if not self.english_checkpoint or not self.hindi_checkpoint:
+            raise ValueError('C1 needs saved English and Hindi-only checkpoints')
+        for label, path, kind in [('english', self.english_checkpoint, 'english'), ('hindi', self.hindi_checkpoint, 'hindi')]:
+            if label not in self.policy['change']:
+                self.policy['change'][label] = self._change_map(path, kind)
+                self._commit()
+        if self.policy['samples'] is None:
+            self.policy['samples'] = {language: self.rng.sample([r.sample_id for r in rows], 2 * n)
+                                       for language, rows in [('english', self.pool), ('hindi', self.hindi)]}
+            self._commit()
+        fresh = self.auxiliary is None
+        probe = self.acquire_auxiliary('probe', 'english-zero-B', checkpoint=self.english_checkpoint, state_kind='english')
+        if fresh:
+            probe.reset_probe()
+            self._commit()
+        lookup = {r.sample_id: r for r in (*self.pool, *self.hindi)}
+        while self.policy['sample_index'] < 2:
+            index = self.policy['sample_index']
+            result = {}
+            for view in ('cell', 'block'):
+                means = {}
+                for language in ('english', 'hindi'):
+                    ids = self.policy['samples'][language][index * n:(index + 1) * n]
+                    rows = tuple(lookup[i] for i in ids)
+                    means[language] = self._mean_gradient(rows, view, f'{view}/{language}', probe)
+                result[view] = {group: {'pull': float(means['hindi'][group].norm()),
+                                        'agreement': cosine(means['english'][group], means['hindi'][group])}
+                                for group in sorted(means['english'])}
+            self.policy['maps'].append(result)
+            self.policy['sample_index'] += 1
+            self.policy['work'] = {}
+            self._commit()
+        cells = sorted(self.policy['maps'][0]['cell'])
+        correlation = spearman([self.policy['maps'][0]['cell'][key]['agreement'] for key in cells],
+                               [self.policy['maps'][1]['cell'][key]['agreement'] for key in cells])
+        blocks = {key: sum(row['block'][key]['agreement'] for row in self.policy['maps']) / 2
+                  for key in self.policy['maps'][0]['block']}
+        self.release_auxiliary()
+        self.policy['result'] = {'change': self.policy['change'], 'samples': self.policy['maps'],
+                                  'correlation': correlation,
+                                  'stable': correlation is not None and correlation >= self.config.stability_threshold,
+                                  'blocks': blocks}
+        self._commit()
+        return self.policy['result']
+
+    def adapter_plan(self, arm, *, maps=None, shared=None):
+        blocks = {stack: [f'{stack}.{i}' for i in range(1, size + 1)] for stack, size in
+                  [('encoder', self.config.encoder_blocks), ('decoder', self.config.decoder_blocks)]}
+        all_blocks = blocks['encoder'] + blocks['decoder']
+        if arm == 'all':
+            trainable = all_blocks
+        elif arm == 'late':
+            trainable = blocks['encoder'][-2:] + blocks['decoder'][-2:]
+        elif arm == 'early_late':
+            trainable = sorted({ids[0] for ids in blocks.values()} | {ids[-1] for ids in blocks.values()})
+        elif arm.startswith('room_'):
+            if arm not in {'room_placed', 'room_random', 'room_spread', 'room_placed_slow', 'room_placed_frozen'}:
+                raise ValueError('Unknown extra-room arm')
+            if not maps or not maps['stable']:
+                self.policy['room_status'] = 'unstable_map'
+                return None
+            clashing = sorted(key for key, value in maps['blocks'].items() if value < 0)
+            if not set(maps['blocks']) == set(all_blocks):
+                raise ValueError('Clash map must describe every configured block')
+            if not clashing:
+                self.policy['room_status'] = 'no_clashing_blocks'
+                return None
+            chosen = list(clashing)
+            if arm == 'room_random':
+                chosen = [key for stack, ids in blocks.items() for key in
+                          self.rng.sample(ids, sum(key.startswith(stack + '.') for key in clashing))]
+            elif arm == 'room_spread':
+                chosen = all_blocks
+            cost = lambda key: 8192 if key.startswith('encoder.') else 11776
+            rank = max(1, round(self.config.new_room_budget / sum(map(cost, chosen))))
+            trainable = list(shared.trainable) if shared is not None else all_blocks
+            if arm == 'room_placed_frozen':
+                trainable = [key for key in trainable if key not in chosen]
+            scales = dict(shared.lr_scale) if shared else {}
+            if arm == 'room_placed_slow':
+                scales.update({key: max(self.config.floor, min(1.0, 1 + self.config.gamma * maps['blocks'][key])) for key in chosen})
+            new = {key: rank for key in chosen}
+            identity = {'arm': arm, 'method_status': 'project', 'new_parameters': rank * sum(map(cost, chosen)),
+                        'overlap': len(set(chosen) & set(clashing)) / len(clashing)}
+            return AdapterPlan(tuple(trainable), new, scales, identity)
+        else:
+            raise ValueError('Unknown block-placement arm')
+        count = self.config.shared_rank * sum(8192 if key.startswith('encoder.') else 11776 for key in trainable)
+        return AdapterPlan(tuple(trainable), identity={'arm': arm, 'trainable_parameters': count})
+
+    def validate_room_plans(self, plans):
+        counts = [plan.identity['new_parameters'] for plan in plans if plan is not None]
+        if not counts or (max(counts) - min(counts)) / min(counts) > self.config.match_tolerance:
+            raise ValueError('Extra-room arms exceed the pre-registered parameter-match tolerance')
+        return tuple(replace(plan, identity={**plan.identity, 'matched_parameters': True, 'matched_counts': counts})
+                     for plan in plans if plan is not None)
+
+    def next_update(self):
+        result = self.location_maps()
+        write_json(Path(self.context.output) / 'location_maps.json', result)
+        self.metrics = [{'checkpoint_task': 'maps', 'task': f'sample-{i + 1}/{view}/{group}', 'metrics': values}
+                        for i, sample in enumerate(result['samples']) for view, groups in sample.items()
+                        for group, values in groups.items()]
+        return None
