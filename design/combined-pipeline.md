@@ -1,5 +1,7 @@
 # CombinedPipeline
 
+> **Current plan:** not used by the [summarization plan](/design/summarization-plan.md), and not a comparison arm there. This contract is unchanged and applies to earlier work only.
+
 Owns `src/combined_pipeline.py`. Composes paper components into one learner lifecycle; it does not call four standalone `run()` methods in sequence. Implement the same public run/evaluate/predict/save/load contract as `PipelineBase`.
 
 ## Recipe boundary
