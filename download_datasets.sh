@@ -2,7 +2,7 @@
 # Fetch each instruction source into canonical JSONL. Hub files stay in the source cache.
 #
 # Usage:
-#   ./download_datasets.sh [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|all] [hf_token]
+#   ./download_datasets.sh [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|xlsum|all] [hf_token]
 #
 # Output, for each selected source:
 #   src/datasets/data/<dataset_id>/<commit>/records.jsonl
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 if [[ $# -gt 2 ]]; then
-  echo "Usage: $0 [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|all] [hf_token]" >&2
+  echo "Usage: $0 [clinc_oos|clinc_oos_domains|schuster|bitext_customer_support|trace|xlsum|all] [hf_token]" >&2
   exit 1
 fi
 
@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from src.datasets.dataset_sources import (
-    BitextSource, ClincDomainSource, ClincOOSSource, SchusterSource, TraceSource,
+    BitextSource, ClincDomainSource, ClincOOSSource, SchusterSource, TraceSource, XLSumSource,
 )
 
 root = Path(sys.argv[1])
@@ -47,6 +47,7 @@ sources = {
     "schuster": SchusterSource,                  # English alarm / reminder / weather intents
     "bitext_customer_support": BitextSource,     # category tasks, intent class, assistant reply
     "trace": TraceSource,                        # eight TRACE-5000 tasks, Lima excluded
+    "xlsum": XLSumSource,                        # English and Hindi article-summary pairs
 }
 # Domain CLINC is an explicit continual stream. "all" keeps the original four sources.
 if name == "clinc_oos_domains":
