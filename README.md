@@ -25,48 +25,34 @@ Each phase writes `report.json`, `report.csv`, and `report.md` under its directo
 
 ## Commands
 
-Run these from the repository root after `source ~/venv/bin/activate`. Smoke needs no downloads. Pilot and scientific need XL-Sum and the mT5-small weights:
+Run these from the repository root after `source ~/venv/bin/activate`. The default command is a scientific run in the current directory. It continues from the last phase in `progress.json` through Phase 7. A directory with no progress runs Phase 0 through Phase 7.
 
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
+python -m src.summarization_experiment --device cuda:0
 ```
 
-Smoke checks every phase on a tiny local model. It is not a result:
+`--pilot` runs the pilot instead. `--output` chooses another directory. `--phase N` runs only that phase and reads the earlier reports from the same directory.
+
+```sh
+python -m src.summarization_experiment --pilot --device cuda:0
+python -m src.summarization_experiment --output results/code/summarization --device cuda:0
+python -m src.summarization_experiment --phase 3 --device cuda:0
+```
+
+A scientific run stops after Phase 1 when the gate is not `continue`. Smoke, for a local check that is not a result:
 
 ```sh
 python -m src.summarization_experiment --protocol smoke --output results/code/summarization-smoke
 ```
-
-Pilot runs Phase 0 on real XL-Sum and is the place to fix the number of English and Hindi passes. Scientific runs Phase 0 through Phase 7 on the GPU and refuses to start unless `preregistration.json` is already in the output directory. Use a separate directory for each protocol.
-
-```sh
-python -m src.summarization_experiment --protocol pilot --output results/code/summarization-pilot --device cuda:0
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0
-```
-
-`--phase N` runs one phase and reads the earlier reports from the same output directory. The same flag works for `smoke`, `pilot`, and `scientific`.
-
-```sh
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 0
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 1
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 2
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 3
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 4
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 5
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 6
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 7
-```
-
-Phase 2 and later need the reports from the phases before them. A scientific run stops after Phase 1 when the gate is not `continue`.
 
 ## Tracking: what is left
 
 | Item | State |
 |---|---|
 | Phases 0–7, resume, per-arm scores, timings, and saved adapters | Implemented. Checked on the smoke model only. |
-| Pilot on real XL-Sum, including a human read of the 20 summaries | Not run. Phase 0 leaves `readability_review` as `pending`. The pilot must fix `english_passes`, `hindi_passes`, and `stability_threshold`. |
-| `preregistration.json` in the scientific output directory | Required before the scientific command. The runner checks it and does not write it. It needs the date, locked settings, predictions P1–P10, winner rules, and gate thresholds from [the experiment contract](/design/summarization-experiments.md). |
+| Pilot on real XL-Sum, including a human read of the 20 summaries | Not run. Phase 0 leaves `readability_review` as `pending`. |
 | Scientific run on the GPU, seeds 1–3 | Not started. This is the only run that can be reported. |
 | G1 compute-matched control | Not a phase. Tier 3 in the plan. |
 | Blind rating sheets, two raters, and Cohen's kappa | Not produced. The kappa function exists. The sheets and the rater loop do not. |

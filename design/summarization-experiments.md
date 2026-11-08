@@ -1,12 +1,12 @@
 # Summarization experiments
 
-Owns `src/summarization_experiment.py`: phases, arms, fixed settings, pre-registration, winner rules, gates, measures, statistics, serving timing, manual-check sheets, and reports for [Idea_Refined_2.md](/Idea_Refined_2.md). It also owns the placement and shrink rules below. `AdapterRoomPipeline` (`src/pipelines/adapter_room.py`) carries out C1, C2, and E. `GenerationShrinkPipeline` (`src/pipelines/generation_shrink.py`) carries out F. Neither pipeline trains, and neither chooses replay; that is [revision.md](/design/revision.md). They call the model operations in [models.md](/design/models.md): adapter names, `AdapterPlan`, probe gradients, `shrink_adapters`, and `merged_copy`. The [plan guardrails](/design/summarization-plan.md) apply.
+Owns `src/summarization_experiment.py`: phases, arms, fixed settings, winner rules, gates, measures, statistics, serving timing, manual-check sheets, and reports for [Idea_Refined_2.md](/Idea_Refined_2.md). It also owns the placement and shrink rules below. `AdapterRoomPipeline` (`src/pipelines/adapter_room.py`) carries out C1, C2, and E. `GenerationShrinkPipeline` (`src/pipelines/generation_shrink.py`) carries out F. Neither pipeline trains, and neither chooses replay; that is [revision.md](/design/revision.md). They call the model operations in [models.md](/design/models.md): adapter names, `AdapterPlan`, probe gradients, `shrink_adapters`, and `merged_copy`. The [plan guardrails](/design/summarization-plan.md) apply.
 
 ```sh
-python -m src.summarization_experiment --protocol smoke|pilot|scientific --output <dir> [--phase N]
+python -m src.summarization_experiment [--pilot] [--output <dir>] [--phase N]
 ```
 
-`src/summarization_experiment.py` runs Phase 0 through Phase 7 in order. Each phase lives in `src/phases/phaseN.py` and calls the existing revision, adapter-room, and shrink pipelines. `--phase N` runs that phase only, reading earlier reports from the same output. Each attempt directory is kept. A finished `report.json` is reused and is not deleted. Only `scientific` results are reported. `pilot` and `smoke` are development evidence. A scientific run refuses to start unless `preregistration.json` is already in the output directory.
+`src/summarization_experiment.py` runs Phase 0 through Phase 7 in order. The default protocol is `scientific`. `--pilot` selects the pilot. The default output is the current directory. Each phase lives in `src/phases/phaseN.py` and calls the existing revision, adapter-room, and shrink pipelines. With no `--phase`, a directory that already has `progress.json` continues from that last phase through Phase 7. A directory with no progress runs Phase 0 through Phase 7. `--phase N` runs that phase only, reading earlier reports from the same output. Each attempt directory is kept. A finished `report.json` is reused and is not deleted. Only `scientific` results are reported. `pilot` and `smoke` are development evidence. The runner does not read or require `preregistration.json`.
 
 **Resume.** A finished phase report is the boundary between phases: a later run reads it and does not repeat that phase. Inside a phase, each finished arm writes `arm.json` next to its `run.json`. A later run of that phase reads `arm.json` and does not load or retrain that arm. An arm with no `arm.json` resumes through the attempt checkpoint. Phase 0 writes `progress.json` and `final/batch` after its one batch; a later run rebuilds the report from those files. Restarting a finished attempt does not add the reload to its wall-clock time.
 
@@ -19,9 +19,7 @@ the referenced snapshots and tabular logs. Failed/interrupted work keeps its
 prior checkpoints and records its error. Analysis jobs report zero training
 epochs; Phase 0 reports its actual fraction of an English epoch.
 
-Scientific settings come from `preregistration.json` (`date`, `settings`,
-`predictions`, `winner_rules`, and `gate_thresholds`); all fixed settings below
-are validated before model/data loading. Hindi arms use seeds 1, 2, and 3, with
+Scientific and pilot runs use the fixed settings below. Hindi arms use seeds 1, 2, and 3, with
 per-seed attempts and averaged validation metrics for decisions. Source checkpoints
 and final exports remain available per seed. A pilot/smoke result is never reused
 as a scientific result.
@@ -45,9 +43,9 @@ Drawn once with a fixed seed from XL-Sum's official splits. The ID lists are sav
 | Validation | 200 | Official validation |
 | Test | 500 | Official test |
 
-## Fixed settings and pre-registration
+## Fixed settings
 
-`preregistration.json` holds every value below, predictions P1–P10, the winner rules, and the gate thresholds, with a date. The runner records its SHA-256 in every scientific run identity, and refuses a scientific Hindi job if the file is missing or the job's settings differ from it.
+The runner uses the values below. It does not read `preregistration.json`.
 
 | Setting | Value |
 |---|---|
@@ -60,12 +58,12 @@ Drawn once with a fixed seed from XL-Sum's official splits. The ID lists are sav
 | G2 filter | 0.2 |
 | G3 | `beta = 1`, `stop_similarity = 0.9`, `refresh_steps = 200` |
 | E | `gamma = 1`, `floor = 0.25`, `new_room_budget = 638,976` |
-| C1 | `stability_threshold` (required) |
+| C1 | `stability_threshold = 0.5` |
 | F | Tolerance 1 point, energy 0.9, grid 12, 8, 6, 4 |
 | Decoding | Greedy, up to 64 new tokens, the same for every arm |
 | Meaningful difference | 1 ROUGE-L or 1 chrF point |
 | Seeds | English stage: seed 0. Hindi stage: seeds 1, 2, 3 |
-| Passes | `english_passes`, `hindi_passes`, fixed in the pilot before pre-registration |
+| Passes | `english_passes = 1`, `hindi_passes = 1` |
 
 ## Jobs and arms
 
@@ -167,8 +165,7 @@ slowing:          lr_scale(block) = clip(1 + gamma x min(a(block), 0), floor, 1)
 
 - New-parameter counts of all arms must be within 3% of each other, or the run is rejected before training.
 - The illustrative 659,456 versus 638,976 counts differ by about 3.2%, so that
-  particular rounded family fails this rule. Report the mismatch and resolve its
-  allocation before pre-registration; do not silently widen the tolerance.
+  particular rounded family fails this rule. Report the mismatch and do not silently widen the tolerance.
 - E2 reports its overlap with K for each seed.
 - If K is empty, E isn't run, and that's reported as a result: Hindi nowhere clashes with English.
 - If the clash map failed the two-sample check, E isn't run.
@@ -219,7 +216,7 @@ if it fails:  step up through the grid ranks above k_E, then the full rank; k_G 
 
 ## Winner rules
 
-Chosen on **validation**, never test, and fixed in the pre-registration:
+Chosen on **validation**, never test:
 
 | Choice | Rule |
 |---|---|

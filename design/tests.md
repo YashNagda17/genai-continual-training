@@ -17,7 +17,7 @@ Keep behavior tests small and tied to the [current plan](/Idea_Refined_2.md). Do
 | Placement | Per-rank counts, equal C2 sizes, zero-output new rank, slowdown, two-sample stability and strict 3% family matching |
 | Shrink | Validation-only search, both search directions, rank table and saved selected adapter |
 | Recovery | Interrupted policy work matches uninterrupted work, finished arms are reused, reports can be rebuilt without training |
-| Phases | Gates/winners use validation, pre-registration rejects mismatches, seed attempts and summaries persist, each phase saves reports/status/final models |
+| Phases | Gates/winners use validation, seed attempts and summaries persist, each phase saves reports/status/final models |
 | Serving | One pass without warm-up, separate merged/unmerged/reference logs and completed-result reuse |
 
 Routine execution uses a tiny random Torch model on CPU, with no downloads. Report exactly which tests ran. Static compilation and mock/CPU checks do not establish accelerator behavior, native-paper reproduction, retention, quality or speedup.

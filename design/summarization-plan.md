@@ -43,7 +43,7 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 | Resume | Long loops keep a cursor and stop at safe boundaries, as in existing pipelines ([model-weights.md](/design/model-weights.md)) |
 | Cost | Every training, scoring, generation, probe, and timing pass records a [cost category](/design/utils.md) |
 | Tests | Compact, table-driven checks in `src/tests/test_summarization.py` on a tiny locally built mT5 config, with no downloads ([tests.md](/design/tests.md)) |
-| Outputs | Under `results/code/summarization/`. Each arm and seed gets its own attempt directory. Never delete an existing attempt |
+| Outputs | The current directory, unless `--output` names another one. Each arm and seed gets its own attempt directory. Never delete an existing attempt |
 
 ## Module layout
 
@@ -116,7 +116,7 @@ Their executable code and dedicated tests are removed. Original paper sources, r
 | XL-Sum source, summarization records, an optional language prefix | [data.md](/design/data.md), [datasets.md](/design/datasets.md) |
 | Revision policies: random, loss increase, drift, past summaries, repair and stop | [revision.md](/design/revision.md) |
 | chrF, script share, paired bootstrap, interaction, overlap, kappa, energy rank | [utils.md](/design/utils.md) |
-| Pre-registration, validation-based winner rules, serving timing, blind manual-check sheets | [summarization-experiments.md](/design/summarization-experiments.md) |
+| Fixed settings, validation-based winner rules, serving timing, blind manual-check sheets | [summarization-experiments.md](/design/summarization-experiments.md) |
 
 ## Run lifecycle
 

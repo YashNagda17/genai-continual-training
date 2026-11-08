@@ -1,6 +1,5 @@
 """Run the registered summarization phases with one saved report per phase."""
 
-from dataclasses import asdict
 from pathlib import Path
 import argparse
 
@@ -14,10 +13,10 @@ from .phases.phase4 import run as run_phase4
 from .phases.phase5 import run as run_phase5
 from .phases.phase6 import run as run_phase6
 from .phases.phase7 import run as run_phase7
-from .phases.settings import PhaseSettings, align_settings, registered_settings
+from .phases.settings import PhaseSettings, align_settings
 from .phases.data import build_smoke_dataset, build_smoke_model, choose_ids, xlsum_directory
 from .phases.support import read_context
-from .utils.state import Checkpoints, write_json
+from .utils.state import Checkpoints, read_json, write_json
 from .datasets.dataset_instruction import Seq2SeqPreprocessing, SummarizationDataset
 from .datasets.dataset_sources import load_source
 
@@ -26,11 +25,26 @@ PHASES = (run_phase0, run_phase1, run_phase2, run_phase3, run_phase4, run_phase5
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--protocol", required=True, choices=("smoke", "pilot", "scientific"))
-    parser.add_argument("--output", default="results/code/summarization")
+    parser.add_argument("--pilot", action="store_true", help="Run the pilot instead of the scientific protocol")
+    parser.add_argument("--protocol", choices=("smoke", "pilot", "scientific"), default="scientific")
+    parser.add_argument("--output", default=".")
     parser.add_argument("--phase", type=int, choices=range(8))
     parser.add_argument("--device", default=None)
     return parser.parse_args(argv)
+
+
+def selected_phases(root, phase):
+    """Continue from the last phase, or run Phase 0 through Phase 7 when nothing has started."""
+    if phase is not None:
+        return (phase,)
+    path = Path(root) / "progress.json"
+    if not path.is_file():
+        return tuple(range(8))
+    last = read_json(path).get("last_phase")
+    if not isinstance(last, int) or not 0 <= last <= 7:
+        return tuple(range(8))
+    start = last if not (Path(root) / f"phase{last}" / "report.json").is_file() else last + 1
+    return tuple(range(start, 8))
 
 
 def prepare(protocol, device, settings=None):
@@ -72,16 +86,14 @@ def prepare(protocol, device, settings=None):
 def run_phases(root, dataset, model_factory, settings, phase=None):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    if settings.protocol == "scientific" and asdict(settings) != asdict(registered_settings(root / "preregistration.json")):
-        raise ValueError("Scientific settings differ from pre-registration")
-    selected = range(8) if phase is None else (phase,)
-    if settings.protocol == "pilot" and phase is None:
-        selected = (0,)
-    context = read_context(root, dataset, settings, before=phase) if phase is not None else {}
+    selected = selected_phases(root, phase)
+    context = read_context(root, dataset, settings, before=selected[0]) if selected else {}
     with Checkpoints(root, "phase-driver").lock():
         for index in selected:
             if settings.protocol == "scientific" and index >= 2 and context.get("phase1", {}).get("gate") != "continue":
-                write_json(root / "progress.json", {"status": "stopped_gate", "gate": context.get("phase1", {}).get("gate")})
+                completed = [i for i in range(8) if (root / f"phase{i}" / "report.json").is_file()]
+                write_json(root / "progress.json", {"status": "stopped_gate", "gate": context.get("phase1", {}).get("gate"),
+                                                   "completed_phases": completed, "last_phase": index - 1})
                 break
             context.update(PHASES[index](root, dataset, model_factory, settings, context))
             completed = [i for i in range(8) if (root / f"phase{i}" / "report.json").is_file()]
@@ -92,13 +104,10 @@ def run_phases(root, dataset, model_factory, settings, phase=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    protocol = "pilot" if args.pilot else args.protocol
     output = Path(args.output).resolve()
-    try:
-        settings = registered_settings(output / "preregistration.json") if args.protocol == "scientific" else None
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
-    dataset, factory, settings = prepare(args.protocol, args.device, settings)
-    if args.protocol != "smoke" and not (output / "prepared" / "manifest.json").is_file():
+    dataset, factory, settings = prepare(protocol, args.device)
+    if protocol != "smoke" and not (output / "prepared" / "manifest.json").is_file():
         dataset.save(output / "prepared")
     run_phases(output, dataset, factory, settings, args.phase)
     print(output, flush=True)

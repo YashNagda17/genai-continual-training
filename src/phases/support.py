@@ -25,8 +25,7 @@ def run_spec(stage, settings, passes, arm, dataset, model, extra_steps=0):
     return RunSpec((stage,), settings.seed, settings.batch_size, max(1, updates), max(1, updates), bound, passes,
                    "repeat_admitted", "per_example_mean", ReplayBudget(len(dataset.pool_view()), 50_000_000, 50_000_000),
                    ResourceBudget(64_000_000, 0), 1,
-                   {"protocol": settings.protocol, "arm": arm, "training_rows": len(rows),
-                    "preregistration": settings.preregistration_hash}, {})
+                   {"protocol": settings.protocol, "arm": arm, "training_rows": len(rows)}, {})
 
 
 def execute(pipeline, model, dataset, output, stage, settings, passes, arm):

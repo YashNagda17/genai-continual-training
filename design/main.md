@@ -2,7 +2,7 @@
 
 Owns [summarization_experiment.py](/src/summarization_experiment.py) and [phases/](/src/phases/). The active experiment is [Idea_Refined_2.md](/Idea_Refined_2.md); [summarization-experiments.md](/design/summarization-experiments.md) owns its protocol.
 
-The entry point resolves the protocol, validates scientific pre-registration before loading assets, prepares only selected XL-Sum rows, and executes phases in order under one writer lock. Pilot defaults to Phase 0. `--phase N` reads matching completed earlier reports and runs only N. Scientific execution stops after an unsuccessful X gate.
+The entry point defaults to the scientific protocol and the current directory. `--pilot` selects the pilot. It prepares only selected XL-Sum rows and executes phases in order under one writer lock. With no `--phase`, it continues from the last phase in `progress.json` through Phase 7, or starts at Phase 0 when that file is absent. `--phase N` reads matching completed earlier reports and runs only N. Scientific execution stops after an unsuccessful X gate.
 
 Phase modules own experiment decisions. Shared execution owns per-seed attempts, bounded run settings, model release, completed-arm reuse, and incomplete numerical resume. Reporting owns progress/status events, JSON/CSV/Markdown publication and atomic final adapter exports. Data preparation owns ID selection and prefix variants. Serving owns one timing pass without warm-up.
 

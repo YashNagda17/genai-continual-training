@@ -7,14 +7,14 @@ Use Python 3.11+ with the dependencies in [requirements.txt](/requirements.txt).
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
-python -m src.summarization_experiment --protocol pilot --output results/code/summarization-pilot --device cuda:0
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0
-python -m src.summarization_experiment --protocol scientific --output results/code/summarization --device cuda:0 --phase 0
+python -m src.summarization_experiment --device cuda:0
+python -m src.summarization_experiment --pilot --device cuda:0
+python -m src.summarization_experiment --output results/code/summarization --phase 3 --device cuda:0
 ```
 
-`--phase` accepts 0 through 7. Each later phase reads the earlier reports in that same output directory. The project description, every phase command, and the remaining work are in [README.md](/README.md).
+The default protocol is scientific and the default output is the current directory. With no `--phase`, the run continues from the last phase through Phase 7, or starts at Phase 0 when `progress.json` is absent. `--phase N` runs only that phase. The project description and the remaining work are in [README.md](/README.md).
 
-The pilot defaults to Phase 0. Scientific runs require a dated `preregistration.json` before loading models or data. Its schema and locked values are in [the experiment contract](/design/summarization-experiments.md). English uses seed 0; Hindi arms use seeds 1, 2, and 3. Validation decides gates, winners and shrink ranks. Test scores are report-only. A failed scientific X gate stops later phases.
+Locked settings are in [the experiment contract](/design/summarization-experiments.md). English uses seed 0; Hindi arms use seeds 1, 2, and 3. Validation decides gates, winners and shrink ranks. Test scores are report-only. A failed scientific X gate stops later phases.
 
 For local checks without downloads:
 
@@ -38,7 +38,7 @@ Each phase is a small experiment definition:
 | 6 | Independent prefixed English checkpoint and G4 |
 | 7 | Drift plus past summaries and optional frozen room; unavailable extensions are explicit |
 
-`--phase N` runs one phase using earlier reports in the same output root. Shared code validates settings and data identity before reusing reports or finished arms. A changed protocol needs a separate output directory.
+With no `--phase`, execution continues from the last phase through Phase 7. `--phase N` runs one phase using earlier reports in the same output root. Shared code validates settings and data identity before reusing reports or finished arms. A changed protocol needs a separate output directory.
 
 Every phase saves:
 

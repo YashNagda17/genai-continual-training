@@ -66,7 +66,7 @@ A paper module may become a same-named package while preserving its public contr
 8. The task stream is English, then Hindi. In the Hindi stage, training and policy code may access the Hindi training view and the fixed **English pool** of 500 records, with the past summaries and baselines saved for them. No other English training data is accessible, except to the declared `full_english` reference arm.
 9. Validation is read only for declared decisions: English checkpoint choice, winner rules, the C1 prediction check, and F's shrink test. Test reaches only evaluation and reports.
 10. Every Hindi-stage run loads the same immutable English checkpoint for its prefix variant. It is a new run with transferred weights, not a resume.
-11. Settings and predictions are pre-registered. A scientific run records the pre-registration hash and is refused if its settings differ.
+11. Scientific and pilot runs use the fixed settings in [summarization-experiments.md](/design/summarization-experiments.md). A finished report is reused only when those settings and the prepared data still match.
 
 ## Dependency and ownership boundary
 

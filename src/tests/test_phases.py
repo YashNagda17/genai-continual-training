@@ -7,10 +7,9 @@ import json
 import tempfile
 import unittest
 from unittest.mock import patch
-
 from ..phases.phase0 import summary_word_coverage
 from ..phases.data import build_smoke_dataset, build_smoke_model, choose_ids, with_prefix
-from ..phases.settings import PhaseSettings, SCIENTIFIC_FIXED, WINNER_RULES, registered_settings
+from ..phases.settings import PhaseSettings
 from ..phases.support import hindi_pipeline, phase, run_hindi
 from ..pipelines.revision import load_pool
 from ..phases.support import choose_winner, gate_decision, script_share_of_forgetting
@@ -56,29 +55,24 @@ class PhaseRuleTests(unittest.TestCase):
         self.assertEqual(script_share_of_forgetting(30, 22, 27), 0.625)
         self.assertIsNone(script_share_of_forgetting(22, 22, 27))
 
-    def test_scientific_run_requires_preregistration(self):
+    def test_default_command_resumes_scientific_from_the_last_phase(self):
+        from ..summarization_experiment import parse_args, selected_phases
+        args = parse_args([])
+        self.assertEqual(args.protocol, "scientific")
+        self.assertFalse(args.pilot)
+        self.assertEqual(args.output, ".")
+        self.assertIsNone(args.phase)
+        self.assertTrue(parse_args(["--pilot"]).pilot)
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(SystemExit):
-                main(["--protocol", "scientific", "--output", directory])
-
-    def test_preregistration_mismatch_is_rejected_before_loading_assets(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "preregistration.json"
-            registration = {"date": "2026-11-08", "settings": {**SCIENTIFIC_FIXED, "english_passes": 1,
-                "hindi_passes": 2, "stability_threshold": 0.5},
-                "winner_rules": WINNER_RULES, "predictions": {f"P{i}": "registered prediction" for i in range(1, 11)},
-                "gate_thresholds": {"meaningful_difference": 1, "hindi_margin": 1, "shrink_tolerance": 1}}
-            path.write_text(json.dumps(registration))
-            settings = registered_settings(path)
-            self.assertEqual(settings.hindi_seeds, (1, 2, 3))
-            self.assertEqual(settings.hindi_passes, 2)
-            self.assertTrue(settings.preregistration_hash)
-            registration["settings"]["batch_size"] = 32
-            path.write_text(json.dumps(registration))
-            with patch("src.summarization_experiment.prepare") as prepare:
-                with self.assertRaises(SystemExit):
-                    main(["--protocol", "scientific", "--output", directory])
-                prepare.assert_not_called()
+            root = Path(directory)
+            self.assertEqual(selected_phases(root, None), tuple(range(8)))
+            (root / "phase2").mkdir()
+            (root / "progress.json").write_text(json.dumps({"last_phase": 2}))
+            (root / "phase2" / "report.json").write_text("{}")
+            self.assertEqual(selected_phases(root, None), tuple(range(3, 8)))
+            (root / "phase2" / "report.json").unlink()
+            self.assertEqual(selected_phases(root, None), tuple(range(2, 8)))
+            self.assertEqual(selected_phases(root, 4), (4,))
 
     def test_interruption_keeps_progress_without_a_completed_report(self):
         @phase(0)

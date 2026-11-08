@@ -21,7 +21,7 @@ src/
 │   └── generation_shrink.py
 ├── phases/
 │   ├── phase0.py … phase7.py    # Experiment decisions
-│   ├── settings.py             # Protocol and pre-registration
+│   ├── settings.py             # Protocol settings
 │   ├── data.py                 # Subsets, prefix preparation, smoke fixture
 │   ├── support.py              # Shared execution and resume lifecycle
 │   ├── artifacts.py            # Model exports and reports
