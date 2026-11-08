@@ -96,67 +96,14 @@ def cosine(a, b):
     return cosine_tensor(a, b).item()
 
 
-def softmax(values):
-    """Use Torch's stable softmax and return plain probabilities for policy storage."""
-    values = tensor(values)
-    return tuple(torch.softmax(values, dim=-1).tolist()) if values.numel() else ()
 
 
-def sigmoid(x):
-    """Evaluate one logistic probability using Torch's stable sigmoid kernel."""
-    return torch.sigmoid(tensor(x)).item()
 
 
-def sample(items, probabilities, count, replacement, rng):
-    """Sample with a local CPU Torch generator seeded from the saved policy RNG.
-    Keep small sampling state on CPU across devices without changing global Torch RNG.
-    Return repeated records when replacement permits them, preserving exposure multiplicity.
-    """
-    if count < 0 or len(items) != len(probabilities):
-        raise ValueError("Invalid sampling request")
-    weights = tensor(probabilities, "cpu")
-    if not torch.isfinite(weights).all() or (weights < 0).any():
-        raise ValueError("Probabilities must be finite and nonnegative")
-    if items and not torch.isclose(weights.sum(), weights.new_tensor(1.0)):
-        raise ValueError("Probabilities must sum to one")
-    if count == 0:
-        return ()
-    if not items or (not replacement and count > (weights > 0).sum().item()):
-        raise ValueError("Insufficient positive-probability records")
-    generator = torch.Generator(device="cpu").manual_seed(rng.getrandbits(63))
-    indices = torch.multinomial(weights, count, replacement=replacement, generator=generator)
-    return tuple(items[index] for index in indices.tolist())
 
 
-def quotas(tasks, capacity):
-    """Split capacity equally across sorted task IDs; earlier IDs receive the remainder."""
-    ordered = sorted(tasks)
-    if capacity < 0 or len(ordered) != len(set(ordered)):
-        raise ValueError("Invalid quota request")
-    if not ordered:
-        return {}
-    base, remainder = divmod(capacity, len(ordered))
-    return {task: base + (i < remainder) for i, task in enumerate(ordered)}
 
 
-def continual_metrics(matrix, task_index):
-    """Compute old-task transfer and forgetting on a higher-is-better score matrix.
-    Use only observed columns from each prior row; negative forgetting is preserved.
-    Old-task averages are undefined until at least one earlier task exists.
-    """
-    t = task_index
-    row = tensor(matrix[t])
-    if t == 0:
-        return {"current": row[0].item(), "backward_transfer": None, "forgetting": None,
-                "undefined_reason": "No previous task"}
-    initial = tensor([matrix[j][j] for j in range(t)], row.device)
-    previous_best = torch.stack([tensor([matrix[k][j] for k in range(j, t)], row.device).max()
-                                 for j in range(t)])
-    return {
-        "current": row[t].item(),
-        "backward_transfer": (row[:t] - initial).mean().item(),
-        "forgetting": (previous_best - row[:t]).mean().item(),
-    }
 
 
 def _as_tokens(value):
@@ -177,26 +124,6 @@ def _pair_device(left, right, device):
     return torch.device("cpu")
 
 
-def token_similarity(left, right, device=None):
-    """Return 1 minus the Levenshtein distance divided by the longer length.
-    Both-empty sequences score 1. Strings are split on whitespace.
-    """
-    device = _pair_device(left, right, device)
-    left, right = _as_tokens(left), _as_tokens(right)
-    if not left and not right:
-        return 1.0
-    if not left or not right:
-        return 0.0
-    previous = torch.arange(len(right) + 1, device=device, dtype=torch.float32)
-    for i, item in enumerate(left, start=1):
-        current = previous.new_empty(len(right) + 1)
-        current[0] = i
-        for j, other in enumerate(right, start=1):
-            cost = 0. if item == other else 1.
-            current[j] = torch.minimum(torch.minimum(previous[j] + 1, current[j - 1] + 1),
-                                       previous[j - 1] + cost)
-        previous = current
-    return (1. - previous[-1] / max(len(left), len(right))).item()
 
 
 def rouge_l(prediction, reference, device=None):

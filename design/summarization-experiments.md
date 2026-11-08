@@ -3,11 +3,28 @@
 Owns `src/summarization_experiment.py`: phases, arms, fixed settings, pre-registration, winner rules, gates, measures, statistics, serving timing, manual-check sheets, and reports for [Idea_Refined_2.md](/Idea_Refined_2.md). It also owns the placement and shrink rules below. `AdapterRoomPipeline` (`src/pipelines/adapter_room.py`) carries out C1, C2, and E. `GenerationShrinkPipeline` (`src/pipelines/generation_shrink.py`) carries out F. Neither pipeline trains, and neither chooses replay; that is [revision.md](/design/revision.md). They call the model operations in [models.md](/design/models.md): adapter names, `AdapterPlan`, probe gradients, `shrink_adapters`, and `merged_copy`. The [plan guardrails](/design/summarization-plan.md) apply.
 
 ```sh
-python -m src.summarization_experiment --protocol pilot|smoke|scientific \
-    --job english|hindi|maps|shrink|serving|report --arm <name> --seed <n> --output <dir>
+python -m src.summarization_experiment --protocol smoke|pilot|scientific --output <dir> [--phase N]
 ```
 
-Each job and seed writes its own attempt directory under `results/code/summarization/` and never deletes an existing attempt. Only `scientific` results are reported. `pilot` and `smoke` are development evidence.
+`src/summarization_experiment.py` runs Phase 0 through Phase 7 in order. Each phase lives in `src/phases/phaseN.py` and calls the existing revision, adapter-room, and shrink pipelines. `--phase N` runs that phase only, reading earlier reports from the same output. Each attempt directory is kept. A finished `report.json` is reused and is not deleted. Only `scientific` results are reported. `pilot` and `smoke` are development evidence. A scientific run refuses to start unless `preregistration.json` is already in the output directory.
+
+**Resume.** A finished phase report is the boundary between phases: a later run reads it and does not repeat that phase. Inside a phase, each finished arm writes `arm.json` next to its `run.json`. A later run of that phase reads `arm.json` and does not load or retrain that arm. An arm with no `arm.json` resumes through the attempt checkpoint. Phase 0 writes `progress.json` and `final/batch` after its one batch; a later run rebuilds the report from those files. Restarting a finished attempt does not add the reload to its wall-clock time.
+
+**Phase report.** `details` records `time` (phase seconds, and per arm the wall-clock seconds, GPU hours, and peak memory), `runs` (passes as epochs, optimizer steps, and the chrF, ROUGE-L, and right-language scores), and `final_model`. `final/<arm>/` is a copy of that arm's adapter snapshot so a later comparison can load it without replaying the attempt. It is not a second recovery checkpoint.
+
+The shared phase wrapper owns cached-report validation, status/progress logging,
+and JSON/CSV/Markdown report publication. It binds settings and prepared-data
+identity before reusing a report or finished arm. Reports publish last, after
+the referenced snapshots and tabular logs. Failed/interrupted work keeps its
+prior checkpoints and records its error. Analysis jobs report zero training
+epochs; Phase 0 reports its actual fraction of an English epoch.
+
+Scientific settings come from `preregistration.json` (`date`, `settings`,
+`predictions`, `winner_rules`, and `gate_thresholds`); all fixed settings below
+are validated before model/data loading. Hindi arms use seeds 1, 2, and 3, with
+per-seed attempts and averaged validation metrics for decisions. Source checkpoints
+and final exports remain available per seed. A pilot/smoke result is never reused
+as a scientific result.
 
 ## Protocols
 
@@ -218,7 +235,7 @@ If no arm meets the Hindi condition, the winner is `random`, and that's reported
 | After | Condition | Then |
 |---|---|---|
 | Pilot | Most of 20 summaries readable; truncation keeps nearly all summary words | Continue. Otherwise change limits or steps, or switch to Qwen3-0.6B |
-| X | English test forgetting at least 1 point **and** Hindi gain at least 1 point | Continue |
+| X | English validation forgetting at least 1 point **and** Hindi validation gain at least 1 point | Continue |
 | X | English forgetting under 1 point | Stop the replay story. Report it. Run the reverse order |
 | X | Hindi gain under 1 point | Fix the setup |
 | C1 | Two-sample agreement below `stability_threshold` | Don't run E |
@@ -253,7 +270,7 @@ Computed for every Hindi-stage arm and seed, on the 500 test articles per langua
 
 **Forward-pass units:** a forward pass over one row is 1 unit, and a training row (forward plus backward) is 3. An epoch's size is `rows x 3`.
 
-**The `serving` job** times greedy generation on the same 200 test articles per language, at batch size 1, after a warm-up. It runs three repeats and reports the median and 95th percentile per article, plus mean summary length. It covers:
+**The `serving` job** times greedy generation on the same 200 test articles per language, at batch size 1, with no warm-up and one pass (user override, 2026-11-08). It reports the median and 95th percentile across article requests, plus mean summary length. These timing passes are separate from the three Hindi training seeds. It covers:
 
 | Model | Merged | Unmerged |
 |---|---|---|
@@ -291,7 +308,9 @@ The `report` job reads completed attempts only, one per `run_id`, and writes:
 - **Principle check:** M, N, K, L, and P, each with the comparisons that support or break it, as in the plan.
 - **Headline candidates:** the plan's "which story we tell" rows whose conditions hold.
 
-Reuse `performance_report`, `timing_report`, `storage_report`, `summarize_attempt`, `write_comparison`, and `attempt_for` from `src/csrel_experiment.py`, imported and not copied.
+The phase support module owns the active report summaries. The legacy CSReL
+experiment entry point has been removed. Test scores remain report-only; gates,
+winner selection, and shrinking use validation.
 
 ## Tiers
 

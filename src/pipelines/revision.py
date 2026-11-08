@@ -53,6 +53,15 @@ class RevisionConfig:
             raise ValueError('English training has no replay or repair policy')
 
 
+def _plain(value):
+    """JSON values for run identity. Tuples in an adapter plan are lists."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
 def load_pool(path):
     """Load the English-stage artifact, never regenerate its summaries in Hindi."""
     value = read_json(Path(path) / 'manifest.json')
@@ -70,14 +79,14 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy = {'ranking': [], 'scores': {}, 'retired': [], 'active': [], 'ever_active': [],
                        'rank_cursor': 0, 'warmup_done': False, 'pending': None, 'work': {},
                        'pass_rows': 0, 'completed_passes': 0, 'validated_passes': 0,
-                       'best': None, 'pool_rows': None, 'extra': 0, 'full_cursor': 0,
+                       'best': None, 'extra': 0, 'full_cursor': 0,
                        'refresh_at': 0, 'filtered': [], 'eligible': None, 'english_ready': False}
 
     def input_identity(self):
         status = 'project' if self.config.repair_stop or self.config.replay_text == 'past' or self.config.selector == 'drift' else (
             'adaptation' if self.config.selector == 'loss' else 'ablation')
         return {'method_status': status, 'english_checkpoint': self.english_checkpoint, 'pool': [asdict(r) for r in self.pool],
-                'adapter_plan': None if self.adapter_plan is None else asdict(self.adapter_plan)}
+                'adapter_plan': None if self.adapter_plan is None else _plain(asdict(self.adapter_plan))}
 
     def required_capabilities(self):
         return ({'example_loss', 'token_loss', 'generation'}
@@ -221,6 +230,7 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy['scores'] = dict(work['scores'])
         self.policy['ranking'] = sorted(work['scores'], key=lambda i: (-work['scores'][i], i))
         self.policy['warmup_done'] = True
+        self.policy['work'].pop('rank', None)
         self._commit()
         return tuple(self.policy['ranking'])
 
@@ -349,7 +359,7 @@ class RevisionPipeline(SummarizationPipeline):
             history = tuple(practice_record(r) for r in history)
         hooks = UpdateHooks(token_targets=self.token_targets) if self.config.repair_stop else None
         return (rows + history, ['current'] * len(rows) + ['replay'] * len(history),
-                Objective('per_example_mean', token_mode='weighted' if self.config.repair_stop else 'all'), None, hooks)
+                Objective('per_example_mean', token_mode='weighted' if self.config.repair_stop else 'all'), hooks)
 
     def observe(self, report, records):
         self.policy['pending'] = None
@@ -376,11 +386,14 @@ class RevisionPipeline(SummarizationPipeline):
             self.policy.update(english_ready=True, english_checkpoint=reference)
             self._commit()
         written = self.write_past(self.pool)
-        self.policy['pool_rows'] = [asdict(r) for r in written]
         self.artifacts.pin_pool([{'id': r.sample_id, 'summary': r.practice['answer_text'],
             'baseline': r.practice['baseline'], 'loss_before': r.practice['loss_before'], 'record': asdict(r)} for r in written],
             english_checkpoint=self.policy['english_checkpoint'])
         return written
+
+    def after_memory_commit(self):
+        self.policy['work'].pop('write', None)
+        self.policy.pop('pool_rows', None)  # Older recovery snapshots may contain this unused field.
 
     def _evaluate_seen(self):
         for split in ('validation', 'test'):

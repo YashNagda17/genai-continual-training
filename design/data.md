@@ -1,6 +1,8 @@
 # Raw and prepared data storage
 
-Owns `src/datasets/data/`. `download_datasets.sh` calls the source fetchers in `src/datasets/dataset_sources.py`. Each fetcher writes canonical JSONL: one directory `src/datasets/data/<dataset_id>/<commit>/` with `records.jsonl` and `manifest.json`. Instruction sources write rows for [InstructionDataset](/src/datasets/dataset_instruction.py). XL-Sum writes rows for [SummarizationDataset](/design/datasets.md). Importing a fetcher does not download. A second fetch of the same directory returns the files already saved there.
+Owns `src/datasets/data/`. `download_datasets.sh` calls the sole active source, `XLSumSource`, in `src/datasets/dataset_sources.py`. It writes `src/datasets/data/xlsum/<commit>/records.jsonl` and `manifest.json` for [SummarizationDataset](/design/datasets.md). Imports do not download; a second fetch preserves an existing complete conversion. Downloaded raw assets are preserved during code cleanup.
+
+The source table below retains historical dataset provenance. Only the XL-Sum converter remains executable.
 
 | Dataset | Source | Tasks and labels |
 |---|---|---|
@@ -11,7 +13,7 @@ Owns `src/datasets/data/`. `download_datasets.sh` calls the source fetchers in `
 | `trace` | `YeMoKoo/TRACE` file `TRACE-Benchmark.zip`, subset `LLM-CL-Benchmark_5000` | Eight tasks in benchmark order: C-STANCE, FOMC, MeetingBank, Py150, ScienceQA, NumGLUE-cm, NumGLUE-ds, 20Minuten. Lima is not part of this stream. `eval.json` is `validation`. `class` is the answer for FOMC, C-STANCE, NumGLUE-cm, and NumGLUE-ds, and the leading `A`–`D` choice for ScienceQA. MeetingBank, Py150, and 20Minuten have no class. The supervised response is the full answer. Truncation `prompt_left`. |
 | `xlsum` | `csebuetnlp/xlsum`, files `data/<language>_XLSum_v2.0.tar.bz2` | **Current plan.** One task per language: `english` and `hindi` now, `marathi` and `gujarati` only for Phase 7. The article is the input and the summary is the target. Official train / validation / test. License CC-BY-NC-SA-4.0. Written in the canonical JSONL for [SummarizationDataset](/src/datasets/dataset_instruction.py), not the instruction rows. Truncation is applied by `Seq2SeqPreprocessing` in that same file. |
 
-**XL-Sum notes.** The Hub copy ships a loading script that current `datasets` versions refuse to run, so `XLSumSource` downloads only the per-language tar files and reads them directly. `./download_datasets.sh xlsum` fetches English and Hindi. Each saved row is `id` (`<language>/<article id>`), `task`, `language`, `split` (`val` stored as `validation`), `text`, and `summary`. The CLINC, Schuster, Bitext, and TRACE sources stay for earlier recipes, and the current plan doesn't use them.
+**XL-Sum notes.** `XLSumSource` reads the per-language tar files directly. `./download_datasets.sh xlsum` fetches English and Hindi. Each saved row is `id` (`<language>/<article id>`), `task`, `language`, `split` (`val` stored as `validation`), `text`, and `summary`. CLINC, Schuster, Bitext and TRACE converter code is removed. Additional languages require an explicit protocol extension.
 
 - Namespace artifacts by dataset ID and the revision string used to download them. Record source URI, schema, and source usage constraints where supplied.
 - Keep downloaded raw data in place. Derived split and preprocessing settings, including the tokenizer, normalization, and truncation rules, are stored in the prepared manifest.

@@ -7,7 +7,6 @@ import csv
 import random
 import time
 
-import torch
 
 from .state import Checkpoints, ReplayStore, read_json, write_json
 from .contracts import RunResult, TrainLimits, TrainingBatch, UpdateHooks, training_records
@@ -87,25 +86,6 @@ class PipelineRuntime:
             self.auxiliary_key = None
             self._activate(self.model)
 
-    def teacher_scores(self, reference, batch, score_spec):
-        """Load a frozen teacher and compute detached outputs for this batch.
-        Check that those outputs fit beside the learner and retained data on their respective devices.
-        Always release the teacher and reactivate the learner before returning its targets.
-        """
-        path = self.artifacts.root / reference
-        teacher = self.acquire_auxiliary("teacher", self.model.info.identity)
-        try:
-            teacher.load(path, "frozen")
-            result = teacher.score(batch, score_spec).validate(batch, score_spec)
-            payload_bytes = sum(r.storage_bytes for r in (*self.current, *self.replay.records))
-            if (self.model.info.accelerator_bytes + result.accelerator_bytes
-                    > self.spec.resources.accelerator_bytes
-                    or self.model.info.cpu_bytes + payload_bytes + result.cpu_bytes
-                    > self.spec.resources.cpu_bytes):
-                raise ValueError("Teacher output buffer exceeds the learner residency budget")
-            return result
-        finally:
-            self.release_auxiliary()
 
     def record_event(self, kind, **details):
         """Advance the audit watermark and attach task identity to one completed observation."""
@@ -253,16 +233,15 @@ class PipelineRuntime:
                                 attempts=self.progress["attempts"], steps=self.progress["steps"])
                             self.boundary(force=True)
                             continue
-                        records, origins, objective, teacher_task, hooks = update
+                        records, origins, objective, hooks = update
                         batch = self.collate(records)
                         if self.progress["tokens"] + batch.valid_tokens > self.spec.max_tokens:
                             self.phase = "memory"
                             self.record_event("token_limit")
                             self.boundary(force=True)
                             continue
-                        targets = self.teacher_targets(batch, teacher_task, objective)
                         report = self.execute(self.model, TrainingBatch(
-                            batch, tuple(origins), targets, teacher_task), objective, hooks)
+                            batch, tuple(origins)), objective, hooks)
                         for key, amount in (("attempts", 1), ("steps", int(report.success)),
                                             ("tokens", report.tokens)):
                             self.counters[key] += amount
@@ -270,7 +249,7 @@ class PipelineRuntime:
                         self.observe(report, records)
                         self.progress.pop("branch", None)
                         self.record_event("learner_update", ids=list(batch.ids), origins=list(origins),
-                                          teacher=teacher_task, report=self.report_summary(report))
+                                          report=self.report_summary(report))
                         self.boundary()
                     elif self.phase == "memory":
                         self.current = self._open_view()

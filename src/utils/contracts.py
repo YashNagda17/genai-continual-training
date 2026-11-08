@@ -66,8 +66,6 @@ class ScoreSpec:
     kind: str
     reduction: str
     parameter_view: str = ""
-    frozen_prefix: int = 0
-    temperature: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -100,15 +98,7 @@ class ScoreResult:
 @dataclass(frozen=True)
 class Objective:
     reduction: str
-    current_weight: float = 1.0
-    replay_weight: float = 1.0
-    separate_means: bool = False
-    kd_weight: float = 0.0
-    kd_temperature: float = 1.0
-    kd_temperature_squared: bool = False
-    kl_direction: str = "teacher_to_student"
     token_mode: str = "all"
-    token_allowance: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -135,8 +125,6 @@ class AdapterPlan:
 class TrainingBatch:
     batch: Batch
     origins: tuple[str, ...]
-    teacher_targets: ScoreResult | None = None
-    teacher_task: str | None = None
     token_targets: TokenTargets | None = None
 
 
@@ -147,17 +135,10 @@ class TrainLimits:
     max_tokens: int
 
 
-@dataclass(frozen=True)
-class FreezePlan:
-    prefix: int
-    refresh: bool
-    scores: tuple[float, ...] = ()
 
 
 @dataclass
 class UpdateHooks:
-    plan_update: Callable[[dict], FreezePlan] | None = None
-    gradient_subset: str = ""
     token_targets: Callable | None = None
 
 
@@ -174,22 +155,8 @@ class StepReport:
     skip_reason: str | None = None
 
 
-@dataclass(frozen=True)
-class SelectionResult:
-    candidate_ids: tuple[str, ...]
-    selected_ids: tuple[str, ...]
-    scores: tuple[float, ...]
-    probabilities: tuple[float, ...]
-    provenance: dict
 
 
-@dataclass(frozen=True)
-class ReplayPlan:
-    tasks: tuple[str, ...]
-    probabilities: tuple[float, ...]
-    replay_probability: float
-    teachers: dict[str, str]
-    current_teacher: str | None
 
 
 @dataclass(frozen=True)

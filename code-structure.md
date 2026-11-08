@@ -1,38 +1,46 @@
 # Code structure
 
-All executable code belongs in `src/`. Use base classes with concrete subclasses; wildcards below stand for descriptive implementation names.
+Executable code belongs in `src/`. The active implementation follows [Idea_Refined_2.md](/Idea_Refined_2.md).
 
 ```text
 src/
 ├── datasets/
-│   ├── data/
 │   ├── dataset_base.py
-│   └── dataset_*.py
+│   ├── dataset_instruction.py   # SummarizationDataset, Seq2SeqPreprocessing
+│   ├── dataset_sources.py       # XL-Sum download and canonical JSONL
+│   └── data/                    # Local data assets
 ├── models/
-│   ├── model_weights/
 │   ├── model_base.py
-│   └── model_*.py
+│   ├── model_seq2seq.py         # Native Torch seq2seq execution and adapters
+│   ├── model_mt5.py
+│   └── model_weights/           # Local base assets
 ├── pipelines/
 │   ├── pipeline_base.py
-│   └── <paper>.py
+│   ├── revision.py
+│   ├── adapter_room.py
+│   └── generation_shrink.py
+├── phases/
+│   ├── phase0.py … phase7.py    # Experiment decisions
+│   ├── settings.py             # Protocol and pre-registration
+│   ├── data.py                 # Subsets, prefix preparation, smoke fixture
+│   ├── support.py              # Shared execution and resume lifecycle
+│   ├── artifacts.py            # Model exports and reports
+│   └── serving.py              # One timing pass, no warm-up
+├── summarization_experiment.py
 ├── utils/
-├── tests/
-├── combined_pipeline.py
-└── example.py
+├── tests/                      # Summarization and phase behavior
+├── litreview/                  # Preserved research support
+└── researchflow/               # Preserved paper workflow support
 ```
 
-| Component | Responsibility / public operations |
+| Boundary | Owner |
 |---|---|
-| `DatasetBase` | Source processing; `fetch`, `preprocess`, `split`, `load`, `save`. Raw artifacts in `datasets/data/` |
-| `ModelBase` | Transformer execution; `train(k)` for k logical passes, `evaluate`, `predict(x)`, `save`, `load`. Base assets in `models/model_weights/` |
-| `PipelineBase` | One independently runnable paper method per module/package; `run`, `evaluate`, `predict`, `save`, `load` |
-| `utils/` | Shared records, storage, configuration, and measurement |
-| `CombinedPipeline` | Compose paper components across datasets/models into one hybrid run |
-| `example.py` | Sample run: one local model, one CLINC pass, pipeline evaluation, and a few inferences |
-| `main.py` | Later: resolve and execute the configured model/method/task-sequence run matrix |
-| `summarization_experiment.py` | Current plan: English stage, Hindi arms, analysis jobs, and reports ([summarization-plan.md](/design/summarization-plan.md)) |
+| Source identity, official splits, selected IDs, tokens, collation | `DatasetBase` / `SummarizationDataset` |
+| Torch training, inference, adapter operations, device and optimizer state | `ModelBase` / `Seq2SeqLMModel` |
+| Replay, location maps, block plans, shrink search | The three concrete pipelines |
+| Experiment order, gates, seeded arms, winner selection | Phase modules and shared execution |
+| Checkpoint transactions, retention, numerical metrics and resource accounting | `utils/` |
+| Phase JSON/CSV/Markdown, logs and final adapter exports | `phases/artifacts.py` |
 
-The current plan adds `models/model_seq2seq.py`, `models/model_mt5.py`, `SummarizationDataset` in `datasets/dataset_instruction.py`, and `pipelines/revision.py`, `pipelines/adapter_room.py`, and `pipelines/generation_shrink.py`. These are project mechanisms, not paper methods, but they follow the same `PipelineBase` contract.
-
-Detailed interfaces and ownership: [design/README.md](/design/README.md).
+Use namespace packages and direct module imports. Constructors and imports do not download assets. Model roles use available CUDA/ROCm or XPU with CPU fallback and stay below 700M total parameters. [Design contracts](/design/README.md) define the interfaces. Legacy pipeline/model/dataset code is removed; [paper references](/Papers/README.md) and research workflows remain.
 

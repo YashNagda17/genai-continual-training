@@ -1,7 +1,7 @@
 """Shared encoder-decoder execution for mT5. Transformers supplies the architecture."""
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import copy
 import gc
@@ -704,10 +704,8 @@ class Seq2SeqLMModel(ModelBase):
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
         """Run caller-ordered updates; zero active weights skip AdamW entirely."""
-        model_boundary(objective.token_mode in {"all", "weighted"} and not objective.kd_weight,
+        model_boundary(objective.token_mode in {"all", "weighted"},
                        "Seq2seq supports supervised or weighted training")
-        model_boundary(not hooks or (not hooks.plan_update and not hooks.gradient_subset),
-                       "Seq2seq does not implement causal freeze hooks")
         reports, attempts, updates, tokens = [], 0, 0, 0
         with self._execution(mode="training", advance=True):
             for _ in range(k):

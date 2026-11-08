@@ -18,7 +18,6 @@ class ModelBase(ABC):
     def bind_dataset(self, dataset):
         """Inject collation callbacks while keeping dataset implementations outside model code."""
         self.collate = dataset.collate
-        self.collate_prompts = getattr(dataset, "collate_prompts", None)
 
     @property
     def base_storage_bytes(self):
@@ -36,13 +35,13 @@ class ModelBase(ABC):
 
     @abstractmethod
     def describe_role(self, role, initialization):
-        """Return ModelInfo before allocating an auxiliary/probe/teacher role."""
+        """Return ModelInfo before allocating an auxiliary or probe role."""
 
     @abstractmethod
     def fork(self, role, initialization):
         """Create an unloaded, isolated wrapper at a reproducible named initialization.
         Keep its parameters, optimizer and RNG separate from the learner.
-        Fixed probes and new CSReL rounds must not inherit evolving learner weights.
+        Fixed probes must not inherit evolving learner weights.
         """
 
     @abstractmethod
@@ -79,9 +78,8 @@ class ModelBase(ABC):
         """Execute k logical passes; return StepReports in attempt order.
 
         No independent sampling/shuffle is permitted. The executor alone steps its
-        optimizer and scheduler. Call hooks.plan_update(supervised_statistics)
-        before backward, enforce the returned prefix through weight decay/momentum,
-        and report supervised Fisher/subset statistics. A skipped update consumes
+        optimizer and scheduler. Detached token targets may weight the current
+        forward's supervised loss. A skipped update consumes
         inputs and updates the scaler, but not scheduler or optimizer-step count.
         Save boundaries must have no outstanding graph or accumulated gradient.
         """
@@ -90,9 +88,8 @@ class ModelBase(ABC):
     def score(self, batch, score_spec):
         """Return ScoreResult without changing parameters, buffers or training RNG.
 
-        Supported kinds are loss, last_layer_gradients, lora_b_gradient (one
-        batch-mean vector), and logits. Each requested representation/reduction
-        must match exactly. Teacher logits use score_spec.temperature.
+        Supported kinds are example_loss, token_loss and probe_gradient.
+        Each requested representation/reduction must match exactly.
         """
 
     @abstractmethod

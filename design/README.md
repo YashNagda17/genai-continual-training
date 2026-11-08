@@ -1,14 +1,21 @@
 # Implementation contract
 
-Status: algorithm orchestration implemented with injected model/data adapters, 2026-10-20. See the [callable API and validation limits](/src/README.md). Production adapters, the experiment matrix, and training reproductions remain future work.
+**Active-code scope (2026-11-08):** only the mT5/XL-Sum implementation of
+[Idea_Refined_2.md](/Idea_Refined_2.md), its three pipelines, phase driver, and
+supporting tests remain executable. Legacy paper pipelines, causal adapters,
+instruction datasets, and their experiment scripts/tests are removed at the
+user's request. Paper sources, reviews, and historical design documents remain
+research references; their old code maps are not active interfaces.
 
-**Current plan, 2026-11-08:** [Idea_Refined_2.md](/Idea_Refined_2.md), English → Hindi summarization on mT5-small with LoRA only. Its implementation design is [summarization-plan.md](/design/summarization-plan.md), which also lists the old features this plan doesn't need and the new ones it adds. Model/data adapters and the three pipeline components are implemented with tiny CPU validation. The scientific experiment runner and reporting remain pending; no scientific result is claimed.
+Status: the active model/data adapters, three pipelines, and Phase 0–7 driver are implemented. See [execution and validation limits](/src/README.md). Scientific runs and training reproductions have not been performed.
+
+**Current plan, 2026-11-08:** [Idea_Refined_2.md](/Idea_Refined_2.md), English → Hindi summarization on mT5-small with LoRA only. Its implementation design is [summarization-plan.md](/design/summarization-plan.md). Phases share resume, final exports and JSON/CSV/Markdown logging. Validation uses tiny CPU models; no scientific result is claimed.
 
 ## Authority and scope
 
 - These contracts resolve implementation details under [Idea.md](/Idea.md), [code-structure.md](/code-structure.md), and [ARCHITECTURE.md](/ARCHITECTURE.md). Change a contract before implementing incompatible behavior.
 - **Current plan:** the [multilingual summarization plan](/design/summarization-plan.md). It uses its own revision, adapter-placement, and shrink pipelines, borrows CSReL's reducible-loss idea and TSR's fixed probe, and doesn't call OASIS, aL-SAR, the four-paper hybrid, or the generation replay recipe. Placement and shrink rules are in [summarization-experiments.md](/design/summarization-experiments.md); the model operations they call are in [models.md](/design/models.md).
-- Implemented earlier methods, kept unchanged: **CSReL, aL-SAR, OASIS, TSR**. The earlier [generation replay recipe](/design/generation-replay.md) extends CSReL and TSR, adds our own [Repair and Stop mechanism](/design/repair-stop.md), and runs beside the four-paper hybrid. Neither is part of the current plan. Older shortlists/model suggestions are superseded. [Paper references](/Papers/README.md) hold derivations, source identities, evidence, and related work; component contracts hold implementation choices.
+- Earlier CSReL, aL-SAR, OASIS, TSR and generation-replay designs are historical research references. Their executable code is removed. [Paper references](/Papers/README.md) retain derivations, source identities, evidence and related work.
 - Record mechanism/access changes as distinct adaptations or ablations. Reproduction claims require resolving source ambiguities against pinned code and validating the stated protocol.
 - All executable code, including tests/plotting, belongs in `src/`; reports and run outputs belong in `results/`. This overrides the generic skill code layout. Existing `src/litreview/` and `src/researchflow/` remain workflow support.
 - [SKILLS.md](/SKILLS.md) routes research work; [general guidelines](/skills/general_guidelines.md) define shared workflow conventions.
@@ -33,27 +40,14 @@ Read this shared contract once, then the affected component and paper reference.
 | `src/models/`, `model_base.py`, `ModelBase`, concrete model subclasses | [models.md](/design/models.md) |
 | `src/models/model_weights/` | [model-weights.md](/design/model-weights.md) |
 | `src/pipelines/`, `pipeline_base.py`, `PipelineBase` | [pipelines.md](/design/pipelines.md) |
-| `src/pipelines/csrel.py`, `CSReLPipeline` | [csrel.md](/design/csrel.md) |
-| `src/pipelines/al_sar.py`, `ALSARPipeline` | [al-sar.md](/design/al-sar.md) |
-| `src/pipelines/oasis.py`, `OASISPipeline` | [oasis.md](/design/oasis.md) |
-| `src/pipelines/tsr.py`, `TSRPipeline` | [tsr.md](/design/tsr.md) |
 | `src/utils/`, shared records and replay storage | [utils.md](/design/utils.md) |
 | `src/tests/` | [tests.md](/design/tests.md) |
-| `src/combined_pipeline.py`, `CombinedPipeline` | [combined-pipeline.md](/design/combined-pipeline.md) |
-| `src/combined_pipeline.py`, `GenerationReplayPipeline` | [generation-replay.md](/design/generation-replay.md) |
-| `src/pipelines/answer_selection.py`, `AnswerSelectionPipeline`, `FixedMemorySelection` | [answer-selection.md](/design/answer-selection.md) |
-| `src/pipelines/past_self_replay.py`, `PastSelfReplayPipeline` | [past-self-replay.md](/design/past-self-replay.md) |
-| `src/pipelines/repair_stop.py`, `RepairStopPipeline` | [repair-stop.md](/design/repair-stop.md) |
-| `src/generation_replay_experiment.py` | [generation-replay-experiments.md](/design/generation-replay-experiments.md) |
-| `src/example.py` | [main.md](/design/main.md) |
-| `src/main.py` | [main.md](/design/main.md) |
-| `src/csrel_experiment.py`, `MemoryBaselinePipeline` | [main.md](/design/main.md), [csrel.md](/design/csrel.md) |
 | Current plan: guardrails, module layout, reuse, old and new features | [summarization-plan.md](/design/summarization-plan.md) |
 | `src/models/model_seq2seq.py`, `src/models/model_mt5.py` | [models.md](/design/models.md) |
 | `src/datasets/dataset_instruction.py` (`SummarizationDataset`), `XLSumSource` | [datasets.md](/design/datasets.md), [data.md](/design/data.md) |
 | `src/pipelines/revision.py`, `RevisionPipeline` | [revision.md](/design/revision.md) |
 | `src/pipelines/adapter_room.py`, `AdapterRoomPipeline`; `src/pipelines/generation_shrink.py`, `GenerationShrinkPipeline` | [summarization-experiments.md](/design/summarization-experiments.md), [models.md](/design/models.md) |
-| `src/summarization_experiment.py` | [summarization-experiments.md](/design/summarization-experiments.md) |
+| `src/summarization_experiment.py`, `src/phases/phase0.py` … `phase7.py` | [summarization-experiments.md](/design/summarization-experiments.md) |
 
 A paper module may become a same-named package while preserving its public contract.
 
@@ -76,17 +70,17 @@ A paper module may become a same-named package while preserving its public contr
 
 ## Dependency and ownership boundary
 
-`example.py` is the present sample entry. The later matrix entry is `main.py`. Both call `combined_pipeline -> pipelines -> {models, datasets, utils}`. Models and datasets may depend on shared utility records, but not on pipeline implementations or each other. Tokenization is supplied to datasets through an injected preprocessing interface. Utilities cannot import concrete models, datasets, or pipelines.
+The entry point is `summarization_experiment.py`: `phases -> pipelines -> {models, datasets, utils}`. Models and datasets may depend on shared utility records, but not on pipeline implementations or each other. Tokenization is injected into datasets. Utilities cannot import concrete models, datasets, or pipelines. Earlier paper contracts remain historical references alongside the sources in [Papers/](/Papers/).
 
 | Concern | Single owner |
 |---|---|
 | Record identity, split membership, arrival order | Dataset adapter |
 | Tensor execution, optimizer, scheduler, gradient accumulation | Model adapter |
-| Paper equations and policy state | Corresponding paper pipeline |
-| Task lifecycle, component composition, memory commit | Standalone pipeline or `CombinedPipeline` |
+| Revision, maps, adapter plans and shrink policy state | Corresponding active pipeline |
+| Task lifecycle and replay commit | The active pipeline and shared runtime |
 | Serialization, budget validation, metric arithmetic | Utilities |
-| Sample run | `example.py` |
-| Run matrix, config resolution, process exit status | `main.py` |
+| Local smoke preparation | `phases/data.py` |
+| Phase order, config resolution, process exit status | `summarization_experiment.py` |
 
 Validation requirements live in [tests.md](/design/tests.md); experiment controls live in [combined-pipeline.md](/design/combined-pipeline.md).
 

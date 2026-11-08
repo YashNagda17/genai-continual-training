@@ -2,9 +2,7 @@
 
 Implementation design for [Idea_Refined_2.md](/Idea_Refined_2.md), the final experiment plan: teach an English news summarizer to write Hindi with LoRA alone, letting the model's own writing decide what to revise. This file owns the guardrails, the module layout, the reuse map, and the list of old features this plan does not need.
 
-Status: model/data adapters and the three pipeline components are implemented,
-with tiny CPU validation. The experiment-matrix runner and scientific reporting
-remain pending. No scientific result is measured; see the [implementation report](/results/code/Codegen-summarization-pipelines-2026-11-08.md).
+Status: model/data adapters, the three pipelines and Phase 0–7 orchestration are implemented with tiny CPU validation. The driver saves recovery state, final adapters and JSON/CSV/Markdown reports. Scientific execution and paper-level interpretation remain unmeasured; see the [execution guide](/src/README.md).
 
 Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [models.md](/design/models.md) (adapter names, `AdapterPlan`, probe gradients, shrinking), and [summarization-experiments.md](/design/summarization-experiments.md) (C1, C2, E, F, phases, arms, settings, statistics, and reports).
 
@@ -35,7 +33,7 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 
 | Area | Rule |
 |---|---|
-| Existing behavior | Every existing pipeline, experiment, and test behaves as before. New fields default to current behavior |
+| Active scope | Keep only this plan's models, source, pipelines and behavior tests. Earlier paper references and research workflows remain available |
 | Layout | Modules go where the table below says. Namespace packages, relative imports, no `__init__.py` |
 | Dependencies | Models contain no method or arm names. Datasets know nothing of replay or past summaries. Utilities import no concrete model, dataset, or pipeline. The three new pipelines never import each other; the experiment runner composes them |
 | Numerics | Native Torch for training, calculations, and generation, with GPU detection and CPU fallback through `resolve_device`. mT5 runs in bf16 where supported, otherwise fp32, **never fp16** |
@@ -55,11 +53,12 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 |---|---|---|---|
 | `src/models/model_seq2seq.py` | `Seq2SeqSettings`, `Seq2SeqLMModel`: the shared encoder-decoder executor | `ModelBase` | [models.md](/design/models.md) |
 | `src/models/model_mt5.py` | `MT5SmallModel`, `model_id = "google/mt5-small"` | `Seq2SeqLMModel` | [models.md](/design/models.md) |
-| `src/datasets/dataset_instruction.py` | `Seq2SeqPreprocessing`, `SummarizationDataset`, beside the unchanged instruction class | `DatasetBase` | [datasets.md](/design/datasets.md) |
+| `src/datasets/dataset_instruction.py` | `Seq2SeqPreprocessing`, `SummarizationDataset` | `DatasetBase` | [datasets.md](/design/datasets.md) |
 | `src/pipelines/revision.py` | `RevisionConfig`, `RevisionPipeline`: experiments X, A, B, G1, G2, G3, the full-English reference | `PipelineBase` | [revision.md](/design/revision.md) |
 | `src/pipelines/adapter_room.py` | `AdapterRoomConfig`, `AdapterRoomPipeline`: maps (C1), block plans (C2), new room (E) | `PipelineBase` | [summarization-experiments.md](/design/summarization-experiments.md), [models.md](/design/models.md) |
 | `src/pipelines/generation_shrink.py` | `ShrinkConfig`, `GenerationShrinkPipeline`: experiment F | `PipelineBase` | [summarization-experiments.md](/design/summarization-experiments.md), [models.md](/design/models.md) |
-| `src/summarization_experiment.py` | Phases, arms, pre-registration, serving timing, statistics, reports | None | [summarization-experiments.md](/design/summarization-experiments.md) |
+| `src/summarization_experiment.py` | Orders the phases, prepares data, and writes the attempt root | None | [summarization-experiments.md](/design/summarization-experiments.md) |
+| `src/phases/phase0.py` … `phase7.py` | One phase each, calling the existing pipelines | None | [summarization-experiments.md](/design/summarization-experiments.md) |
 | `src/tests/test_summarization.py` | Plan checks | None | [tests.md](/design/tests.md) |
 
 ### Additions to existing modules
@@ -83,11 +82,11 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 | Similarity and ROUGE | `numerics.rouge_l` | `numerics.chrf` |
 | Baseline arms | `MemoryBaselinePipeline` naming (`new_only`, `random`, `cumulative`) | Mapped to X, A, and the full-English reference |
 | Resume and retention | `PipelineRuntime.save`, `load`, `boundary`, `Checkpoints.publish` | An immutable English-checkpoint artifact shared by all arms |
-| Reports | `performance_report`, `timing_report`, `storage_report`, `summarize_attempt`, `write_comparison`, `attempt_for` from `src/csrel_experiment.py`, imported and not copied | Bootstrap deltas, interaction, overlap, prediction check |
+| Reports | `src/phases/artifacts.py` owns shared records, final exports and JSON/CSV/Markdown | Bootstrap deltas, interaction, overlap, explicit decision/status fields |
 
 ## Old features this plan does not need
 
-They stay in the code, unchanged, for the earlier recipes. This plan never calls them, and new work doesn't need to keep them in step.
+Their executable code and dedicated tests are removed. Original paper sources, reviews, research workflows and historical design references remain available.
 
 | Feature | Owner | Why it isn't needed |
 |---|---|---|

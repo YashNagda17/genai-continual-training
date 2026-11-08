@@ -1,16 +1,17 @@
-"""Composition interface shared by standalone paper methods and hybrids."""
+"""Common lifecycle and guarded access for the summarization pipelines."""
 
 from abc import ABC, abstractmethod
 import copy
 import random
+import time
 from dataclasses import asdict
+from pathlib import Path
 
 import torch
 
-from ..datasets.dataset_instruction import InstructionPreprocessing
 from ..utils.contracts import fingerprint
 from ..utils.runtime import PipelineRuntime
-from ..utils.state import save_weights, tuple_tree
+from ..utils.state import read_json, tuple_tree, write_json
 from ..utils.numerics import resolve_device
 
 
@@ -37,26 +38,6 @@ class PipelineBase(PipelineRuntime, ABC):
         """Follow the shared learner's Torch device; unbound numerical steps use CPU."""
         return self.model.device if self.model is not None else resolve_device("cpu")
 
-    def bind_instruction_dataset(self, dataset, raw, split_spec=None):
-        """Preprocess an instruction source with the bound local model and share that dataset.
-
-        Official splits remain unless split_spec sets validation_fraction. Truncation comes from
-        the source manifest unless split_spec overrides it. The model must implement attach_instruction.
-        """
-        spec = {"validation_fraction": 0.0, "seed": 0}
-        if split_spec:
-            spec.update(split_spec)
-        truncation = spec.pop("truncation", dataset.manifest.get("source", {}).get("truncation", "drop"))
-        views = dataset.split(raw, spec)
-        prepared, report = dataset.preprocess(
-            views, InstructionPreprocessing(**self.model.preprocessing_kwargs(truncation=truncation)))
-        self.dataset = dataset
-        for component in self.components().values():
-            component.dataset = dataset
-            if component.context is not None:
-                component.context.dataset = dataset
-        self.model.attach_instruction(dataset)
-        return prepared, report
 
     def set_model(self, model):
         """Share the exact learner wrapper across this owner and all registered components.
@@ -74,25 +55,9 @@ class PipelineBase(PipelineRuntime, ABC):
             model.bind_dataset(self.context.dataset)
         return self
 
-    def get_weights(self):
-        """Request an independent backend-native parameter/buffer snapshot from the adapter."""
-        return self.model.get_weights()
 
-    def set_weights(self, weights):
-        """Install weights in the existing wrapper; the adapter resets numerical training state.
-        Every pipeline sharing that wrapper sees the update immediately.
-        """
-        self.model.set_weights(weights)
-        return self
 
-    def save_weights(self, path):
-        """Save a frozen-weight snapshot independently of replay and lifecycle checkpoints."""
-        return save_weights(self.model, path)
 
-    def load_weights(self, path):
-        """Load frozen weights into the current wrapper with fresh optimizer/scheduler/scaler state."""
-        self.model.load(path, "frozen")
-        return self
 
     def get_policy_state(self):
         """Copy every registered component's policy and RNG without copying model tensors.
@@ -124,9 +89,6 @@ class PipelineBase(PipelineRuntime, ABC):
         """Let components name frozen artifacts that a full checkpoint must retain."""
         return ()
 
-    def teacher_targets(self, batch, task, objective):
-        """Default to supervised-only training; routed methods override this hook."""
-        return None
 
     def observe(self, report, records):
         """Methods with update-clock policies override this hook."""
@@ -176,7 +138,7 @@ class PipelineBase(PipelineRuntime, ABC):
 
     @abstractmethod
     def next_update(self):
-        """Return records, origins, objective, teacher task and hooks, or None."""
+        """Return records, origins, objective and hooks, or None."""
 
     @abstractmethod
     def finish_task(self):
@@ -190,28 +152,26 @@ class SummarizationPipeline(PipelineBase):
         return {}
 
     def run(self, context):
-        import time
-        from pathlib import Path
-        from ..utils.state import read_json, write_json
         started = time.perf_counter()
+        path = Path(context.output) / "run.json"
+        started_complete = path.is_file() and read_json(path).get("status") == "completed"
         try:
             return super().run(context)
         finally:
-            path = Path(context.output) / 'run.json'
-            if path.is_file() and hasattr(self, 'artifacts'):
+            if path.is_file() and hasattr(self, "artifacts") and not started_complete:
                 with self.artifacts.lock():
                     manifest = read_json(path)
-                    if manifest['identity'] == self.artifacts.identity:
+                    if manifest["identity"] == self.artifacts.identity:
                         elapsed = time.perf_counter() - started
-                        costs = [event.get('measured', {}) for event in getattr(self, 'events', ())]
-                        peaks = [cost.get('peak_device_allocated_bytes') or cost.get('process_peak_cpu_bytes')
+                        costs = [event.get("measured", {}) for event in getattr(self, "events", ())]
+                        peaks = [cost.get("peak_device_allocated_bytes") or cost.get("process_peak_cpu_bytes")
                                  for cost in costs]
                         measured = [value for value in peaks if value is not None]
-                        manifest.update(wall_clock_seconds=manifest.get('wall_clock_seconds', 0) + elapsed,
-                                        gpu_hours=manifest.get('gpu_hours', 0) + (elapsed / 3600 if self.device.type != 'cpu' else 0),
+                        manifest.update(wall_clock_seconds=manifest.get("wall_clock_seconds", 0) + elapsed,
+                                        gpu_hours=manifest.get("gpu_hours", 0) + (elapsed / 3600 if self.device.type != "cpu" else 0),
                                         peak_memory_mb=max(measured) / 1024 ** 2 if measured else None,
                                         model_params=self.model.info.total_parameters, inference_latency_ms=None,
-                                        result_type='null', result_reason='No scientific comparison assessed')
+                                        result_type="null", result_reason="No scientific comparison assessed")
                         write_json(path, manifest)
 
     def bind(self, context):

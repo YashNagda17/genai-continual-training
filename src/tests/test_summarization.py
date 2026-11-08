@@ -13,7 +13,7 @@ from transformers import MT5Config, MT5ForConditionalGeneration
 
 from ..datasets.dataset_instruction import Seq2SeqPreprocessing, SummarizationDataset
 from ..datasets.dataset_sources import (
-    CLINC_DOMAINS, ClincDomainSource, ClincOOSSource, XLSumSource, bitext_rows, load_source,
+    XLSumSource, load_source,
 )
 from ..models.model_seq2seq import Seq2SeqLMModel, Seq2SeqLoRA, Seq2SeqSettings
 from ..utils.contracts import (
@@ -92,21 +92,6 @@ def train_once(role, objective=None, targets=None):
 
 
 class SourceConversionTests(unittest.TestCase):
-    def test_clinc_converters_keep_domains_splits_and_oos_counts(self):
-        names = [name for intents in CLINC_DOMAINS.values() for name in intents] + ["oos"]
-        splits = {split: [(name, i) for i, name in enumerate(names)]
-                  for split in ("train", "validation", "test")}
-        with tempfile.TemporaryDirectory() as directory:
-            snapshot = Path(directory) / "snapshot"
-            with patch.object(ClincOOSSource, "_read", return_value=(splits, names)), \
-                    patch.object(ClincOOSSource, "download", return_value=snapshot):
-                single, domains = ClincOOSSource(), ClincDomainSource()
-                self.assertEqual(len(single.convert(snapshot)), 453)
-                published = domains.fetch(directory)
-            manifest = read_json(published / "manifest.json")
-            self.assertEqual(manifest["counts"], dict.fromkeys(splits, 150))
-            self.assertEqual(manifest["oos_dropped"], 3)
-            self.assertEqual(manifest["task_order"], list(CLINC_DOMAINS))
 
     def test_xlsum_archives_keep_both_languages_and_official_splits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -127,15 +112,6 @@ class SourceConversionTests(unittest.TestCase):
             self.assertEqual({row.split for row in rows}, {"train", "validation", "test"})
             self.assertEqual(dataset.manifest["source"]["empty_dropped"], 0)
 
-    def test_bitext_duplicate_prompts_stay_in_one_split_without_hashes(self):
-        records = [{"category": "support", "instruction": f"question {i}", "response": "reply", "intent": "help"}
-                   for i in range(20)]
-        rows = bitext_rows(records + records)
-        for prompt in {row["prompt"] for row in rows}:
-            matching = [row for row in rows if row["prompt"] == prompt]
-            self.assertEqual(len({row["split"] for row in matching}), 1)
-            self.assertEqual({row["group"] for row in matching}, {prompt})
-        self.assertEqual({row["split"] for row in rows}, {"train", "validation", "test"})
 
 
 class SummarizationModelTests(unittest.TestCase):
@@ -180,10 +156,6 @@ class SummarizationModelTests(unittest.TestCase):
         learner.release()
         probe.release()
 
-    def test_documented_adapter_counts(self):
-        encoder, decoder, rank = 8192, 11776, 16
-        self.assertEqual((8 * encoder + 8 * decoder) * rank, 2_555_904)
-        self.assertEqual((2 * encoder + 2 * decoder) * rank, 638_976)
 
     def test_load_dtype_is_never_fp16(self):
         with self.assertRaises(ValueError):
