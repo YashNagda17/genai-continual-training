@@ -1,5 +1,7 @@
 # GenerationReplayPipeline
 
+> **Current plan:** not used. The [summarization plan](/design/summarization-plan.md) replaces this recipe with the simpler G1–G3 rules in [revision.md](/design/revision.md). Pieces it reuses: `Record.practice`, `practice_record`, `token_mode="weighted"`, `TokenTargets`, and `rouge_l`. This contract is unchanged and applies to the TRACE recipe only.
+
 Implementation design for [Idea_Refined.md](/Idea_Refined.md): generation-aware repair and replay. Owns the `GenerationReplayPipeline` class in `src/combined_pipeline.py`, plus the reuse map and the guardrails below, which apply to all recipe code.
 
 Status: contract only, 2026-11-05. Nothing here is built or measured. `CombinedPipeline` stays in the same file, unchanged, as the old-hybrid comparison arm ([contract](/design/combined-pipeline.md)).

@@ -1,5 +1,7 @@
 # TSRPipeline
 
+> **Current plan:** the [summarization plan](/design/summarization-plan.md) reuses only the fixed zero-B LoRA probe idea, for location maps ([summarization-experiments.md](/design/summarization-experiments.md)). Routing, era teachers, and KD aren't used unless a third language is added. This contract is unchanged.
+
 Owns `src/pipelines/tsr.py` and `TSRPipeline`. Its responsibilities are **task signatures, replay-source routing, and routed distillation**. Uniform within-source retrieval belongs to native TSR; the hybrid replaces that retrieval with aL-SAR explicitly.
 
 Source and derivation: [TSR reference](/Papers/TSR-summary.md), §4.3.2 Eq. 4, §§5.1–5.3, Algorithm 2, Appendix C.1.

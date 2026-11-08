@@ -1,5 +1,7 @@
 # CSReLPipeline
 
+> **Current plan:** the [summarization plan](/design/summarization-plan.md) reuses only the reducible-loss idea, with the saved English checkpoint as the reference ([revision.md](/design/revision.md), arm B). Reference and subset model training aren't used. This contract is unchanged.
+
 Owns `src/pipelines/csrel.py` and `CSReLPipeline`. Its composable role is **memory construction/reselection**; its standalone role includes the paper's continual learner and replay protocol.
 
 Source and derivation: [CSReL reference](/Papers/CSReL-summary.md), §§3.2, 4.1–4.4, Algorithm 1, Appendices E–G.

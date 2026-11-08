@@ -1,5 +1,7 @@
 # OASISPipeline
 
+> **Current plan:** not used by the [summarization plan](/design/summarization-plan.md). This contract is unchanged and applies to earlier work only.
+
 Owns `src/pipelines/oasis.py` and `OASISPipeline`: **current-arrival admission** in the hybrid. This is a bounded-access adaptation; native Appendix A.2 experiments sample training batches from an unbounded historical memory, whose access/storage must be declared.
 
 Source and derivation: [OASIS reference](/Papers/OASIS-summary.md), §§3.3–3.4, Eqs. 2–8, Appendices A.7 and A.19.

@@ -1,5 +1,7 @@
 # Generation replay experiments
 
+> **Current plan:** not used. The [summarization plan](/design/summarization-plan.md) replaces this recipe with the simpler G1–G3 rules in [revision.md](/design/revision.md). Pieces it reuses: `Record.practice`, `practice_record`, `token_mode="weighted"`, `TokenTargets`, and `rouge_l`. This contract is unchanged and applies to the TRACE recipe only.
+
 Owns `src/generation_replay_experiment.py`: the first test, arms, fairness rules, measures, and drop rules for the [generation replay recipe](/design/generation-replay.md). It contains no algorithm logic. Numeric budgets and acceptance margins are protocol inputs fixed before a scientific run, except the 1-point margin stated in [Idea_Refined.md](/Idea_Refined.md).
 
 ```sh

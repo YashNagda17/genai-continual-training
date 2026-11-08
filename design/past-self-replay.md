@@ -1,5 +1,7 @@
 # PastSelfReplayPipeline
 
+> **Current plan:** not used. The [summarization plan](/design/summarization-plan.md) replaces this recipe with the simpler G1–G3 rules in [revision.md](/design/revision.md). Pieces it reuses: `Record.practice`, `practice_record`, `token_mode="weighted"`, `TokenTargets`, and `rouge_l`. This contract is unchanged and applies to the TRACE recipe only.
+
 Owns `src/pipelines/past_self_replay.py`: `PastSelfConfig` and `PastSelfReplayPipeline(TSRPipeline)`. This is Part 2 of [Idea_Refined.md](/Idea_Refined.md), "Practise using your past self". Its jobs are **topic routing with drift, saved-copy retention, and answer writing**. The [recipe guardrails](/design/generation-replay.md) apply.
 
 Base: [TSR reference](/Papers/TSR-summary.md) and [TSR contract](/design/tsr.md) for signatures. This is an `adaptation` of TSR: it adds drift to routing, and saved copies write answers instead of matching token predictions.

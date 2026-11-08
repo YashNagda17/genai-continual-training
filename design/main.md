@@ -48,3 +48,9 @@ The optional `--shuffle-training` comparison flag permutes the full permitted le
 ## Generation replay entry
 
 `python -m src.generation_replay_experiment` runs the first test and arm comparisons for the [generation replay recipe](/design/generation-replay.md). Its [experiment contract](/design/generation-replay-experiments.md) owns protocols, arms, and drop rules. Attempt handling matches the CSReL comparison entry.
+
+## Summarization plan entry
+
+**Current plan.** `python -m src.summarization_experiment` runs the [summarization plan](/design/summarization-plan.md): the English stage, each Hindi arm and seed, and the analysis jobs (`maps`, `shrink`, `serving`, `report`). Its [experiment contract](/design/summarization-experiments.md) owns protocols, arms, pre-registration, winner rules, gates, and reports. Attempt handling matches the CSReL comparison entry: each job and seed gets its own attempt directory, and none is ever deleted.
+
+`src/example.py`, `src/csrel_experiment.py`, and `src/generation_replay_experiment.py` stay for earlier work. The later `src/main.py` matrix isn't needed by the current plan, whose runner expands its own arm and seed list from the pre-registration file.

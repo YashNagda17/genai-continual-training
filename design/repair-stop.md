@@ -1,5 +1,7 @@
 # RepairStopPipeline
 
+> **Current plan:** not used. The [summarization plan](/design/summarization-plan.md) replaces this recipe with the simpler G1–G3 rules in [revision.md](/design/revision.md). Pieces it reuses: `Record.practice`, `practice_record`, `token_mode="weighted"`, `TokenTargets`, and `rouge_l`. This contract is unchanged and applies to the TRACE recipe only.
+
 Owns `src/pipelines/repair_stop.py`: `RepairStopConfig` and `RepairStopPipeline(PipelineBase)`. This is Part 3 of [Idea_Refined.md](/Idea_Refined.md), "Repair and stop". It decides **which rows and tokens to practise, and for how long**. It does not choose topics or step the optimizer. The [recipe guardrails](/design/generation-replay.md) apply.
 
 ## Our own mechanism
