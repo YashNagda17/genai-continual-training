@@ -10,7 +10,7 @@ import time
 import torch
 
 from .state import Checkpoints, ReplayStore, read_json, write_json
-from .contracts import RunResult, TrainLimits, TrainingBatch, UpdateHooks, fingerprint, training_records
+from .contracts import RunResult, TrainLimits, TrainingBatch, UpdateHooks, training_records
 
 
 class PipelineRuntime:
@@ -28,7 +28,6 @@ class PipelineRuntime:
     def bind(self, context):
         """Bind one model, dataset and run specification to the owner and its components.
         Capture initial policies once so a fresh attempt can reset interrupted policy work.
-        Fingerprint configuration, source text and design contracts for checkpoint compatibility.
         """
         if not hasattr(self, "_initial_policies"):
             self._initial_policies = {k: copy.deepcopy(v.policy) for k, v in self.components().items()}
@@ -38,23 +37,13 @@ class PipelineRuntime:
         for component in self.components().values():
             component.dataset, component.spec = self.dataset, self.spec
         self.validate_runtime()
-        source_root = Path(__file__).resolve().parents[1]
-        code = {str(p.relative_to(source_root)): p.read_text(encoding="utf-8")
-                for directory in ("pipelines", "utils", "models", "datasets")
-                for p in sorted((source_root / directory).glob("*.py"))}
-        combined = source_root / "combined_pipeline.py"
-        if combined.exists():
-            code["combined_pipeline.py"] = combined.read_text(encoding="utf-8")
-        design_root = source_root.parent / "design"
-        design = {p.name: p.read_text(encoding="utf-8") for p in sorted(design_root.glob("*.md"))}
         self.resolved = {
             "schema": 1, "method": type(self).__name__, "spec": self.spec.scientific(),
             "config": {k: asdict(v.config) for k, v in self.components().items()},
-            "model": self.model.info.identity, "dataset": self.dataset.fingerprint,
-            "torch": torch.__version__, "device": str(self.model.device),
-            "implementation": fingerprint(code), "design": fingerprint(design),
+            "model": self.model.info.identity, "dataset": type(self.dataset).__name__,
+            "device": str(self.model.device),
         }
-        self.artifacts = Checkpoints(context.output, fingerprint(self.resolved), self.spec.resources.disk_bytes,
+        self.artifacts = Checkpoints(context.output, type(self).__name__, self.spec.resources.disk_bytes,
                                      external_bytes=lambda: self.model.base_storage_bytes)
 
     def _activate(self, model):

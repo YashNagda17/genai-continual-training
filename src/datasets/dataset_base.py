@@ -7,7 +7,7 @@ class DatasetBase(ABC):
     @property
     @abstractmethod
     def fingerprint(self) -> str:
-        """Identity of source, split, preprocessing and ordered task memberships."""
+        """Preprocessing settings as plain JSON."""
 
     @property
     @abstractmethod

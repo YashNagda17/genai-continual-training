@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from ..datasets.dataset_base import DatasetBase
 from ..models.model_base import ModelBase
-from ..utils.contracts import Batch, ModelInfo, Record, ScoreResult, StepReport, fingerprint
+from ..utils.contracts import Batch, ModelInfo, Record, ScoreResult, StepReport
 
 
 def record(sample_id, task="a", x=(1.0, 0.5), target=1.0, label="positive", split="train"):
@@ -32,7 +32,7 @@ class TinyDataset(DatasetBase):
 
     @property
     def fingerprint(self):
-        return fingerprint([asdict(r) for r in self.records])
+        return json.dumps([record.sample_id for record in self.records], sort_keys=True)
 
     @property
     def has_classes(self):
@@ -160,7 +160,7 @@ class TinyModel(ModelBase):
             else:
                 raise NotImplementedError(score_spec.kind)
         self.controller.log.append((self.role, "score", score_spec.kind, batch.ids, tuple(self.weights)))
-        return ScoreResult(batch.ids, values, fingerprint(self.weights), score_spec.parameter_view,
+        return ScoreResult(batch.ids, values, "tiny", score_spec.parameter_view,
                            score_spec.reduction)
 
     def train(self, k, *, batch_factory, objective, hooks, limits):

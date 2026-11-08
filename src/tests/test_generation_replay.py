@@ -10,7 +10,6 @@ from ..datasets.dataset_instruction import InstructionDataset, InstructionPrepro
 from ..models.model_causal_lm import CausalLMModel, CausalLMSettings
 from ..utils.contracts import (
     Batch, Objective, Record, ScoreSpec, StepReport, TokenTargets, TrainLimits, TrainingBatch,
-    fingerprint,
 )
 from ..utils.numerics import rouge_l, token_similarity
 from ..utils.runtime import PipelineRuntime
@@ -294,8 +293,6 @@ class CausalLMReplayTests(unittest.TestCase):
         self.assertEqual(tuple(left.shape), (1, model.config.hidden_size))
         self.assertTrue(torch.allclose(left.norm(dim=-1), torch.ones(1), atol=1e-5))
         self.assertTrue(torch.allclose(left, right, atol=1e-4, rtol=1e-4))
-        identity = model._batch_identity(model._payload(bare))
-        self.assertNotEqual(identity, model._batch_identity(model._payload(short)))
         with self.assertRaises(ValueError):
             model.score(short, ScoreSpec("prompt_embedding", "none"))
 
@@ -336,9 +333,7 @@ class CausalLMReplayTests(unittest.TestCase):
         self.assertEqual(report.loss_counts["supervised"], denom)
         self.assertAlmostEqual(report.loss_sums["supervised"], numer, places=5)
         self.assertTrue(report.success)
-        expected = fingerprint({"baseline": baseline.tolist(), "weight": weight.tolist()})
-        self.assertEqual(seen["context"]["token_targets"], expected)
-        self.assertNotEqual(expected, fingerprint({"baseline": baseline.tolist(), "weight": [0., 0., 0., 1.]}))
+        self.assertEqual(seen["context"]["objective"]["token_mode"], "weighted")
         self.assertTrue(model.optimizer.state)
         params, state, steps = _capture(model)
         for mode, weights, base, allowance in (

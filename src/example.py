@@ -16,7 +16,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.combined_pipeline import CombinedPipeline
-from src.datasets.dataset_sources import ClincOOSSource, load_instruction_source
+from src.datasets.dataset_instruction import InstructionDataset
+from src.datasets.dataset_sources import ClincOOSSource, load_source
 from src.models.model_causal_lm import CausalLMSettings
 from src.models.model_smollm2 import SmolLM2Model
 from src.pipelines.al_sar import ALSARConfig, ALSARPipeline
@@ -47,7 +48,7 @@ def build():
         compile=True,
     )
     model = SmolLM2Model(settings, device="auto")
-    dataset, raw = load_instruction_source(clinc_directory())
+    dataset, raw = load_source(clinc_directory(), InstructionDataset)
     pipeline = CombinedPipeline(
         oasis=OASISPipeline(OASISConfig(0.2, 0.0, 1.0, 1e-8, 1.0, 8, "head", "current_only")),
         tsr=TSRPipeline(TSRConfig(0.0, 0.5, 0.0, 2.0, True, "fixed-zero-B", "lora-b", 1, 32, False)),

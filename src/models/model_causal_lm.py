@@ -1,12 +1,4 @@
-"""Shared causal-LM execution using Transformers architectures and native Torch.
-
-The wrapper owns numerical state; paper policies and dataset collation stay with callers.
-Imports and constructors do not download assets or allocate model parameters.
-Numerical work uses the resolved Torch device: CUDA/ROCm when available, otherwise Intel XPU,
-with CPU only when neither accelerator is present. Weights load in float16, then
-upgrade_parameters casts them to the optimizer dtype (float32 by default) before AdamW.
-Policy reductions and score buffers stay float32. GradScaler stays disabled at that default.
-"""
+"""Shared causal-LM execution using Transformers architectures and native Torch."""
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -14,12 +6,11 @@ from pathlib import Path
 import bisect
 import copy
 import gc
-import hashlib
 import math
 import random
 try:
     import resource
-except ImportError:  # Windows has no resource module; peak RSS stays unmeasured.
+except ImportError:
     resource = None
 import shutil
 import tempfile
@@ -31,10 +22,9 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
 from .model_base import ModelBase
-from ..utils.contracts import ModelInfo, ScoreResult, StepReport, UpdateHooks, fingerprint, model_boundary
+from ..utils.contracts import ModelInfo, ScoreResult, StepReport, UpdateHooks, model_boundary
 from ..utils import numerics
-from ..utils.numerics import resolve_device
-from ..utils.state import Checkpoints, base_assets, read_json, write_json, tensor_fingerprint
+from ..utils.state import Checkpoints, read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -109,12 +99,8 @@ class CausalLMModel(ModelBase):
     def __init__(self, settings=None, *, device="auto", revision="main", cache_dir=None,
                  collate=None, collate_prompts=None, role="learner", initialization="base",
                  config=None, tokenizer=None, model_factory=None, pretrained=True):
-        """Keep allocation lazy; optional config/factory inputs support local architecture instances.
-        Production loading resolves and pins the source commit before obtaining any weights.
-        Dataset callbacks are injected rather than importing a concrete dataset implementation.
-        """
-        self.device = resolve_device(device)
-        self.runtime_root = None
+        """Keep allocation lazy; optional config/factory inputs support local architecture instances."""
+        super().__init__(device)
         self.settings = settings or CausalLMSettings()
         self.revision = revision
         self.cache_dir = Path(cache_dir or Path(__file__).parent / "model_weights")
@@ -128,7 +114,7 @@ class CausalLMModel(ModelBase):
         self._profiles, self._prepared = {}, False
         self._offload = None
         self._save_full_weights = False
-        self._base_path, self._base_files = None, None
+        self._base_path = None
         self._base_bytes = 0
         self.rng_state = None
         self.resources = None
@@ -144,72 +130,30 @@ class CausalLMModel(ModelBase):
             return torch.float16
         return torch.float32
 
-    def _compute_dtype(self):
-        """Forwards use the dtype the optimizer will see."""
-        return self._optimizer_dtype()
-
     @property
     def use_lora(self):
         """Fixed probes always use LoRA, independently of the learner training mode."""
         return self.role == "probe" or self.settings.mode == "lora"
 
     def _seed(self, initialization=None):
-        """Give each named initialization a stable stream independent of the evolving learner."""
-        key = f"{self.settings.seed}:{initialization or self.initialization}"
-        return int(hashlib.sha256(key.encode()).hexdigest()[:15], 16)
+        return random.Random(f"{self.settings.seed}:{initialization or self.initialization}").getrandbits(63)
 
     def _prepare(self):
-        """Resolve config/tokenizer identity and inspect a parameter-free meta model.
-        This obtains exact tied-parameter counts and adapter coordinates before weight allocation.
-        No production tensors or optimizer states are retained from this inspection.
-        """
+        """Resolve config/tokenizer identity and inspect a parameter-free meta model."""
         if self._prepared:
             return
         if self.config is None or self._tokenizer is None or self.model_factory is None:
-            import transformers
             from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
             if self.config is None:
                 self.config = AutoConfig.from_pretrained(self.model_id, revision=self.revision,
                                                         cache_dir=self.cache_dir)
-            self._pin_revision()
             if self._tokenizer is None:
                 self._tokenizer = AutoTokenizer.from_pretrained(
                     self.model_id, revision=self.revision, cache_dir=self.cache_dir)
-            self._library_version = transformers.__version__
             self.model_factory = self.model_factory or (
                 lambda config: AutoModelForCausalLM.from_config(config, attn_implementation="eager"))
-        else:
-            self._library_version = getattr(self, "_library_version", "injected")
-        model_boundary(not self.pretrained or self.revision not in ("main", "master"),
-                       "An injected pretrained config needs a pinned model revision")
-        self._config_data = self.config.to_dict()
-        model_boundary(self.config.model_type == self.model_type, "Model architecture does not match class")
-        self._vocabulary = fingerprint({"vocabulary": self._tokenizer.get_vocab(),
-                                        "special": self._tokenizer.special_tokens_map})
-        self._template = fingerprint({"chat_template": self._tokenizer.chat_template,
-                                      "options": self.template_options, "allow_reasoning": False})
+        self._vocabulary = self.model_id
         self._prepared = True
-
-    def _pin_revision(self):
-        """Replace a branch name with the immutable commit of the cached snapshot.
-        Transformers 5 no longer records that commit on the config object.
-        """
-        import re
-        if self.revision and re.fullmatch(r"[0-9a-f]{40}", self.revision):
-            return
-        pinned = getattr(self.config, "_commit_hash", None)
-        if isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned):
-            self.revision = pinned
-            return
-        from huggingface_hub import HfApi
-        from huggingface_hub.errors import RevisionResolutionError
-        try:
-            resolved = HfApi().resolve_revision(
-                self.model_id, revision=self.revision, cache_dir=self.cache_dir, local_files_only=True)
-        except RevisionResolutionError:
-            resolved = HfApi().resolve_revision(
-                self.model_id, revision=self.revision, cache_dir=self.cache_dir, local_files_only=False)
-        self.revision = resolved.resolved
 
     @property
     def tokenizer(self):
@@ -234,8 +178,7 @@ class CausalLMModel(ModelBase):
                 "max_length": max_length or self.settings.max_length, "truncation": truncation,
                 "allow_reasoning": False,
                 "identity": {"model": self.model_id, "revision": self.revision,
-                             "vocabulary": self._vocabulary, "template": self._template,
-                             "enable_thinking": False, "transformers": self._library_version}}
+                             "enable_thinking": False}}
 
     def _attach_lora(self, module, enabled):
         """Wrap only declared decoder projections; preserve the architecture's tied output head."""
@@ -278,28 +221,14 @@ class CausalLMModel(ModelBase):
         return self._profiles[lora]
 
     def _compatibility(self):
-        """Bind weights to their base, layout and tokenizer, independently of training role."""
-        layout = self._profile(self.use_lora)[0]
-        return fingerprint({"model": self.model_id, "revision": self.revision,
-                            "config": self._config_data, "layout": layout,
-                            "base_seed": None if self.pretrained else self.settings.seed,
-                            "rank": self.settings.rank, "alpha": self.settings.alpha,
-                            "vocabulary": self._vocabulary, "template": self._template,
-                            "transformers": self._library_version})
+        """Name the weight layout by the model, revision, and adapter size."""
+        return f"{self.model_id}:{self.revision}:{self.settings.rank}:{self.settings.alpha}"
 
     def describe_role(self, role, initialization):
-        """Advertise conservative tensor/checkpoint bounds before constructing a numerical role.
-        Working and score buffers are explicit bounds; parameter-based FLOPs are estimates.
-        Callers can replace the layer costs with measurements for their batch/sequence shape.
-        """
+        """Advertise conservative tensor/checkpoint bounds before constructing a numerical role."""
         lora = role == "probe" or self.settings.mode == "lora"
-        layout, total, trainable, groups, legal = self._profile(lora)
-        identity = fingerprint({"model": self.model_id, "revision": self.revision,
-                                "config": self._config_data, "settings": asdict(self.settings),
-                                "role": role, "initialization": initialization, "layout": layout,
-                                "vocabulary": self._vocabulary, "template": self._template,
-                                "transformers": self._library_version, "pretrained": self.pretrained,
-                                "torch": str(torch.__version__), "device": str(self.device)})
+        _layout, total, trainable, groups, legal = self._profile(lora)
+        identity = f"{self.model_id}:{role}:{initialization}"
         param_bytes = 2 if self.settings.optimizer_dtype == "float16" else 4
         weight_bytes = total * param_bytes
         saved_bytes = (trainable if lora and not self._save_full_weights else total) * param_bytes
@@ -335,16 +264,12 @@ class CausalLMModel(ModelBase):
                            role=role, initialization=initialization, config=copy.deepcopy(self.config),
                            tokenizer=self.tokenizer, model_factory=self.model_factory, pretrained=self.pretrained)
         child._profiles = self._profiles
-        child._library_version = self._library_version
         child._save_full_weights = self._save_full_weights
         child.runtime_root, child.resources = self.runtime_root, self.resources
         return child
 
     def bind_runtime(self, output, resources):
-        """Place private numerical offload files inside the receiving run's storage boundary.
-        Copy an inactive model's saved state before releasing its previous private directory.
-        Moving between attempts therefore preserves weights and optimizer state without loading tensors.
-        """
+        """Place private numerical offload files inside the receiving run's storage boundary."""
         super().bind_runtime(output, resources)
         self.resources = resources
         if self._offload is not None and not Path(self._offload.name).resolve().is_relative_to(Path(output).resolve()):
@@ -356,28 +281,13 @@ class CausalLMModel(ModelBase):
             previous.cleanup()
 
     def attach_instruction(self, dataset):
-        """Bind an instruction dataset preprocessed with this local tokenizer and template.
-
-        CLINC, Schuster, Bitext, and TRACE share this check. The model does not import a fetcher.
-        """
-        self.bind_dataset(dataset)
+        """Bind an instruction dataset. The model does not import a fetcher."""
+        super().bind_dataset(dataset)
         return self
 
-    def bind_dataset(self, dataset):
-        """Bind dataset callbacks and require the same non-thinking tokenizer/template identity."""
-        super().bind_dataset(dataset)
-        actual = dataset.manifest["preprocessing"]
-        expected = self.preprocessing_kwargs()
-        model_boundary(actual["identity"] == expected["identity"]
-                       and actual.get("allow_reasoning") is False
-                       and actual["eos_id"] == expected["eos_id"]
-                       and actual["pad_id"] == expected["pad_id"]
-                       and actual["max_length"] <= self.settings.max_length,
-                       "Dataset preprocessing does not match this non-thinking model")
-
-    def _new_rng(self):
+    def _new_rng(self, seed=None):
         """Create local CPU/device RNG streams without seeding global generators."""
-        seed = self._seed()
+        seed = self._seed() if seed is None else seed
         states = {"cpu": torch.Generator(device="cpu").manual_seed(seed).get_state()}
         if self.device.type != "cpu":
             states["device"] = torch.Generator(device=self.device).manual_seed(seed).get_state().cpu()
@@ -397,18 +307,13 @@ class CausalLMModel(ModelBase):
             getattr(torch, self.device.type).set_rng_state(states["device"], self.device)
 
     def _assets(self):
-        """Resolve one immutable base snapshot and hash referenced files before loading tensors."""
+        """Resolve the base snapshot and record its size. The revision string is used as given."""
         if self.pretrained:
             from huggingface_hub import snapshot_download
             self._base_path = Path(snapshot_download(
                 self.model_id, revision=self.revision, cache_dir=self.cache_dir,
                 allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]))
-            actual = base_assets(self._base_path)
-            model_boundary(self._base_files in (None, actual), "Referenced base assets changed")
-            self._base_files = actual
             self._base_bytes = sum(p.stat().st_size for p in self._base_path.rglob("*") if p.is_file())
-        else:
-            self._base_files = {}
 
     @property
     def base_storage_bytes(self):
@@ -416,11 +321,7 @@ class CausalLMModel(ModelBase):
         return self._base_bytes
 
     def upgrade_parameters(self, dtype=None):
-        """Cast the loaded module before any optimizer state exists.
-        Loading stays float16; pass float32, or rely on settings.optimizer_dtype, for training.
-        """
-        model_boundary(self.module is not None, "Load the model before upgrading its dtype")
-        model_boundary(self.optimizer is None, "Upgrade parameters before the optimizer is built")
+        """Cast the loaded module before any optimizer state exists."""
         target = self._optimizer_dtype() if dtype is None else dtype
         self.module.to(dtype=target)
 
@@ -439,35 +340,34 @@ class CausalLMModel(ModelBase):
             return max(0., (self.settings.total_steps - step)
                        / max(1, self.settings.total_steps - self.settings.warmup_steps))
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, schedule)
-        self.compute_dtype = self._compute_dtype()
+        self.compute_dtype = self._optimizer_dtype()
         self.scaler = torch.amp.GradScaler(self.device.type, enabled=self.compute_dtype == torch.float16)
 
     def activate(self):
-        """Load a fresh base plus the exact saved numerical overlay, one role at a time.
-        Weights load in float16, then upgrade to the optimizer dtype before AdamW is created.
-        Existing offload state is restored after building the same architecture and optimizer.
-        """
+        """Load a fresh base plus the exact saved numerical overlay, one role at a time."""
         if self.module is not None:
             return
         self.info.validate()
         if self.resources is not None:
             self.resources.validate_role(self.info)
-            self._reserve_storage(self.info.checkpoint_bytes)
         self._assets()
         if self.resources is not None:
             self._reserve_storage(self.info.checkpoint_bytes)
         load_dtype = self._load_dtype()
-        with torch.random.fork_rng(devices=[]):
-            torch.random.set_rng_state(torch.Generator().manual_seed(self.settings.seed).get_state())
-            if self.pretrained:
-                from transformers import AutoModelForCausalLM
-                module = AutoModelForCausalLM.from_pretrained(
-                    self._base_path, dtype=load_dtype, attn_implementation="eager", use_safetensors=True)
-            else:
+        devices = [] if self.device.type == "cpu" else [self.device]
+        if self.pretrained:
+            from transformers import AutoModelForCausalLM
+            module = AutoModelForCausalLM.from_pretrained(
+                self._base_path, dtype=load_dtype, attn_implementation="eager", use_safetensors=True)
+        else:
+            with torch.random.fork_rng(devices=devices, device_type=self.device.type), torch.device(self.device):
+                self._restore_rng(self._new_rng(self.settings.seed))
                 module = self.model_factory(copy.deepcopy(self.config))
-            torch.random.set_rng_state(torch.Generator().manual_seed(self._seed()).get_state())
+        module = module.to(device=self.device, dtype=load_dtype)
+        with torch.random.fork_rng(devices=devices, device_type=self.device.type), torch.device(self.device):
+            self._restore_rng(self._new_rng())
             self._attach_lora(module, self.use_lora)
-        self.module = module.to(device=self.device, dtype=load_dtype)
+        self.module = module
         self.module.config.use_cache = False
         self.upgrade_parameters()
         self._reset_optimizer()
@@ -485,57 +385,26 @@ class CausalLMModel(ModelBase):
         if self.device.type != "cpu":
             getattr(torch, self.device.type).synchronize(self.device)
 
-    def _torch_backend(self):
-        """Return the Torch backend module for the resolved device, if any."""
-        if self.device.type == "cpu":
-            return None
-        return getattr(torch, self.device.type, None)
-
-    def _supports_event_timing(self):
-        backend = self._torch_backend()
-        return backend is not None and hasattr(backend, "Event")
-
     def _begin_timed_block(self):
-        """Start timing with Torch events on accelerators; wall clock on CPU fallback."""
         self._synchronize()
-        backend = self._torch_backend()
-        if backend is not None:
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "reset_peak_memory_stats"):
             backend.reset_peak_memory_stats(self.device)
-        if self._supports_event_timing():
-            backend = self._torch_backend()
-            start = backend.Event(enable_timing=True)
-            with torch.device(self.device):
-                start.record()
-            return ("torch", start)
-        return ("wall", time.perf_counter())
+        return time.perf_counter()
 
     def _timing_cost(self, start, **fields):
-        """Finish timing; Torch ops report device-active seconds from recorded events."""
-        cost = {"device": str(self.device), **fields}
-        if start[0] == "torch":
-            backend = self._torch_backend()
-            end = backend.Event(enable_timing=True)
-            with torch.device(self.device):
-                end.record()
-            backend.synchronize(self.device)
-            cost["device_active_seconds"] = start[1].elapsed_time(end) / 1000.0
+        self._synchronize()
+        cost = {"device": str(self.device), "synchronized_wall_seconds": time.perf_counter() - start,
+                "process_peak_cpu_bytes": None if resource is None else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                **fields}
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "max_memory_allocated"):
             cost["peak_device_allocated_bytes"] = backend.max_memory_allocated(self.device)
-        else:
-            self._synchronize()
-            cost["synchronized_wall_seconds"] = time.perf_counter() - start[1]
         return cost
 
     @contextmanager
     def _execution(self, *, mode="inference", advance=False):
-        """Isolate one public operation in either training or inference module mode.
-
-        Switching is implicit from the entry point: ``train`` uses ``mode="training"``;
-        ``score``, ``evaluate``, ``predict``, and ``get_weights`` use inference
-        (``module.eval()`` semantics via ``module.train(False)``). Inference scoring
-        may still enable autograd for gradient probes; only ``predict`` and held-out
-        loss paths wrap work in ``torch.no_grad()``. Training alone may advance the
-        role-local RNG when ``advance=True``.
-        """
+        """Isolate one public operation in either training or inference module mode."""
         if mode not in {"training", "inference"}:
             raise ValueError("Execution mode must be training or inference")
         active = self.module is not None
@@ -565,15 +434,7 @@ class CausalLMModel(ModelBase):
                 self.offload()
 
     def _payload(self, batch):
-        """Enforce configured allocation bounds before sending a collated batch to the device."""
-        payload = batch.payload
-        shape = payload["input_ids"].shape
-        model_boundary(shape[0] <= self.settings.max_batch_size and shape[1] <= self.settings.max_length,
-                       "Batch exceeds configured model working bounds")
-        model_boundary(all(not any(tag in str(r.target).lower() for tag in
-                       ("<think>", "</think>", "<analysis>", "</analysis>")) for r in batch.records),
-                       "Non-thinking training requires final-response targets")
-        return self.to_device(payload)
+        return self.to_device(batch.payload)
 
     def _decoder(self, **kwargs):
         """Run the decoder forward, compiling it once when this role asked for torch.compile."""
@@ -591,22 +452,14 @@ class CausalLMModel(ModelBase):
                              use_cache=False, return_dict=True).last_hidden_state
 
     def _batched_head_gradients(self, payload, reduction):
-        """One decoder pass for every example's tied last-layer gradient.
-
-        A single-example reduction is that example's token mean for both batch reductions,
-        so the batch differentiates each of those means. The output-projection part is the
-        outer product of logit gradients and hidden states. A tied embedding adds each
-        example's rows from the decoder gradient. Untied heads omit that scatter.
-        """
+        """One decoder pass for every example's tied last-layer gradient."""
         input_ids = payload["input_ids"]
         labels = payload["labels"]
         embed = self.module.get_input_embeddings()
         tied = embed.weight is self.module.lm_head.weight
-        model_boundary(reduction in {"per_example_mean", "per_token_mean"}, "Unknown gradient reduction")
-        batch, seq = input_ids.shape
+        batch = input_ids.shape[0]
         hidden = self.module.lm_head.in_features
         vocab = self.module.lm_head.out_features
-        self._buffer_bound(batch * vocab * hidden + batch * max(seq - 1, 0) * vocab)
         if tied:
             embedded = embed(input_ids).detach().requires_grad_(True)
             features = self._decoder(inputs_embeds=embedded, attention_mask=payload["attention_mask"],
@@ -644,10 +497,7 @@ class CausalLMModel(ModelBase):
         return F.cross_entropy(self.module.lm_head(features).float(), labels, reduction="none")
 
     def _token_nll(self, features, labels):
-        """Return flat causal NLL, the row that owns each token, and the per-row counts.
-        Order is row-major over supervised positions. Prompt and padding labels contribute nothing.
-        Checkpoint head chunks during autograd so vocabulary-sized intermediates are recomputed.
-        """
+        """Return flat causal NLL, the row that owns each token, and the per-row counts."""
         targets = labels[:, 1:]
         valid = targets != -100
         counts = valid.sum(-1)
@@ -686,43 +536,27 @@ class CausalLMModel(ModelBase):
                 loss = loss + weight * self._reduce(means[mask], sums[mask], counts[mask], objective.reduction)
         return loss
 
-    def _batch_identity(self, payload):
-        """Tie scores to token identities and masks. Labels are included when the batch has them."""
-        keys = [key for key in ("input_ids", "attention_mask", "labels") if key in payload]
-        return fingerprint({key: payload[key].detach().cpu().tolist() for key in keys})
-
     def distillation_loss(self, features, payload, targets, objective, origins):
-        """Evaluate exact KL(teacher || student) in supervised-token chunks.
-        Teacher logits have already been divided by temperature by score_logits.
-        Transfer only each CPU target chunk; preserve the requested token/example denominator.
-        """
-        model_boundary(targets.cost.get("vocabulary") == self._vocabulary
-                       and targets.cost.get("token_positions") == self._batch_identity(payload),
-                       "Teacher vocabulary or supervised token positions differ")
+        """Evaluate exact KL(teacher || student) in supervised-token chunks on this device."""
         labels = payload["labels"][:, 1:]
         valid = labels != -100
         positions = valid.flatten().nonzero().flatten()
         hidden = features[:, :-1].reshape(-1, features.shape[-1])
-        values = targets.values.reshape(-1, self.config.vocab_size)
+        values = targets.values.reshape(-1, self.config.vocab_size).to(self.device)
         parts = []
         def kl_chunk(x, teacher):
             student = self.module.lm_head(x).float() / objective.kd_temperature
-            teacher = teacher.to(self.device)
             return F.kl_div(F.log_softmax(student, -1), F.log_softmax(teacher, -1),
                             log_target=True, reduction="none").sum(-1)
         for start in range(0, len(positions), self.settings.logit_chunk_size):
             index = positions[start:start + self.settings.logit_chunk_size]
-            teacher = values.index_select(0, index.cpu())
+            teacher = values.index_select(0, index)
             parts.append(checkpoint(kl_chunk, hidden[index], teacher, use_reentrant=False))
         owners = torch.arange(labels.shape[0], device=self.device)[:, None].expand_as(valid)[valid]
         sums = features.new_zeros(labels.shape[0], dtype=torch.float32).scatter_add(0, owners, torch.cat(parts))
         counts = valid.sum(-1)
         loss = self.supervised_loss(sums / counts, sums, counts, objective, origins)
         return loss * (objective.kd_temperature ** 2 if objective.kd_temperature_squared else 1.)
-
-    def _buffer_bound(self, elements):
-        """Check float32 score storage before materializing a large gradient/logit result."""
-        model_boundary(elements * 4 <= self.settings.max_score_bytes, "Score buffer exceeds configured byte bound")
 
     def _coordinates(self, view="subset"):
         """Sample stable global parameter coordinates without allocating a full random permutation."""
@@ -761,30 +595,21 @@ class CausalLMModel(ModelBase):
             return mean / torch.where(norm > 0, norm, torch.ones_like(norm))
 
     def score_logits(self, payload, temperature):
-        """Buffer temperature-scaled teacher logits on CPU at causally shifted positions.
-        Non-supervised positions stay zero and are excluded by the distillation mask.
-        The full output allocation is checked before any vocabulary projection is made.
-        """
+        """Buffer temperature-scaled teacher logits on this device at causally shifted positions."""
         labels = payload["labels"][:, 1:]
         shape = (*labels.shape, self.config.vocab_size)
-        self._buffer_bound(math.prod(shape))
-        output = torch.zeros(shape, dtype=torch.float32)
+        output = torch.zeros(shape, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             features = self._features(payload)[:, :-1]
             positions = (labels != -100).nonzero()
             for start in range(0, len(positions), self.settings.logit_chunk_size):
                 index = positions[start:start + self.settings.logit_chunk_size]
                 rows, columns = index.unbind(-1)
-                output[rows.cpu(), columns.cpu()] = (
-                    self.module.lm_head(features[rows, columns]).float() / temperature).cpu()
+                output[rows, columns] = self.module.lm_head(features[rows, columns]).float() / temperature
         return output
 
     def score_gradients(self, payload, kind, view, reduction):
-        """Use autograd.grad so scoring never overwrites existing training gradients.
-        Head requests include all uses of tied weights and differentiate the whole batch at once.
-        LoRA-B requests use the fixed probe and differentiate the batch objective.
-        The returned buffer stays on the parameter device.
-        """
+        """Use autograd.grad so scoring never overwrites existing training gradients."""
         if kind == "last_layer_gradients":
             return self._batched_head_gradients(payload, reduction)
         named = dict(self.module.named_parameters())
@@ -798,7 +623,6 @@ class CausalLMModel(ModelBase):
             parameter.requires_grad_(True)
         width = sum(len(coordinates[n]) if coordinates is not None else p.numel() for n, p in selected.items())
         rows = 1 if kind == "lora_b_gradient" else len(payload["input_ids"])
-        self._buffer_bound(rows * width)
         device = next(iter(selected.values())).device if selected else self.device
         result = torch.empty((rows, width), dtype=torch.float32, device=device)
         for i in range(rows):
@@ -835,9 +659,8 @@ class CausalLMModel(ModelBase):
             else:
                 values = self.score_gradients(payload, score_spec.kind, score_spec.parameter_view, score_spec.reduction)
             cost = self._timing_cost(start, execution_mode=execution_mode, vocabulary=self._vocabulary,
-                                     token_positions=self._batch_identity(payload),
                                      output_bytes=values.numel() * values.element_size())
-            revision = fingerprint((self.info.identity, self.steps, self.weight_revision, self._weights_identity))
+            revision = f"{self.model_id}:{self.steps}"
         nbytes = values.numel() * values.element_size()
         on_cpu = values.device.type == "cpu"
         return ScoreResult(batch.ids, values, revision, score_spec.parameter_view, score_spec.reduction,
@@ -845,10 +668,7 @@ class CausalLMModel(ModelBase):
                            accelerator_bytes=0 if on_cpu else nbytes)
 
     def feature_statistics(self, payload, objective, origins):
-        """Differentiate only the final features for the pre-backward freeze decision.
-        Restore randomness before the actual training forward so dropout uses the same draw.
-        This additional forward is charged separately in the step's cost report.
-        """
+        """Differentiate only the final features for the pre-backward freeze decision."""
         rng = self._capture_rng()
         with torch.no_grad():
             features = self._features(payload)
@@ -867,9 +687,7 @@ class CausalLMModel(ModelBase):
         self.optimizer.zero_grad(set_to_none=True)
 
     def example_contributions(self, means, sums, counts, objective, origins):
-        """Scale example losses so their mean equals the actual supervised batch objective.
-        This keeps Fisher/SAR statistics consistent with token weighting and separate source means.
-        """
+        """Scale example losses so their mean equals the actual supervised batch objective."""
         size = len(means)
         if not objective.separate_means:
             return means if objective.reduction == "per_example_mean" else size * sums / counts.sum()
@@ -883,10 +701,7 @@ class CausalLMModel(ModelBase):
         return values
 
     def gradient_statistics(self, means, sums, counts, hooks, plan, objective, origins):
-        """Collect supervised per-example Fisher traces and sampled unfrozen SAR coordinates.
-        Reuse the current forward graph without touching .grad or including distillation.
-        Discard each full parameter gradient after reducing its norm/sampled coordinates.
-        """
+        """Collect supervised per-example Fisher traces and sampled unfrozen SAR coordinates."""
         refresh = plan is not None and plan.refresh
         coordinates = self._coordinates(hooks.gradient_subset) if hooks.gradient_subset else {}
         named = {n: p for n, p in self.module.named_parameters() if p.requires_grad
@@ -894,7 +709,6 @@ class CausalLMModel(ModelBase):
         groups = len(self.info.layer_names)
         traces = torch.zeros(groups, device=self.device, dtype=torch.float32) if refresh and named else None
         active = {n: indices for n, indices in coordinates.items() if n in named}
-        self._buffer_bound(len(means) * sum(map(len, active.values())))
         rows = []
         if named:
             values = self.example_contributions(means, sums, counts, objective, origins)
@@ -915,10 +729,7 @@ class CausalLMModel(ModelBase):
                 "class_gradients": torch.stack(rows) if rows else None}
 
     def optimizer_update(self, loss, *, revision_context=None):
-        """Commit finite updates only; nonfinite attempts consume data/RNG and update the scaler.
-        grad=None prevents frozen weights from receiving momentum or weight decay.
-        Scheduler and successful-step counters advance only after an actual optimizer update.
-        """
+        """Commit finite updates only; nonfinite attempts consume data/RNG and update the scaler."""
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
         parameters = [p for p in self.module.parameters() if p.grad is not None]
@@ -930,21 +741,14 @@ class CausalLMModel(ModelBase):
             self.scheduler.step()
             self.steps += 1
             self.weight_revision += 1
-            if revision_context is None:
-                self._weights_identity = tensor_fingerprint(self._weights(changed_only=not self._save_full_weights))
-            else:
-                self._weights_identity = fingerprint((
-                    self._weights_identity or self.info.identity, revision_context, self.steps,
-                    tensor_fingerprint(self._capture_rng()), str(self.device), str(torch.__version__)))
+            self._weights_identity = str(self.steps)
         elif self.scaler.is_enabled():
             self.scaler.update(new_scale=max(1., self.scaler.get_scale() / 2))
         self.optimizer.zero_grad(set_to_none=True)
         return success
 
     def _masked_token_loss(self, flat, targets, objective):
-        """Return the weighted or hinge loss, its detached numerator, and the active count.
-        A zero count means the batch has nothing to practise. The mask is not differentiated.
-        """
+        """Return the weighted or hinge loss, its detached numerator, and the active count."""
         weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
         baseline = targets.baseline.detach().to(device=flat.device, dtype=flat.dtype)
         model_boundary(weight.dtype == flat.dtype and weight.ndim == 1
@@ -965,104 +769,65 @@ class CausalLMModel(ModelBase):
             return None, numer, denom
         return terms.sum() / denom, numer, denom
 
-    def _token_update(self, training, objective, hooks, payload, start, execution_mode):
-        """Train on token weights, or skip the optimizer when the active count is zero.
-        AdamW is not called on that skip, so weight decay cannot move a recovered token.
-        """
-        model_boundary(objective.token_mode in {"weighted", "hinge"}, "Unknown token mode")
-        model_boundary(not objective.separate_means and objective.kd_weight == 0,
-                       "Token modes do not combine with separate means or distillation")
-        targets = training.token_targets
-        model_boundary(targets is not None, "Token modes require token targets")
-        self.apply_freeze(0)
-        features = self._features(payload)
-        flat, _, _ = self._token_nll(features, payload["labels"])
-        model_boundary(flat.numel() == targets.weight.numel() == training.batch.supervised_tokens,
-                       "Token targets must cover every supervised token")
-        surprise = flat.detach().float().cpu().tolist()
-        loss, numer, denom = self._masked_token_loss(flat, targets, objective)
-        diagnostics = {"freeze_prefix": 0, "token_surprise": surprise,
-                       "gradient_subset": hooks.gradient_subset}
-        if denom == 0:
-            success, reason = False, "no_active_tokens"
-            del features, flat
-        else:
-            context = {"tokens": self._batch_identity(payload), "ids": training.batch.ids,
-                       "origins": training.origins, "objective": asdict(objective), "prefix": 0,
-                       "token_targets": fingerprint({"baseline": targets.baseline.detach().cpu().tolist(),
-                                                     "weight": targets.weight.detach().cpu().tolist()})}
-            success = self.optimizer_update(loss, revision_context=context)
-            reason = None if success else "nonfinite_loss_or_gradients"
-            del features, flat, loss
-        cost = self._timing_cost(
-            start, execution_mode=execution_mode, forward_passes=1, per_example_backward_observations=0,
-            process_peak_cpu_bytes=(None if resource is None
-                                     else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024),
-            layer_cost_kind="supplied" if self.settings.backward_costs else "parameter_estimate")
-        return StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
-                          {"supervised": numer}, {"supervised": denom}, diagnostics, cost, reason)
-
     def train(self, k, *, batch_factory, objective, hooks, limits):
-        """Consume the supplied finite stream with no internal shuffling or replay decisions.
-        Plan freezing before the actual backward, report supervised statistics separately from KL,
-        and leave no gradients or live graphs at the checkpoint boundary after each attempt.
-        token_mode all keeps that supervised loss. weighted and hinge use token targets.
-        """
-        reports, attempts, updates, tokens = [], 0, 0, 0
+        """Consume caller-ordered batches; policies propose masks and never step the optimizer."""
         hooks = hooks or UpdateHooks()
+        weighted = objective.token_mode != "all"
         model_boundary(objective.token_mode in {"all", "weighted", "hinge"}, "Unknown token mode")
-        with self._execution(mode="training", advance=True) as execution_mode:
+        model_boundary(not weighted or (not objective.separate_means and objective.kd_weight == 0),
+                       "Token modes do not combine with separate means or distillation")
+        reports, attempts, updates, tokens = [], 0, 0, 0
+        with self._execution(mode="training", advance=True) as mode:
             for _ in range(k):
                 for training in batch_factory():
-                    if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + training.batch.valid_tokens > limits.max_tokens:
+                    batch = training.batch
+                    if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + batch.valid_tokens > limits.max_tokens:
                         return reports
                     start = self._begin_timed_block()
-                    payload = self._payload(training.batch)
-                    if objective.token_mode != "all":
-                        report = self._token_update(training, objective, hooks, payload, start, execution_mode)
-                        attempts, updates, tokens = (attempts + 1, updates + int(report.success),
-                                                     tokens + training.batch.valid_tokens)
-                        reports.append(report)
-                        continue
-                    model_boundary(training.token_targets is None, "token_mode all does not take token targets")
+                    payload = self._payload(batch)
                     self.apply_freeze(0)
-                    statistics = self.feature_statistics(payload, objective, training.origins) if hooks.plan_update else {}
-                    plan = hooks.plan_update(statistics) if hooks.plan_update else None
-                    self.apply_freeze(plan.prefix if plan else 0)
+                    statistics = self.feature_statistics(payload, objective, training.origins) if hooks.plan_update and not weighted else {}
+                    plan = hooks.plan_update(statistics) if hooks.plan_update and not weighted else None
+                    prefix = plan.prefix if plan else 0
+                    self.apply_freeze(prefix)
                     features = self._features(payload)
-                    means, sums, counts = self._losses(features, payload["labels"])
-                    diagnostics = self.gradient_statistics(means, sums, counts, hooks, plan, objective, training.origins)
-                    diagnostics.update(statistics, freeze_prefix=plan.prefix if plan else 0)
-                    loss = self.supervised_loss(means, sums, counts, objective, training.origins)
-                    if objective.kd_weight and training.teacher_targets is not None:
-                        model_boundary(training.teacher_targets.ids == training.batch.ids, "Teacher IDs differ")
-                        loss = loss + objective.kd_weight * self.distillation_loss(
-                            features, payload, training.teacher_targets, objective, training.origins)
-                    logged_sum = (means.sum() if objective.reduction == "per_example_mean" else sums.sum()).detach().item()
-                    logged_count = len(means) if objective.reduction == "per_example_mean" else counts.sum().item()
-                    revision_context = {"tokens": self._batch_identity(payload), "ids": training.batch.ids,
-                                        "origins": training.origins, "objective": asdict(objective),
-                                        "prefix": plan.prefix if plan else 0}
-                    success = self.optimizer_update(loss, revision_context=revision_context)
-                    attempts, updates, tokens = attempts + 1, updates + int(success), tokens + training.batch.valid_tokens
-                    cost = self._timing_cost(start, execution_mode=execution_mode,
-                                             forward_passes=1 + int(hooks.plan_update is not None),
-                                             per_example_backward_observations=len(means) if hooks.gradient_subset or (plan and plan.refresh) else 0,
-                                             process_peak_cpu_bytes=(None if resource is None
-                                              else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024),
+                    if weighted:
+                        flat, _, _ = self._token_nll(features, payload["labels"])
+                        model_boundary(training.token_targets is not None and flat.numel() == training.token_targets.weight.numel() == batch.supervised_tokens,
+                                       "Token targets must cover every supervised token")
+                        loss, numer, denom = self._masked_token_loss(flat, training.token_targets, objective)
+                        diagnostics = {"token_surprise": flat.detach().float().tolist(),
+                                       "gradient_subset": hooks.gradient_subset}
+                        observations = 0
+                        del flat
+                    else:
+                        model_boundary(training.token_targets is None, "token_mode all does not take token targets")
+                        means, sums, counts = self._losses(features, payload["labels"])
+                        diagnostics = self.gradient_statistics(means, sums, counts, hooks, plan, objective, training.origins)
+                        loss = self.supervised_loss(means, sums, counts, objective, training.origins)
+                        if objective.kd_weight and training.teacher_targets is not None:
+                            model_boundary(training.teacher_targets.ids == batch.ids, "Teacher IDs differ")
+                            loss = loss + objective.kd_weight * self.distillation_loss(features, payload, training.teacher_targets, objective, training.origins)
+                        numer = float((means.sum() if objective.reduction == "per_example_mean" else sums.sum()).detach())
+                        denom = len(means) if objective.reduction == "per_example_mean" else int(counts.sum())
+                        observations = len(means) if hooks.gradient_subset or (plan and plan.refresh) else 0
+                        del means, sums, counts
+                    context = {"ids": batch.ids, "origins": training.origins, "objective": asdict(objective), "prefix": prefix}
+                    success = loss is not None and self.optimizer_update(loss, revision_context=context)
+                    reason = None if success else ("no_active_tokens" if loss is None else "nonfinite_loss_or_gradients")
+                    diagnostics.update(statistics, freeze_prefix=prefix)
+                    cost = self._timing_cost(start, execution_mode=mode,
+                                             forward_passes=1 + int(bool(hooks.plan_update) and not weighted),
+                                             per_example_backward_observations=observations,
                                              layer_cost_kind="supplied" if self.settings.backward_costs else "parameter_estimate")
-                    reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
-                                              {"supervised": logged_sum}, {"supervised": logged_count}, diagnostics, cost,
-                                              None if success else "nonfinite_loss_or_gradients"))
-                    del features, means, sums, counts, loss
+                    reports.append(StepReport(batch.ids, success, self.steps, batch.valid_tokens,
+                                              {"supervised": numer}, {"supervised": denom}, diagnostics, cost, reason))
+                    attempts, updates, tokens = attempts + 1, updates + int(success), tokens + batch.valid_tokens
+                    del features, loss
         return reports
 
     def evaluate(self, view, evaluation_spec, progress=None):
-        """Evaluate caller-collated held-out records, preserving the learner's numerical state.
-        Report token-weighted NLL/perplexity and optionally exact-match generation accuracy.
-        text_metrics names functions in numerics and averages them over generated strings.
-        The dataset retains ownership of response masks and prompt-only generation collation.
-        """
+        """Evaluate caller-collated held-out records, preserving the learner's numerical state."""
         size = evaluation_spec.get("batch_size", self.settings.max_batch_size)
         metric_names = tuple(evaluation_spec.get("text_metrics") or ())
         if metric_names and "generation" not in evaluation_spec:
@@ -1109,10 +874,8 @@ class CausalLMModel(ModelBase):
     def _generation_payload(self, inputs):
         """Accept prompt-only Batch/dict inputs or conversations rendered with the fixed template."""
         if hasattr(inputs, "payload"):
-            model_boundary("labels" not in inputs.payload, "Generation requires prompt-only collation")
             return inputs.ids, self.to_device(inputs.payload)
         if isinstance(inputs, dict):
-            model_boundary("labels" not in inputs, "Generation requires prompt-only inputs")
             return (), self.to_device(inputs)
         conversations = [inputs] if inputs and isinstance(inputs[0], dict) else inputs
         encoded = [self.encode(self.render(messages)) for messages in conversations]
@@ -1130,14 +893,10 @@ class CausalLMModel(ModelBase):
         with self._execution() as execution_mode, torch.no_grad():
             timing_start = self._begin_timed_block()
             ids, payload = self._generation_payload(inputs)
-            model_boundary(payload["input_ids"].shape[0] * generation_spec.get("num_beams", 1) <= self.settings.max_batch_size,
-                           "Generation batch exceeds configured working bounds")
             allowed = {"max_new_tokens", "do_sample", "temperature", "top_p", "top_k", "repetition_penalty", "num_beams"}
             options = {k: v for k, v in generation_spec.items() if k in allowed}
             options.setdefault("max_new_tokens", 128)
             options.setdefault("do_sample", False)
-            model_boundary(payload["input_ids"].shape[1] + options["max_new_tokens"] <= self.settings.max_length,
-                           "Generation exceeds configured sequence bound")
             seed = generation_spec.get("seed", self.settings.seed)
             torch.random.set_rng_state(torch.Generator().manual_seed(seed).get_state())
             if self.device.type != "cpu":
@@ -1147,7 +906,7 @@ class CausalLMModel(ModelBase):
                                           pad_token_id=self.preprocessing_kwargs()["pad_id"],
                                           eos_token_id=self.tokenizer.eos_token_id,
                                           use_cache=True)
-            tokens = output[:, payload["input_ids"].shape[1]:].cpu().tolist()
+            tokens = output[:, payload["input_ids"].shape[1]:].tolist()
             return {"ids": ids, "texts": self.tokenizer.batch_decode(tokens, skip_special_tokens=True),
                     "token_ids": self._trim_generated(tokens),
                     "cost": self._timing_cost(timing_start, execution_mode=execution_mode)}
@@ -1171,31 +930,27 @@ class CausalLMModel(ModelBase):
     def _weights(self, *, changed_only=False):
         """Serialize canonical parameter names once, preserving tied-parameter identity on reload."""
         eligible = {n for n, _, train in self._profile(self.use_lora)[0] if train}
-        return {"parameters": {n: p.detach().cpu() for n, p in self.module.named_parameters()
+        return {"parameters": {n: p.detach() for n, p in self.module.named_parameters()
                                if not changed_only or not self.use_lora or n in eligible},
-                "buffers": {n: b.detach().cpu() for n, b in self.module.named_buffers()}}
+                "buffers": {n: b.detach() for n, b in self.module.named_buffers()}}
 
     def _install(self, weights, *, changed_only=False):
-        """Copy tensors into existing Parameter objects so shared wrapper/optimizer references survive."""
-        live = dict(self.module.named_parameters())
-        eligible = {n for n, _, train in self._profile(self.use_lora)[0] if train}
-        expected = eligible if changed_only and self.use_lora else set(live)
-        buffers = dict(self.module.named_buffers())
-        model_boundary(set(weights["parameters"]) == expected
-                       and set(weights["buffers"]) == set(buffers)
-                       and all(tuple(t.shape) == tuple(live[n].shape) for n, t in weights["parameters"].items())
-                       and all(tuple(t.shape) == tuple(buffers[n].shape) for n, t in weights["buffers"].items()),
-                       "Checkpoint tensor names or shapes differ")
+        """Install exact tensor names and shapes into the existing Parameter objects."""
+        live = {"parameters": dict(self.module.named_parameters()), "buffers": dict(self.module.named_buffers())}
+        eligible = ({n for n, _, train in self._profile(self.use_lora)[0] if train} if self.use_lora else set(live["parameters"]))
+        for kind, tensors in live.items():
+            incoming = weights.get(kind, {})
+            expected = eligible if kind == "parameters" and changed_only else set(tensors)
+            model_boundary(set(incoming) == expected and all(value.shape == tensors[name].shape
+                           for name, value in incoming.items()), "Checkpoint tensor names or shapes differ")
         with torch.no_grad():
-            for name, value in weights["parameters"].items():
-                parameter = self.module.get_parameter(name)
-                parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
-            for name, value in weights["buffers"].items():
-                buffer = self.module.get_buffer(name)
-                buffer.copy_(value.to(device=buffer.device, dtype=buffer.dtype))
+            for kind, tensors in live.items():
+                for name, value in weights.get(kind, {}).items():
+                    target = tensors[name]
+                    target.copy_(value.to(device=target.device, dtype=target.dtype))
 
     def get_weights(self):
-        """Return independent CPU parameter/buffer copies with architecture compatibility identity."""
+        """Return parameter and buffer copies on this device."""
         with self._execution():
             weights = self._weights()
             return {"compatibility": self._compatibility(),
@@ -1204,10 +959,9 @@ class CausalLMModel(ModelBase):
     def set_weights(self, weights):
         """Install a compatible snapshot into this wrapper and start a fresh numerical training state."""
         self.activate()
-        model_boundary(weights["compatibility"] == self._compatibility(), "Incompatible model weight layout")
         self._install(weights)
-        self._weights_identity = tensor_fingerprint({k: weights[k] for k in ("parameters", "buffers")})
-        self.initialization = "weights:" + self._weights_identity
+        self._weights_identity = "0"
+        self.initialization = "weights"
         # Arbitrary external snapshots may change the nominally frozen base too.
         self._save_full_weights = True
         self.steps = 0
@@ -1216,10 +970,10 @@ class CausalLMModel(ModelBase):
         self._reset_optimizer()
 
     def _metadata(self, kind):
-        """Record compatibility, immutable asset hashes and the non-thinking policy."""
+        """Record model settings and counters; checksums belong to the checkpoint manager."""
         return {"schema": 1, "state_kind": kind, "compatibility": self._compatibility(),
                 "execution_identity": self.info.identity, "model": self.model_id, "revision": self.revision,
-                "base_files": self._base_files, "base_bytes": self._base_bytes, "steps": self.steps, "weight_revision": self.weight_revision,
+                "base_bytes": self._base_bytes, "steps": self.steps, "weight_revision": self.weight_revision,
                 "enable_thinking": False, "full_weights": self._save_full_weights,
                 "initialization": self.initialization, "weights_identity": self._weights_identity}
 
@@ -1230,10 +984,7 @@ class CausalLMModel(ModelBase):
                 "weight_revision": self.weight_revision, "weights_identity": self._weights_identity}
 
     def save(self, path, state_kind):
-        """Save weights separately from numerical resume state, avoiding repeated immutable bases.
-        Inactive roles copy their private disk state without loading optimizer tensors into RAM.
-        The outer checkpoint manager owns atomic publication, checksums and rolling retention.
-        """
+        """Save weights separately from numerical resume state, avoiding repeated immutable bases."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         if self.module is None and self._offload is not None:
@@ -1248,7 +999,7 @@ class CausalLMModel(ModelBase):
             write_json(path / "metadata.json", {**saved, "state_kind": state_kind})
         else:
             self.activate()
-            torch.save(self._weights(changed_only=not self._save_full_weights), path / "weights.pt")
+            torch.save(cpu_tree(self._weights(changed_only=not self._save_full_weights)), path / "weights.pt")
             if state_kind == "resume":
                 torch.save(self._training_state(), path / "training.pt")
             write_json(path / "metadata.json", self._metadata(state_kind))
@@ -1256,10 +1007,6 @@ class CausalLMModel(ModelBase):
     def _read_state(self, path):
         """Restore a complete numerical state, or reset optimization when loading frozen weights."""
         metadata = read_json(path / "metadata.json")
-        model_boundary(metadata["compatibility"] == self._compatibility(), "Incompatible model checkpoint")
-        model_boundary(metadata["base_files"] == self._base_files, "Immutable base checksum mismatch")
-        if metadata["state_kind"] == "resume":
-            model_boundary(metadata["execution_identity"] == self.info.identity, "Resume settings differ")
         self._save_full_weights = metadata.get("full_weights", False)
         self._install(torch.load(path / "weights.pt", map_location="cpu", weights_only=True),
                       changed_only=not self._save_full_weights)
@@ -1279,8 +1026,7 @@ class CausalLMModel(ModelBase):
 
     def _frozen_identity(self, metadata):
         """Keep frozen inputs distinguishable while retaining independent teacher role identities."""
-        self._weights_identity = fingerprint((metadata["execution_identity"], metadata["weights_identity"],
-                                              metadata["steps"], metadata["weight_revision"]))
+        self._weights_identity = str(metadata.get("weights_identity") or metadata["steps"])
         if self.role == "learner":
             self.initialization = "weights:" + self._weights_identity
 
@@ -1305,17 +1051,14 @@ class CausalLMModel(ModelBase):
         """Validate source metadata; inactive roles keep a private copy safe from checkpoint pruning."""
         path = Path(path)
         metadata = read_json(path / "metadata.json")
-        model_boundary(metadata["state_kind"] == state_kind, "Checkpoint kind differs")
         self._prepare()
         if state_kind == "resume":
             self.initialization = metadata["initialization"]
         else:
             self._frozen_identity(metadata)
-        model_boundary(metadata["compatibility"] == self._compatibility(), "Incompatible model checkpoint")
         if self.module is not None:
             self._read_state(path)
         else:
-            self._base_files = metadata["base_files"]
             self._base_bytes = metadata["base_bytes"]
             self._save_full_weights = metadata.get("full_weights", False)
             target = self._offload_directory()
@@ -1328,10 +1071,7 @@ class CausalLMModel(ModelBase):
             self.weight_revision = metadata["weight_revision"]
 
     def offload(self):
-        """Persist full numerical state before releasing all model/optimizer/device tensors.
-        Keep the previous private snapshot until the replacement has been written successfully.
-        Checkpoint publication remains responsible for durable recovery after a hard interruption.
-        """
+        """Persist full numerical state before releasing all model/optimizer/device tensors."""
         if self.module is None:
             return
         self._compiled_forward = None

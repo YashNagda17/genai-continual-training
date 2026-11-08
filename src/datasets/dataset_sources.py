@@ -1,18 +1,12 @@
-"""Fetch CLINC, Schuster, Bitext, TRACE, and XL-Sum into canonical JSONL.
-
-These classes convert source files. They are not DatasetBase subclasses: identical
-instruction processing stays in InstructionDataset. Importing this module does not download.
-"""
+"""Fetch CLINC, Schuster, Bitext, TRACE, and XL-Sum into canonical JSONL."""
 
 from pathlib import Path
-import hashlib
 import json
 import random
-import re
 import tarfile
 import zipfile
 
-from .dataset_instruction import InstructionDataset
+from .dataset_instruction import InstructionDataset, SummarizationDataset
 
 SPLITS = ("train", "validation", "test")
 TRACE_TASKS = ("C-STANCE", "FOMC", "MeetingBank", "Py150", "ScienceQA",
@@ -94,11 +88,7 @@ def clinc_domain_of(intent):
 
 
 def clinc_domain_rows(by_split, names):
-    """Map plus-split rows onto the ten official domains and count omitted oos rows.
-
-    The schema must contain every official intent. Unknown in-scope names are an error.
-    A domain with no training row is an error because the continual stream would hide it.
-    """
+    """Map plus-split rows onto the ten official domains and count omitted oos rows."""
     official = {intent for intents in CLINC_DOMAINS.values() for intent in intents}
     if any(len(intents) != 15 for intents in CLINC_DOMAINS.values()) or len(official) != 150:
         raise ValueError("CLINC domain map must contain 10 domains of 15 unique intents")
@@ -142,11 +132,7 @@ def schuster_rows(by_split):
 
 
 def bitext_rows(records, seed=0):
-    """Assign a seeded group holdout because the source file is one train split.
-
-    Within each category, the first 10% of instruction groups are test and the next
-    10% are validation. The percentage is truncated toward zero.
-    """
+    """Assign a seeded group holdout because the source file is one train split."""
     groups = {}
     for index, row in enumerate(records):
         category = str(row["category"]).strip()
@@ -171,7 +157,7 @@ def bitext_rows(records, seed=0):
         if prompt and response and label:
             rows.append(canonical(f"{index:05d}", str(row["category"]).strip(), chosen[index],
                                   prompt, response, label,
-                                  hashlib.sha256(prompt.encode()).hexdigest()))
+                                  prompt))
     return rows
 
 
@@ -190,11 +176,7 @@ XLSUM_SPLIT_FILES = (("train", "train"), ("validation", "val"), ("test", "test")
 
 
 def xlsum_archive_rows(archive_path, language):
-    """Read one language tar. Official `val` is stored as `validation`.
-
-    The article is `text` and the summary is `summary`. The row id is the language
-    plus the article id, so the same article in two languages stays distinct.
-    """
+    """Read one language tar. Official `val` is stored as `validation`."""
     rows, dropped, seen = [], 0, set()
     with tarfile.open(archive_path, "r:bz2") as archive:
         members = {Path(member.name).name: member for member in archive.getmembers() if member.isfile()}
@@ -239,7 +221,7 @@ def trace_rows(tasks):
 
 
 def publish(root, dataset_id, source, revision, rows, extra):
-    """Write canonical JSONL and its manifest. Matching bytes are kept; different bytes are refused."""
+    """Write canonical JSONL and its manifest. An existing directory is kept."""
     counts = {split: sum(row["split"] == split for row in rows) for split in SPLITS}
     if counts["train"] == 0:
         raise ValueError(f"{dataset_id} produced no training records")
@@ -248,45 +230,31 @@ def publish(root, dataset_id, source, revision, rows, extra):
         bucket = task_counts.setdefault(row["task"], {split: 0 for split in SPLITS})
         bucket[row["split"]] += 1
     out = Path(root) / dataset_id / revision
-    payload = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
-    encoded = payload.encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()
     records = out / "records.jsonl"
     manifest_path = out / "manifest.json"
-    if records.exists():
-        if hashlib.sha256(records.read_bytes()).hexdigest() != digest:
-            raise ValueError(f"Refusing to overwrite {records} with different content")
-        if manifest_path.exists():
-            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if saved.get("sha256") != digest:
-                raise ValueError(f"Manifest checksum does not match {records}")
-            return out
+    if records.exists() and manifest_path.exists():
+        return out
     out.mkdir(parents=True, exist_ok=True)
-    records.write_bytes(encoded)
+    with records.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     manifest = {"dataset_id": dataset_id, "source": source, "revision": revision,
                 "counts": counts, "task_counts": task_counts,
                 "task_order": list(dict.fromkeys(row["task"] for row in rows)),
-                "records": len(rows), "sha256": digest, **extra}
+                "records": len(rows), **extra}
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 
-def load_instruction_source(directory):
-    """Load a fetched directory, verify its checksum, and keep the source manifest on the dataset."""
+def load_source(directory, dataset_cls):
+    """Load a fetched directory into the given dataset class. This does not download."""
     directory = Path(directory)
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    dataset = InstructionDataset()
+    dataset = dataset_cls()
     raw, _ = dataset.load({"path": directory / "records.jsonl", "dataset_id": manifest["dataset_id"],
-                           "sha256": manifest["sha256"]})
-    dataset.manifest["source"] = {key: value for key, value in manifest.items() if key != "sha256"}
+                           "revision": manifest.get("revision", manifest["dataset_id"])})
+    dataset.manifest["source"] = dict(manifest)
     return dataset, raw
-
-
-def snapshot_revision(path):
-    """The Hub snapshot directory name is the immutable commit."""
-    if re.fullmatch(r"[0-9a-f]{40}", path.name):
-        return path.name
-    raise ValueError(f"Snapshot {path} is not an immutable commit")
 
 
 class InstructionSource:
@@ -312,8 +280,9 @@ class InstructionSource:
 
     def fetch(self, root, token=None, revision="main"):
         snapshot = self.download(root, token, revision)
-        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot),
-                       self.convert(snapshot), dict(self.extra))
+        rows = self.convert(snapshot)
+        return publish(root, self.dataset_id, self.source, snapshot.name,
+                       rows, {**self.extra, **getattr(self, "report", {})})
 
 
 class ClincOOSSource(InstructionSource):
@@ -323,7 +292,7 @@ class ClincOOSSource(InstructionSource):
     extra = {"config": "plus", "protocol": "official", "truncation": "drop",
              "usage": "Official plus splits, including out-of-scope, as one task."}
 
-    def convert(self, snapshot):
+    def _read(self, snapshot):
         import pyarrow.parquet as pq
         by_split, names = {}, None
         for split in SPLITS:
@@ -333,7 +302,10 @@ class ClincOOSSource(InstructionSource):
                 names = meta["info"]["features"]["intent"]["names"]
             data = table.to_pydict()
             by_split[split] = list(zip(data["text"], data["intent"]))
-        return clinc_rows(by_split, names)
+        return by_split, names
+
+    def convert(self, snapshot):
+        return clinc_rows(*self._read(snapshot))
 
 
 class ClincDomainSource(ClincOOSSource):
@@ -345,27 +317,9 @@ class ClincDomainSource(ClincOOSSource):
              "usage": "Ten official domains are tasks. Out-of-scope rows are omitted and counted."}
 
     def convert(self, snapshot):
-        """Read the plus parquet files and return domain rows. The report is kept for fetch."""
-        import pyarrow.parquet as pq
-        by_split, names = {}, None
-        for split in SPLITS:
-            table = pq.read_table(snapshot / "plus" / f"{split}-00000-of-00001.parquet")
-            if names is None:
-                meta = json.loads(table.schema.metadata[b"huggingface"])
-                names = meta["info"]["features"]["intent"]["names"]
-            data = table.to_pydict()
-            by_split[split] = list(zip(data["text"], data["intent"]))
-        rows, report = clinc_domain_rows(by_split, names)
-        self.domain_report = report
+        rows, self.report = clinc_domain_rows(*self._read(snapshot))
         return rows
 
-    def fetch(self, root, token=None, revision="main"):
-        """Publish the domain JSONL. task_order in the report overrides first-seen order."""
-        snapshot = self.download(root, token, revision)
-        rows = self.convert(snapshot)
-        extra = dict(self.extra)
-        extra.update(self.domain_report)
-        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot), rows, extra)
 
 
 class SchusterSource(InstructionSource):
@@ -411,25 +365,17 @@ class XLSumSource(InstructionSource):
              "usage": "Official splits. The article is the input and the summary is the target."}
 
     def convert(self, snapshot):
-        rows, dropped, checksums = [], 0, {}
+        rows, dropped = [], 0
         for language in XLSUM_LANGUAGES:
             archive = snapshot / "data" / f"{language}_XLSum_v2.0.tar.bz2"
             if not archive.is_file():
                 raise ValueError(f"XL-Sum snapshot is missing {archive.name}")
-            checksums[archive.name] = hashlib.sha256(archive.read_bytes()).hexdigest()
             language_rows, language_dropped = xlsum_archive_rows(archive, language)
             rows.extend(language_rows)
             dropped += language_dropped
-        self.archive_report = {"tar_sha256": checksums, "empty_dropped": dropped}
+        self.report = {"empty_dropped": dropped}
         return rows
 
-    def fetch(self, root, token=None, revision="main"):
-        """Publish the summarization JSONL, including each tar checksum."""
-        snapshot = self.download(root, token, revision)
-        rows = self.convert(snapshot)
-        extra = dict(self.extra)
-        extra.update(self.archive_report)
-        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot), rows, extra)
 
 
 class TraceSource(InstructionSource):

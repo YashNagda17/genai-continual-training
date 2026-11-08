@@ -198,6 +198,42 @@ class Checkpoints:
             raise
         return relative
 
+    def pin(self, model, record):
+        """Save the English checkpoint under its prefix. A second call returns that directory.
+
+        Rolling prune does not remove it.
+        """
+        if record.get("kind") != "english" or record.get("writer") != "english_checkpoint":
+            raise ValueError("Only the English stage can pin the English checkpoint")
+        destination = self.root / "pinned" / "english" / str(record["prefix"])
+        if (destination / "metadata.json").is_file():
+            return destination.relative_to(self.root).as_posix()
+        with self.lock():
+            self.reserve(model.info.checkpoint_bytes + 65536)
+            destination.mkdir(parents=True, exist_ok=True)
+            model.save(destination, "english", record=record)
+            return destination.relative_to(self.root).as_posix()
+
+    def pin_pool(self, records, *, english_checkpoint):
+        """Write the English pool once, next to that checkpoint.
+
+        A second call returns the existing pool. A Hindi run has no writer that can replace it.
+        """
+        required = {"id", "summary", "baseline", "loss_before"}
+        rows = [dict(row) for row in records]
+        for row in rows:
+            if not required <= set(row):
+                raise ValueError("Pool record needs a summary, a baseline, and loss_before")
+        destination = self.root / "pinned" / "pool"
+        manifest_path = destination / "manifest.json"
+        if manifest_path.is_file():
+            return destination.relative_to(self.root).as_posix()
+        with self.lock():
+            destination.mkdir(parents=True, exist_ok=True)
+            write_json(manifest_path, {"english_checkpoint": english_checkpoint,
+                                       "writer": "english_checkpoint", "records": rows})
+            return destination.relative_to(self.root).as_posix()
+
     def publish(self, state, learner, auxiliary, dependencies, *, completed=False):
         """Stage policy state, learner state and any active auxiliary as one recovery unit.
         Replace the latest pointer after the staged unit is flushed.
@@ -284,12 +320,14 @@ class Checkpoints:
         """Find teacher blobs referenced by every retained recovery checkpoint.
         Remove other model/replay payloads and abandoned staging directories.
         Keep small audit manifests; teachers survive until neither retained checkpoint needs them.
+        Pinned English checkpoints and pools live under pinned/ and are never removed here.
         """
         live_blobs = set()
         folder = self.root / "checkpoints"
-        for name in retained:
-            live_blobs.update(read_json(folder / name / "complete.json")["dependencies"])
-        for path in folder.iterdir():
+        if folder.exists():
+            for name in retained:
+                live_blobs.update(read_json(folder / name / "complete.json")["dependencies"])
+        for path in folder.iterdir() if folder.exists() else ():
             if path.is_dir() and path.name not in retained:
                 # Keep small manifests for audit; remove only owned numerical state.
                 for name in ("learner", "auxiliary"):
@@ -392,25 +430,3 @@ def save_weights(model, path):
     return path
 
 
-def base_assets(path):
-    """Hash immutable model-cache assets, following content-addressed cache symlinks."""
-    result = {}
-    for file in sorted(Path(path).rglob("*")):
-        if file.is_file():
-            with file.open("rb") as stream:
-                result[str(file.relative_to(path))] = hashlib.file_digest(stream, "sha256").hexdigest()
-    return result
-
-
-def tensor_fingerprint(value):
-    """Hash Torch serialization as a stream instead of collecting a second checkpoint in RAM."""
-    import torch
-    digest = hashlib.sha256()
-    class DigestWriter:
-        def write(self, data):
-            digest.update(data)
-            return len(data)
-        def flush(self):
-            pass
-    torch.save(value, DigestWriter())
-    return digest.hexdigest()

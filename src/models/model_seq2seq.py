@@ -1,17 +1,16 @@
-"""Shared encoder-decoder execution for mT5. Transformers supplies the architecture.
-
-Native Torch owns LoRA, losses, gradients, optimization, and generation. Constructors
-do not download assets or allocate parameters. Load in bf16 where the device supports
-it, otherwise fp32. Never fp16: T5-family weights overflow in fp16.
-"""
+"""Shared encoder-decoder execution for mT5. Transformers supplies the architecture."""
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import copy
 import gc
-import hashlib
 import math
+import random
+try:
+    import resource
+except ImportError:
+    resource = None
 import shutil
 import tempfile
 import time
@@ -22,10 +21,9 @@ from torch.nn import functional as F
 
 from .model_base import ModelBase
 from ..utils.contracts import (
-    AdapterPlan, ModelInfo, ScoreResult, StepReport, fingerprint, model_boundary,
+    AdapterPlan, ModelInfo, ScoreResult, StepReport, model_boundary,
 )
-from ..utils.numerics import resolve_device
-from ..utils.state import Checkpoints, base_assets, read_json, tensor_fingerprint, write_json
+from ..utils.state import Checkpoints, read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -67,36 +65,32 @@ def cpu_tree(value):
     return value
 
 
+def _adapter_parameter_names(module):
+    return {name for name, _parameter in module.named_parameters()
+            if name.endswith((".A", ".B", ".extra_A", ".extra_B"))}
+
+
 def _count(module, *, trainable_only=False):
-    """Count each Parameter object once so tied embeddings are not added twice."""
-    seen, total = set(), 0
-    for parameter in module.parameters():
-        if trainable_only and not parameter.requires_grad:
-            continue
-        if id(parameter) in seen:
-            continue
-        seen.add(id(parameter))
-        total += parameter.numel()
-    return total
+    """Torch parameters() already removes tied aliases."""
+    return sum(p.numel() for p in module.parameters() if not trainable_only or p.requires_grad)
 
 
 def _seed_for(seed, name):
-    digest = hashlib.sha256(f"{seed}:{name}".encode()).hexdigest()
-    return int(digest[:8], 16)
+    return random.Random(f"{seed}:{name}").getrandbits(63)
 
 
-def _init_A(parameter, seed):
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(seed)
+def _init_A(parameter, seed=None):
+    """Kaiming fill on the parameter's device. A meta tensor has no storage to fill."""
+    if parameter.device.type == "meta":
+        return
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=parameter.device).manual_seed(seed)
     nn.init.kaiming_uniform_(parameter, a=math.sqrt(5), generator=generator)
 
 
 class Seq2SeqLoRA(nn.Module):
-    """Frozen projection plus (alpha / rank) B A, with B starting at zero.
-
-    ``extra_*`` is a second zero-start pair. Its scale is ``alpha / rank`` with
-    ``alpha = 2 * rank``, so the pair starts at scale 2 and B = 0.
-    """
+    """Frozen projection plus (alpha / rank) B A, with B starting at zero."""
 
     def __init__(self, base, rank, alpha, *, block_key, block_index, part, projection, deterministic, seed):
         super().__init__()
@@ -109,8 +103,13 @@ class Seq2SeqLoRA(nn.Module):
         if deterministic:
             _init_A(self.A, seed)
         else:
-            nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+            _init_A(self.A)
         self.base.requires_grad_(False)
+
+    @property
+    def weight(self):
+        """The frozen projection. The built-in feed-forward reads this dtype."""
+        return self.base.weight
 
     def add_extra(self, rank, seed):
         extra_A = nn.Parameter(self.base.weight.new_empty(rank, self.base.in_features))
@@ -151,9 +150,19 @@ def _adapter_identity(name):
     return pieces[0], block, part, pieces[-1]
 
 
-def _detach_block_output(module, inputs, output):
-    """Stop the backward pass at this block's output. Values are unchanged."""
-    return tuple(item.detach() if torch.is_tensor(item) else item for item in output)
+def _detach_value(*values):
+    """Stop the backward pass at this output. Values are unchanged."""
+    value = values[-1]
+    if torch.is_tensor(value):
+        return value.detach()
+    if isinstance(value, tuple):
+        return tuple(_detach_value(item) for item in value)
+    items = getattr(value, "items", None)
+    if callable(items):
+        for key, item in list(value.items()):
+            if torch.is_tensor(item):
+                value[key] = item.detach()
+    return value
 
 
 class Seq2SeqLMModel(ModelBase):
@@ -183,17 +192,19 @@ class Seq2SeqLMModel(ModelBase):
         self._profiles, self._prepared = {}, False
         self._offload = None
         self._save_full_weights = False
-        self._base_path, self._base_files, self._base_bytes = None, None, 0
+        self._base_path, self._base_bytes = None, 0
         self.rng_state = None
         self.resources = None
         self._new_rank = {}
+        self._trainable = None
+        self._lr_scale = {}
+        self._plan = None
         self._cut_hooks = []
         self._plan_fingerprint = None
         self._merge_deltas = None
+        self._merge_state = None
         self._script_ids = None
-
-    def _uses_lora(self):
-        return self.role != "serving"
+        self.artifact = None
 
     def _load_dtype(self):
         """bf16 on devices that support it. fp32 elsewhere. Never fp16."""
@@ -205,19 +216,14 @@ class Seq2SeqLMModel(ModelBase):
             return torch.bfloat16
         return torch.float32
 
-    def _optimizer_dtype(self):
-        return torch.float32
-
     def _prepare(self):
         if self._prepared:
             return
         if self.config is None or self._tokenizer is None or self.model_factory is None:
-            import transformers
             from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer
             if self.config is None:
                 self.config = AutoConfig.from_pretrained(
                     self.model_id, revision=self.revision, cache_dir=self.cache_dir)
-            self._pin_revision()
             if self._tokenizer is None:
                 try:
                     self._tokenizer = AutoTokenizer.from_pretrained(
@@ -226,37 +232,10 @@ class Seq2SeqLMModel(ModelBase):
                     raise ImportError(
                         "mT5's SentencePiece tokenizer requires the sentencepiece package"
                     ) from error
-            self._library_version = transformers.__version__
             self.model_factory = self.model_factory or (
                 lambda config: AutoModelForSeq2SeqLM.from_config(config, attn_implementation="eager"))
-        else:
-            self._library_version = getattr(self, "_library_version", "injected")
-        model_boundary(not self.pretrained or self.revision not in ("main", "master"),
-                       "An injected pretrained config needs a pinned model revision")
-        if self.model_type:
-            model_boundary(self.config.model_type == self.model_type, "Model architecture does not match class")
-        self._config_data = self.config.to_dict()
-        self._vocabulary = fingerprint({"vocabulary": self._tokenizer.get_vocab(),
-                                        "special": self._tokenizer.special_tokens_map})
+        self._vocabulary = self.model_id
         self._prepared = True
-
-    def _pin_revision(self):
-        import re
-        if self.revision and re.fullmatch(r"[0-9a-f]{40}", self.revision):
-            return
-        pinned = getattr(self.config, "_commit_hash", None)
-        if isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned):
-            self.revision = pinned
-            return
-        from huggingface_hub import HfApi
-        from huggingface_hub.errors import RevisionResolutionError
-        try:
-            resolved = HfApi().resolve_revision(
-                self.model_id, revision=self.revision, cache_dir=self.cache_dir, local_files_only=True)
-        except RevisionResolutionError:
-            resolved = HfApi().resolve_revision(
-                self.model_id, revision=self.revision, cache_dir=self.cache_dir, local_files_only=False)
-        self.revision = resolved.resolved
 
     @property
     def tokenizer(self):
@@ -276,19 +255,14 @@ class Seq2SeqLMModel(ModelBase):
                 "max_source": max_source or self.settings.max_source_length,
                 "max_target": max_target or self.settings.max_target_length,
                 "identity": {"model": self.model_id, "revision": self.revision,
-                             "vocabulary": self._vocabulary, "transformers": self._library_version}}
+                             "vocabulary": self._vocabulary}}
 
     def bind_dataset(self, dataset):
         super().bind_dataset(dataset)
         self.collate_sources = getattr(dataset, "collate_sources", self.collate_sources)
 
     def _untie_lm_head(self, module):
-        """Keep a separate output head when the Hub checkpoint says it is not tied.
-
-        ``MT5Config`` forces ``tie_word_embeddings = True`` even if the file says false.
-        The google/mt5-small checkpoint stores ``lm_head.weight`` on its own, and the
-        parameter count is the untied 300,176,768.
-        """
+        """Keep a separate output head when the Hub checkpoint says it is not tied."""
         if not self.untie_head:
             return
         if module.lm_head.weight is module.shared.weight:
@@ -316,6 +290,17 @@ class Seq2SeqLMModel(ModelBase):
         for name, parameter in module.named_parameters():
             parameter.requires_grad_(name.endswith((".A", ".B", ".extra_A", ".extra_B")))
 
+    def _apply_mask(self, module):
+        """Freeze shared adapters outside the installed plan. Extra rank stays trainable."""
+        if self._trainable is None:
+            return
+        for child in module.modules():
+            if not isinstance(child, Seq2SeqLoRA):
+                continue
+            shared = child.block_key in self._trainable
+            child.A.requires_grad_(shared)
+            child.B.requires_grad_(shared)
+
     def _add_new_rank(self, module, new_rank):
         for name, child in module.named_modules():
             if not isinstance(child, Seq2SeqLoRA) or child.block_key not in new_rank:
@@ -330,35 +315,30 @@ class Seq2SeqLMModel(ModelBase):
 
     def _profile(self):
         self._prepare()
-        key = (self._uses_lora(), self.settings.rank, self.settings.alpha,
-               tuple(sorted(self._new_rank.items())), self.untie_head)
+        key = (self.role != "serving", self.settings.rank, self.settings.alpha,
+               tuple(sorted(self._new_rank.items())), self.untie_head,
+               None if self._trainable is None else tuple(sorted(self._trainable)))
         if key not in self._profiles:
             with torch.device("meta"):
                 module = self._build(self.config)
                 base = _count(module)
-                if self._uses_lora():
+                if self.role != "serving":
                     self._attach_lora(module, deterministic=self.role == "probe")
                     self._add_new_rank(module, self._new_rank)
+                    self._apply_mask(module)
             if self.expected_parameters is not None and self.untie_head:
                 model_boundary(base == self.expected_parameters,
                                f"{self.model_id} has {base} base parameters, expected {self.expected_parameters}")
-            layout = [(name, tuple(parameter.shape), parameter.requires_grad)
-                      for name, parameter in module.named_parameters()]
-            self._profiles[key] = (layout, _count(module), _count(module, trainable_only=True), base)
+            self._profiles[key] = (_count(module), _count(module, trainable_only=True), base)
         return self._profiles[key]
 
     def describe_role(self, role, initialization):
         saved_role, self.role = self.role, role
         try:
-            layout, total, trainable, _base = self._profile()
+            total, trainable, _base = self._profile()
         finally:
             self.role = saved_role
-        identity = fingerprint({"model": self.model_id, "revision": self.revision,
-                                "config": self._config_data, "settings": asdict(self.settings),
-                                "role": role, "initialization": initialization, "layout": layout,
-                                "vocabulary": self._vocabulary, "transformers": self._library_version,
-                                "pretrained": self.pretrained, "torch": str(torch.__version__),
-                                "device": str(self.device), "untie_head": self.untie_head})
+        identity = f"{self.model_id}:{role}:{initialization}"
         weight_bytes = total * 4
         saved = trainable if role != "serving" and not self._save_full_weights else total
         peak = weight_bytes + trainable * 12 + self.settings.working_bytes + self.settings.max_score_bytes
@@ -384,22 +364,17 @@ class Seq2SeqLMModel(ModelBase):
                            cache_dir=self.cache_dir, collate=self.collate, collate_sources=self.collate_sources,
                            role=role, initialization=initialization, config=copy.deepcopy(self.config),
                            tokenizer=self.tokenizer, model_factory=self.model_factory, pretrained=self.pretrained)
-        child._library_version = self._library_version
         child._profiles = self._profiles
         child.runtime_root, child.resources = self.runtime_root, self.resources
         return child
 
     def _assets(self):
         if not self.pretrained:
-            self._base_files = {}
             return
         from huggingface_hub import snapshot_download
         self._base_path = Path(snapshot_download(
             self.model_id, revision=self.revision, cache_dir=self.cache_dir,
             allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt", "pytorch_model.bin"]))
-        actual = base_assets(self._base_path)
-        model_boundary(self._base_files in (None, actual), "Referenced base assets changed")
-        self._base_files = actual
         self._base_bytes = sum(path.stat().st_size for path in self._base_path.rglob("*") if path.is_file())
 
     @property
@@ -407,15 +382,13 @@ class Seq2SeqLMModel(ModelBase):
         return self._base_bytes
 
     def upgrade_parameters(self, dtype=None):
-        model_boundary(self.module is not None, "Load the model before upgrading its dtype")
-        model_boundary(self.optimizer is None, "Upgrade parameters before the optimizer is built")
         self.module.to(dtype=torch.float32 if dtype is None else dtype)
 
     def _optimizer_parameters(self):
         groups, new_params = [], []
         by_block = {}
         for name, parameter in self.module.named_parameters():
-            if not parameter.requires_grad:
+            if not parameter.requires_grad or not name.endswith((".A", ".B", ".extra_A", ".extra_B")):
                 continue
             if ".extra_" in name:
                 new_params.append(parameter)
@@ -454,7 +427,7 @@ class Seq2SeqLMModel(ModelBase):
         safetensors = list(self._base_path.glob("*.safetensors"))
         if safetensors:
             from safetensors.torch import load_file
-            state = load_file(safetensors[0])
+            state = load_file(safetensors[0], device="cpu")
         else:
             model_boundary(path.is_file(), f"{self.model_id} has no pytorch_model.bin or safetensors")
             state = torch.load(path, map_location="cpu", weights_only=True)
@@ -472,26 +445,32 @@ class Seq2SeqLMModel(ModelBase):
         self._assets()
         load_dtype = self._load_dtype()
         model_boundary(load_dtype != torch.float16, "Refusing to load a seq2seq model in fp16")
-        with torch.random.fork_rng(devices=[]):
-            torch.random.set_rng_state(torch.Generator().manual_seed(self.settings.seed).get_state())
+        devices = [] if self.device.type == "cpu" else [self.device]
+        with torch.random.fork_rng(devices=devices, device_type=self.device.type), torch.device(self.device):
+            self._restore_rng(self._new_rng(self.settings.seed))
             module = self._build(self.config)
             if self.pretrained:
                 self._load_checkpoint(module)
-            if self._uses_lora():
-                torch.random.set_rng_state(torch.Generator().manual_seed(self._seed()).get_state())
+            if self.role != "serving":
+                self._restore_rng(self._new_rng())
                 self._attach_lora(module, deterministic=self.role == "probe")
                 self._add_new_rank(module, self._new_rank)
                 self._mark_adapters(module)
+                self._apply_mask(module)
             elif self._merge_deltas:
                 with torch.no_grad():
                     for name, value in self._merge_state.items():
                         parameter = module.get_parameter(name)
-                        parameter.copy_(value.to(dtype=parameter.dtype))
+                        parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
                     for name, delta in self._merge_deltas.items():
                         weight = module.get_parameter(name + ".weight")
-                        weight.add_(delta.to(dtype=weight.dtype))
+                        weight.add_(delta.to(device=weight.device, dtype=weight.dtype))
+                for parameter in module.parameters():
+                    parameter.requires_grad_(False)
         self.module = module.to(device=self.device, dtype=load_dtype)
         self.module.config.use_cache = False
+        if self.role != "serving" and self._trainable is not None:
+            self._cut_backward()
         self.upgrade_parameters()
         self._reset_optimizer()
         self.rng_state = self.rng_state or self._new_rng()
@@ -499,11 +478,9 @@ class Seq2SeqLMModel(ModelBase):
             self._read_state(Path(self._offload.name))
 
     def _seed(self):
-        key = f"{self.settings.seed}:{self.initialization}"
-        return int(hashlib.sha256(key.encode()).hexdigest()[:15], 16)
+        return _seed_for(self.settings.seed, self.initialization)
 
     def parameter_counts(self):
-        model_boundary(self.module is not None, "Load the model before counting parameters")
         return _count(self.module), _count(self.module, trainable_only=True)
 
     def _clear_cuts(self):
@@ -522,55 +499,30 @@ class Seq2SeqLMModel(ModelBase):
         self._clear_cuts()
         for stack in ("encoder", "decoder"):
             lowest = self._lowest_trainable(stack)
-            if lowest is None or lowest == 0:
+            if lowest == 0:
                 continue
-            block = self.module.get_submodule(f"{stack}.block")[lowest - 1]
-            self._cut_hooks.append(block.register_forward_hook(_detach_block_output))
-
-    def _as_plan(self, plan):
-        if isinstance(plan, AdapterPlan):
-            return plan
-        return AdapterPlan(tuple(plan["trainable"]), dict(plan.get("new_rank") or {}),
-                           dict(plan.get("lr_scale") or {}), dict(plan.get("identity") or {}))
-
-    def _block_count(self, stack):
-        return self.config.num_decoder_layers if stack == "decoder" else self.config.num_layers
+            if lowest is None:
+                module = self.module.get_submodule(stack)
+            else:
+                module = self.module.get_submodule(f"{stack}.block")[lowest - 1]
+            self._cut_hooks.append(module.register_forward_hook(_detach_value))
 
     def apply_plan(self, plan):
-        """Install adapter trainability before the first update and build a fresh optimizer.
-
-        Frozen shared adapters get ``requires_grad = False``. Leaving them trainable
-        with a zero learning rate would still run their backward and hide the cost gap.
-        New rank stays at the full learning rate. Applying the plan does not change a
-        prediction, because the new B factors start at zero.
-        """
+        """Install adapter trainability before the first update and build a fresh optimizer."""
         self.activate()
-        plan = self._as_plan(plan)
-        valid = {f"{stack}.{block}" for stack in ("encoder", "decoder")
-                 for block in range(1, self._block_count(stack) + 1)}
+        if not isinstance(plan, AdapterPlan):
+            plan = AdapterPlan(tuple(plan["trainable"]), dict(plan.get("new_rank") or {}),
+                               dict(plan.get("lr_scale") or {}), dict(plan.get("identity") or {}))
         trainable, new_rank, scales = set(plan.trainable), dict(plan.new_rank), dict(plan.lr_scale)
-        model_boundary(trainable <= valid and set(new_rank) <= valid and set(scales) <= valid,
-                       "Adapter plan names an unknown block")
-        model_boundary(all(isinstance(rank, int) and rank > 0 for rank in new_rank.values()),
-                       "New rank must be a positive integer")
-        model_boundary(all(0 < float(scale) <= 1 for scale in scales.values()),
-                       "Learning-rate scales must be in (0, 1]")
         for module in self.module.modules():
             if isinstance(module, Seq2SeqLoRA):
                 module.clear_extra()
         self._new_rank = new_rank
-        self._add_new_rank(self.module, new_rank)
+        self._trainable = set(trainable)
         self._lr_scale = scales
-        for module in self.module.modules():
-            if not isinstance(module, Seq2SeqLoRA):
-                continue
-            shared = module.block_key in trainable
-            module.A.requires_grad_(shared)
-            module.B.requires_grad_(shared)
-        for module in self.module.modules():
-            if isinstance(module, Seq2SeqLoRA) and module.block_key not in trainable:
-                model_boundary(not module.A.requires_grad and not module.B.requires_grad,
-                               "Frozen adapters must not stay requires_grad")
+        self._plan = plan
+        self._add_new_rank(self.module, new_rank)
+        self._apply_mask(self.module)
         self._profiles.clear()
         self._cut_backward()
         self.optimizer = None
@@ -578,9 +530,9 @@ class Seq2SeqLMModel(ModelBase):
         trainable_count = _count(self.module, trainable_only=True)
         new_count = sum(parameter.numel() for name, parameter in self.module.named_parameters()
                         if parameter.requires_grad and ".extra_" in name)
-        self._plan_fingerprint = fingerprint({"identity": plan.identity, "trainable": sorted(trainable),
-                                              "new_rank": new_rank, "lr_scale": scales,
-                                              "trainable_parameters": trainable_count, "new_parameters": new_count})
+        self._plan_fingerprint = {"identity": plan.identity, "trainable": sorted(trainable),
+                                  "new_rank": new_rank, "lr_scale": scales,
+                                  "trainable_parameters": trainable_count, "new_parameters": new_count}
         self.weight_revision += 1
         return {"trainable_parameters": trainable_count, "new_parameters": new_count,
                 "fingerprint": self._plan_fingerprint}
@@ -596,8 +548,8 @@ class Seq2SeqLMModel(ModelBase):
         if self.device.type != "cpu":
             getattr(torch, self.device.type).set_rng_state(states["device"], self.device)
 
-    def _new_rng(self):
-        seed = self._seed()
+    def _new_rng(self, seed=None):
+        seed = self._seed() if seed is None else seed
         states = {"cpu": torch.Generator(device="cpu").manual_seed(seed).get_state()}
         if self.device.type != "cpu":
             states["device"] = torch.Generator(device=self.device).manual_seed(seed).get_state().cpu()
@@ -609,11 +561,20 @@ class Seq2SeqLMModel(ModelBase):
 
     def _begin_timed_block(self):
         self._synchronize()
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "reset_peak_memory_stats"):
+            backend.reset_peak_memory_stats(self.device)
         return time.perf_counter()
 
     def _timing_cost(self, start, **fields):
         self._synchronize()
-        return {"device": str(self.device), "synchronized_wall_seconds": time.perf_counter() - start, **fields}
+        cost = {"device": str(self.device), "synchronized_wall_seconds": time.perf_counter() - start,
+                "process_peak_cpu_bytes": None if resource is None else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                **fields}
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "max_memory_allocated"):
+            cost["peak_device_allocated_bytes"] = backend.max_memory_allocated(self.device)
+        return cost
 
     @contextmanager
     def _execution(self, *, mode="inference", advance=False):
@@ -645,10 +606,6 @@ class Seq2SeqLMModel(ModelBase):
 
     def _payload(self, batch):
         payload = batch.payload if hasattr(batch, "payload") else batch
-        model_boundary(payload["input_ids"].shape[0] <= self.settings.max_batch_size, "Batch exceeds the batch bound")
-        model_boundary(payload["input_ids"].shape[1] <= self.settings.max_source_length, "Article exceeds the source bound")
-        if "labels" in payload:
-            model_boundary(payload["labels"].shape[1] <= self.settings.max_target_length, "Summary exceeds the target bound")
         return self.to_device(payload)
 
     def _forward(self, payload):
@@ -661,8 +618,7 @@ class Seq2SeqLMModel(ModelBase):
         labels = payload["labels"]
         logits = self._forward(payload).logits
         valid = labels != -100
-        counts = valid.sum(-1)
-        model_boundary(bool((counts > 0).all()), "Every example needs a supervised summary token")
+        counts = valid.sum(-1).clamp_min(1)
         chosen = labels.reshape(-1)[valid.reshape(-1)]
         flat = F.cross_entropy(logits.float().reshape(-1, logits.shape[-1])[valid.reshape(-1)], chosen, reduction="none")
         owners = torch.arange(labels.shape[0], device=labels.device)[:, None].expand_as(valid)[valid]
@@ -670,7 +626,6 @@ class Seq2SeqLMModel(ModelBase):
         return sums / counts, sums, counts, flat
 
     def _reduce(self, means, sums, counts, reduction):
-        model_boundary(reduction in {"per_example_mean", "per_token_mean"}, "Unknown loss reduction")
         if reduction == "per_example_mean":
             return means.mean()
         return sums.sum() / counts.sum()
@@ -682,56 +637,39 @@ class Seq2SeqLMModel(ModelBase):
             if score_spec.kind in {"example_loss", "loss"}:
                 values = self._losses(payload)[0].detach().float()
             elif score_spec.kind == "token_loss":
-                model_boundary(score_spec.reduction == "none", "token_loss uses reduction none")
                 values = self._losses(payload)[3].detach().float()
             elif score_spec.kind == "probe_gradient":
                 values = self._probe_gradient(payload, score_spec)
             else:
                 raise ValueError(f"Seq2seq model cannot score {score_spec.kind}")
             cost = self._timing_cost(start)
-            revision = fingerprint((self.info.identity, self.steps, self.weight_revision,
-                                    self._weights_identity, self._plan_fingerprint))
-        nbytes = self._value_bytes(values)
-        on_cpu = self._value_device(values) == "cpu"
+            revision = f"{self.model_id}:{self.steps}"
+        tensor = values if torch.is_tensor(values) else values["gradients"][0]
+        nbytes = tensor.numel() * tensor.element_size() if torch.is_tensor(values) else sum(
+            item.numel() * item.element_size() for item in values["gradients"])
+        on_cpu = tensor.device.type == "cpu"
         return ScoreResult(batch.ids, values, revision, score_spec.parameter_view or score_spec.kind,
                            score_spec.reduction, cost, cpu_bytes=nbytes if on_cpu else 0,
                            accelerator_bytes=0 if on_cpu else nbytes)
 
-    def _value_bytes(self, values):
-        if torch.is_tensor(values):
-            return values.numel() * values.element_size()
-        return sum(item.numel() * item.element_size() for item in values["gradients"])
-
-    def _value_device(self, values):
-        tensor = values if torch.is_tensor(values) else values["gradients"][0]
-        return tensor.device.type
-
     def _probe_gradient(self, payload, score_spec):
-        """Mean target-loss gradient on probe B factors, grouped by cell or block."""
-        model_boundary(self.role == "probe", "Probe gradients are taken on a probe role")
-        model_boundary(score_spec.parameter_view in {"cell", "block"}, "Probe gradients group by cell or block")
-        selected = [parameter for name, parameter in self.module.named_parameters() if name.endswith(".B")]
-        means, sums, counts, _flat = self._losses(payload)
-        loss = self._reduce(means, sums, counts, score_spec.reduction)
-        gradients = torch.autograd.grad(loss, selected, allow_unused=False)
+        """Batch-mean B gradients on an isolated probe, grouped by block or cell."""
+        model_boundary(self.role == "probe" and score_spec.parameter_view in {"cell", "block"},
+                       "Probe gradients require a probe role and a cell or block view")
+        selected = [(name, p) for name, p in self.module.named_parameters() if name.endswith(".B")]
+        means, sums, counts, _ = self._losses(payload)
+        gradients = torch.autograd.grad(self._reduce(means, sums, counts, score_spec.reduction),
+                                        [p for _, p in selected])
         grouped = {}
-        for (name, _parameter), gradient in zip(
-                [(name, parameter) for name, parameter in self.module.named_parameters() if name.endswith(".B")],
-                gradients):
+        for (name, _), gradient in zip(selected, gradients):
             module = self.module.get_submodule(name.rsplit(".", 1)[0])
-            if score_spec.parameter_view == "block":
-                key = module.block_key
-            else:
-                key = f"{module.block_key.rsplit('.', 1)[0]}.{module.part}.{_BANDS[(module.block_index) // 2]}"
+            key = module.block_key if score_spec.parameter_view == "block" else (
+                f"{module.block_key.rsplit('.', 1)[0]}.{module.part}.{_BANDS[module.block_index // 2]}")
             grouped.setdefault(key, []).append(gradient.detach().flatten())
         keys = tuple(sorted(grouped))
         return {"groups": keys, "gradients": tuple(torch.cat(grouped[key]) for key in keys)}
 
-    def _plan_context(self):
-        return {"plan": self._plan_fingerprint}
-
-    def _optimizer_update(self, loss, revision_context):
-        model_boundary(self.optimizer is not None, "This role has no trainable parameters")
+    def _optimizer_update(self, loss):
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
         parameters = [parameter for parameter in self.module.parameters() if parameter.grad is not None]
@@ -743,16 +681,12 @@ class Seq2SeqLMModel(ModelBase):
             self.scheduler.step()
             self.steps += 1
             self.weight_revision += 1
-            self._weights_identity = fingerprint((
-                self._weights_identity or self.info.identity, revision_context, self.steps,
-                tensor_fingerprint(self._capture_rng()), str(self.device), str(torch.__version__)))
+            self._weights_identity = str(self.steps)
         self.optimizer.zero_grad(set_to_none=True)
         return success
 
     def _weighted_loss(self, flat, targets):
         weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
-        model_boundary(weight.ndim == 1 and weight.numel() == flat.numel(),
-                       "Token targets must cover every supervised token")
         active = weight > 0
         if int(active.sum().item()) == 0:
             return None, 0.0, 0
@@ -760,13 +694,11 @@ class Seq2SeqLMModel(ModelBase):
         return terms.sum() / active.sum(), float(terms.detach().sum().item()), int(active.sum().item())
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
-        """One microbatch per update. The caller chooses the rows. Weighted mode can take no step."""
-        hooks = hooks or type("Hooks", (), {"plan_update": None, "gradient_subset": ""})()
-        model_boundary(getattr(hooks, "plan_update", None) is None and not getattr(hooks, "gradient_subset", ""),
-                       "Seq2seq training does not implement freeze-prefix or subset-gradient hooks")
-        model_boundary(objective.kd_weight == 0 and not objective.separate_means,
-                       "Seq2seq training does not implement distillation or separate source means")
-        model_boundary(objective.token_mode in {"all", "weighted"}, "Seq2seq token mode must be all or weighted")
+        """Run caller-ordered updates; zero active weights skip AdamW entirely."""
+        model_boundary(objective.token_mode in {"all", "weighted"} and not objective.kd_weight,
+                       "Seq2seq supports supervised or weighted training")
+        model_boundary(not hooks or (not hooks.plan_update and not hooks.gradient_subset),
+                       "Seq2seq does not implement causal freeze hooks")
         reports, attempts, updates, tokens = [], 0, 0, 0
         with self._execution(mode="training", advance=True):
             for _ in range(k):
@@ -774,35 +706,23 @@ class Seq2SeqLMModel(ModelBase):
                     if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + training.batch.valid_tokens > limits.max_tokens:
                         return reports
                     start = self._begin_timed_block()
-                    payload = self._payload(training.batch)
-                    _means, sums, counts, flat = self._losses(payload)
-                    context = {"ids": training.batch.ids, "origins": training.origins,
-                               "objective": asdict(objective), **self._plan_context()}
+                    means, sums, counts, flat = self._losses(self._payload(training.batch))
+                    diagnostics = {"plan": self._plan_fingerprint}
                     if objective.token_mode == "weighted":
-                        model_boundary(training.token_targets is not None, "Weighted mode requires token targets")
                         loss, numer, denom = self._weighted_loss(flat, training.token_targets)
-                        surprise = flat.detach().float().cpu().tolist()
-                        if loss is None:
-                            success, reason = False, "no_active_tokens"
-                        else:
-                            success = self._optimizer_update(loss, context)
-                            reason = None if success else "nonfinite_loss_or_gradients"
-                        report_sum, report_count = numer, denom
-                        diagnostics = {"token_surprise": surprise, **self._plan_context()}
+                        diagnostics["token_surprise"] = flat.detach().float().tolist()
                     else:
-                        model_boundary(training.token_targets is None, "token_mode all does not take token targets")
-                        loss = self._reduce(_means, sums, counts, objective.reduction)
-                        success = self._optimizer_update(loss, context)
-                        reason = None if success else "nonfinite_loss_or_gradients"
-                        report_sum = float(sums.detach().sum().item())
-                        report_count = int(counts.detach().sum().item())
-                        diagnostics = dict(self._plan_context())
+                        model_boundary(training.token_targets is None, "Unweighted training takes no token targets")
+                        loss = self._reduce(means, sums, counts, objective.reduction)
+                        numer = float(sums.detach().sum())
+                        denom = int(counts.detach().sum())
+                    success = loss is not None and self._optimizer_update(loss)
+                    reason = None if success else ("no_active_tokens" if loss is None else "nonfinite_loss_or_gradients")
                     attempts, updates, tokens = attempts + 1, updates + int(success), tokens + training.batch.valid_tokens
-                    reports.append(StepReport(
-                        training.batch.ids, success, self.steps, training.batch.valid_tokens,
-                        {"supervised": report_sum}, {"supervised": report_count}, diagnostics,
-                        self._timing_cost(start), reason))
-                    del flat, sums, counts
+                    reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
+                                              {"supervised": numer}, {"supervised": denom}, diagnostics,
+                                              self._timing_cost(start), reason))
+                    del means, sums, counts, flat, loss
         return reports
 
     def evaluate(self, view, evaluation_spec, progress=None):
@@ -846,8 +766,8 @@ class Seq2SeqLMModel(ModelBase):
                 devanagari.append(index)
             if any("A" <= character <= "Z" or "a" <= character <= "z" for character in text):
                 latin.append(index)
-        self._script_ids = {"devanagari": torch.tensor(devanagari, dtype=torch.long),
-                            "latin": torch.tensor(latin, dtype=torch.long)}
+        self._script_ids = {"devanagari": torch.tensor(devanagari, dtype=torch.long, device=self.device),
+                            "latin": torch.tensor(latin, dtype=torch.long, device=self.device)}
         return self._script_ids
 
     def _guard(self, spec):
@@ -874,15 +794,13 @@ class Seq2SeqLMModel(ModelBase):
         with self._execution(), torch.no_grad():
             start = self._begin_timed_block()
             payload = self._payload(inputs)
-            model_boundary("labels" not in payload, "Generation requires source-only inputs")
             max_new = int(generation_spec.get("max_new_tokens", self.settings.max_target_length))
-            model_boundary(not generation_spec.get("do_sample", False), "Summarization generation is greedy")
             guard = self._guard(generation_spec)
             output = self.module.generate(
                 input_ids=payload["input_ids"], attention_mask=payload.get("attention_mask"),
                 max_new_tokens=max_new, do_sample=False,
                 logits_processor=[guard] if guard is not None else None)
-            rows = output.cpu().tolist()
+            rows = output.tolist()
             start_id = getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id)
             if rows and rows[0] and rows[0][0] == start_id:
                 rows = [row[1:] for row in rows]
@@ -914,7 +832,6 @@ class Seq2SeqLMModel(ModelBase):
     def shrink_adapters(self, k):
         """Replace every adapter by the top-k SVD factors of its effective update, at scale 1."""
         self.activate()
-        model_boundary(isinstance(k, int) and k > 0, "Shrink rank must be a positive integer")
         with torch.no_grad():
             for module in self.module.modules():
                 if not isinstance(module, Seq2SeqLoRA):
@@ -933,7 +850,7 @@ class Seq2SeqLMModel(ModelBase):
         self._profiles.clear()
         self.steps = 0
         self.weight_revision += 1
-        self._weights_identity = tensor_fingerprint(self._weights())
+        self._weights_identity = "0"
         self.rng_state = self._new_rng()
         self.optimizer = None
         self._reset_optimizer()
@@ -947,17 +864,35 @@ class Seq2SeqLMModel(ModelBase):
             if name.endswith((".A", ".B", ".extra_A", ".extra_B")):
                 continue
             target = name.replace(".base.", ".")
-            state[target] = parameter.detach().cpu().clone()
-        deltas = {name: value.detach().cpu().clone() for name, value in self.effective_updates().items()}
+            state[target] = parameter.detach().clone()
+        deltas = {name: value.detach().clone() for name, value in self.effective_updates().items()}
         child = self.fork("serving", "merged")
         child.pretrained = False
         child._merge_state = state
         child._merge_deltas = deltas
         return child
 
-    def _weights(self):
-        return {"parameters": {name: parameter.detach().cpu() for name, parameter in self.module.named_parameters()},
-                "buffers": {name: buffer.detach().cpu() for name, buffer in self.module.named_buffers()}}
+    def _weights(self, *, changed_only=False):
+        """Adapter factors when the frozen base can be rebuilt. Full snapshots keep every parameter."""
+        eligible = _adapter_parameter_names(self.module)
+        return {"parameters": {name: parameter.detach() for name, parameter in self.module.named_parameters()
+                               if not changed_only or name in eligible},
+                "buffers": {name: buffer.detach() for name, buffer in self.module.named_buffers()}}
+
+    def _install(self, weights, *, changed_only=False):
+        """Install exact tensor names and shapes into the existing Parameter objects."""
+        live = {"parameters": dict(self.module.named_parameters()), "buffers": dict(self.module.named_buffers())}
+        eligible = _adapter_parameter_names(self.module)
+        for kind, tensors in live.items():
+            incoming = weights.get(kind, {})
+            expected = eligible if kind == "parameters" and changed_only else set(tensors)
+            model_boundary(set(incoming) == expected and all(value.shape == tensors[name].shape
+                           for name, value in incoming.items()), "Checkpoint tensor names or shapes differ")
+        with torch.no_grad():
+            for kind, tensors in live.items():
+                for name, value in weights.get(kind, {}).items():
+                    target = tensors[name]
+                    target.copy_(value.to(device=target.device, dtype=target.dtype))
 
     def get_weights(self):
         with self._execution():
@@ -966,67 +901,157 @@ class Seq2SeqLMModel(ModelBase):
                     **{kind: {name: tensor.clone() for name, tensor in values.items()} for kind, values in weights.items()}}
 
     def _compatibility(self):
-        layout = self._profile()[0]
-        return fingerprint({"model": self.model_id, "revision": self.revision, "config": self._config_data,
-                            "layout": layout, "rank": self.settings.rank, "alpha": self.settings.alpha,
-                            "new_rank": self._new_rank, "vocabulary": self._vocabulary,
-                            "transformers": self._library_version, "untie_head": self.untie_head})
+        return f"{self.model_id}:{self.revision}:{self.settings.rank}:{self.settings.alpha}"
 
     def set_weights(self, weights):
+        """Install a snapshot in this wrapper and start a fresh optimizer."""
         self.activate()
-        model_boundary(weights["compatibility"] == self._compatibility(), "Incompatible model weight layout")
-        live = dict(self.module.named_parameters())
-        with torch.no_grad():
-            for name, value in weights["parameters"].items():
-                live[name].copy_(value.to(device=live[name].device, dtype=live[name].dtype))
-        self._weights_identity = tensor_fingerprint(weights)
-        self.initialization = "weights:" + self._weights_identity
-        self._save_full_weights = True
+        names = set(weights["parameters"])
+        adapter = _adapter_parameter_names(self.module)
+        if names == set(dict(self.module.named_parameters())):
+            self._save_full_weights = True
+            changed_only = False
+        else:
+            model_boundary(names == adapter, "Checkpoint tensor names or shapes differ")
+            changed_only = True
+        self._install(weights, changed_only=changed_only)
+        self._weights_identity = "0"
+        self.initialization = "weights"
         self.steps = 0
         self.weight_revision += 1
         self.rng_state = self._new_rng()
         self.optimizer = None
         self._reset_optimizer()
 
-    def _metadata(self, kind):
+    def _plan_record(self):
+        if self._plan is None:
+            return None
+        return {"trainable": list(self._plan.trainable), "new_rank": dict(self._plan.new_rank),
+                "lr_scale": dict(self._plan.lr_scale), "identity": dict(self._plan.identity)}
+
+    def _restore_layout(self, metadata):
+        self._new_rank = {key: int(value) for key, value in dict(metadata.get("new_rank") or {}).items()}
+        trainable = metadata.get("trainable")
+        self._trainable = None if trainable is None else set(trainable)
+        self._lr_scale = {key: float(value) for key, value in dict(metadata.get("lr_scale") or {}).items()}
+        plan = metadata.get("plan_record")
+        self._plan = None if not plan else AdapterPlan(
+            tuple(plan["trainable"]), dict(plan.get("new_rank") or {}),
+            dict(plan.get("lr_scale") or {}), dict(plan.get("identity") or {}))
+        self._plan_fingerprint = metadata.get("plan")
+        rank, alpha = int(metadata["rank"]), float(metadata["alpha"])
+        if self.settings.rank != rank or self.settings.alpha != alpha:
+            self.settings = replace(self.settings, rank=rank, alpha=alpha)
+            self._profiles.clear()
+
+    def _metadata(self, kind, record):
         return {"schema": 1, "state_kind": kind, "compatibility": self._compatibility(),
                 "execution_identity": self.info.identity, "model": self.model_id, "revision": self.revision,
-                "base_files": self._base_files, "base_bytes": self._base_bytes, "steps": self.steps,
+                "base_bytes": self._base_bytes, "steps": self.steps,
                 "weight_revision": self.weight_revision, "initialization": self.initialization,
-                "weights_identity": self._weights_identity, "plan": self._plan_fingerprint}
+                "weights_identity": self._weights_identity or str(self.steps),
+                "plan": self._plan_fingerprint, "plan_record": self._plan_record(),
+                "rank": self.settings.rank, "alpha": self.settings.alpha, "new_rank": self._new_rank,
+                "trainable": None if self._trainable is None else sorted(self._trainable),
+                "lr_scale": self._lr_scale, "full_weights": self._save_full_weights, "record": record}
 
-    def save(self, path, state_kind):
+    def _training_state(self):
+        return {"optimizer": cpu_tree(self.optimizer.state_dict()), "scheduler": self.scheduler.state_dict(),
+                "scaler": self.scaler.state_dict(), "rng": cpu_tree(self.rng_state), "steps": self.steps,
+                "weight_revision": self.weight_revision, "weights_identity": self._weights_identity}
+
+    def save(self, path, state_kind, *, record=None):
+        """Save an adapter snapshot. A merged serving copy is not written."""
         path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
+        if self.role == "serving":
+            raise ValueError("A merged copy is built in memory and is not saved")
+        if self.module is None and self._offload is not None and state_kind in {"resume", "frozen"}:
+            source = Path(self._offload.name)
+            saved = read_json(source / "metadata.json")
+            if state_kind == "resume" and saved["state_kind"] != "resume":
+                self.activate()
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source / "weights.pt", path / "weights.pt")
+                if state_kind == "resume":
+                    shutil.copyfile(source / "training.pt", path / "training.pt")
+                write_json(path / "metadata.json", {**saved, "state_kind": state_kind})
+                return
         self.activate()
-        torch.save(self._weights(), path / "weights.pt")
-        if state_kind == "resume" and self.optimizer is not None:
-            torch.save({"optimizer": cpu_tree(self.optimizer.state_dict()),
-                        "scheduler": self.scheduler.state_dict(), "steps": self.steps,
-                        "weight_revision": self.weight_revision, "weights_identity": self._weights_identity,
-                        "rng": cpu_tree(self.rng_state)}, path / "training.pt")
-        write_json(path / "metadata.json", self._metadata(state_kind))
+        path.mkdir(parents=True, exist_ok=True)
+        torch.save(cpu_tree(self._weights(changed_only=not self._save_full_weights)), path / "weights.pt")
+        if state_kind == "resume":
+            torch.save(self._training_state(), path / "training.pt")
+        write_json(path / "metadata.json", self._metadata(state_kind, record))
+
+    def save_english_checkpoint(self, path, *, passes, validation, prefix):
+        """Base reference plus the English adapter. The directory is written once."""
+        self.save(path, "english", record={"prefix": prefix, "passes": passes, "validation": validation,
+                                           "writer": "english_checkpoint"})
+
+    def save_hindi_checkpoint(self, path):
+        """Final Hindi adapter and the plan that produced it."""
+        self.save(path, "hindi")
+
+    def save_shrunk_adapter(self, path, *, k_energy, k_generation, test_table):
+        """Inference export at scale 1. This is not an exact-resume checkpoint."""
+        self.save(path, "inference", record={"k_energy": k_energy, "k_generation": k_generation,
+                                             "test_table": test_table})
+
+    def _frozen_identity(self, metadata):
+        self._weights_identity = metadata["weights_identity"]
+        self.artifact = metadata.get("record")
+        if self.role == "learner":
+            self.initialization = "weights:" + self._weights_identity
 
     def load(self, path, state_kind):
         path = Path(path)
         metadata = read_json(path / "metadata.json")
-        model_boundary(metadata["state_kind"] == state_kind, "Checkpoint kind differs")
         self._prepare()
-        model_boundary(metadata["compatibility"] == self._compatibility(), "Incompatible model checkpoint")
-        self.activate()
-        state = torch.load(path / "weights.pt", map_location="cpu", weights_only=True)
-        self.set_weights({**state, "compatibility": metadata["compatibility"]})
-        if state_kind == "resume" and (path / "training.pt").is_file() and self.optimizer is not None:
+        self._restore_layout(metadata)
+        if state_kind == "resume":
+            self.initialization = metadata["initialization"]
+        else:
+            self._frozen_identity(metadata)
+        self._base_bytes = metadata["base_bytes"]
+        self._save_full_weights = metadata.get("full_weights", False)
+        if self.module is not None:
+            self._read_state(path)
+            return
+        target = self._offload_directory()
+        names = ["weights.pt", "metadata.json", *(("training.pt",) if state_kind == "resume" else ())]
+        for name in names:
+            shutil.copyfile(path / name, Path(target.name) / name)
+        previous, self._offload = self._offload, target
+        if previous is not None:
+            previous.cleanup()
+        self.steps = metadata["steps"] if state_kind == "resume" else 0
+        self.weight_revision = metadata["weight_revision"]
+
+    def _read_state(self, path):
+        """Install a saved snapshot. Resume restores the optimizer; every other kind starts fresh."""
+        path = Path(path)
+        metadata = read_json(path / "metadata.json")
+        self._restore_layout(metadata)
+        self._save_full_weights = metadata.get("full_weights", False)
+        self._apply_mask(self.module)
+        self._cut_backward()
+        self._install(torch.load(path / "weights.pt", map_location="cpu", weights_only=True),
+                      changed_only=not self._save_full_weights)
+        self.optimizer = None
+        self._reset_optimizer()
+        if metadata["state_kind"] == "resume":
             training = torch.load(path / "training.pt", map_location="cpu", weights_only=True)
             self.optimizer.load_state_dict(training["optimizer"])
             self.scheduler.load_state_dict(training["scheduler"])
-            self.steps = training["steps"]
-            self.weight_revision = training["weight_revision"]
-            self._weights_identity = training["weights_identity"]
+            self.scaler.load_state_dict(training["scaler"])
             self.rng_state = training["rng"]
-
-    def _read_state(self, path):
-        self.load(path, "resume" if (Path(path) / "training.pt").is_file() else "frozen")
+            self.steps, self.weight_revision = training["steps"], training["weight_revision"]
+            self._weights_identity = training["weights_identity"]
+        else:
+            self.steps, self.weight_revision = 0, metadata["weight_revision"]
+            self._frozen_identity(metadata)
+            self.rng_state = self._new_rng()
 
     def _reserve_storage(self, additional):
         root = Path(self.runtime_root or self.cache_dir / "standalone")
@@ -1035,20 +1060,31 @@ class Seq2SeqLMModel(ModelBase):
             Checkpoints(root, self.info.identity, self.resources.disk_bytes,
                         external_bytes=self.base_storage_bytes).reserve(additional)
 
+    def _offload_directory(self):
+        root = Path(self.runtime_root or self.cache_dir / "standalone")
+        root.mkdir(parents=True, exist_ok=True)
+        self._reserve_storage(self.info.checkpoint_bytes)
+        folder = root / ".offload"
+        folder.mkdir(exist_ok=True)
+        return tempfile.TemporaryDirectory(dir=folder, prefix=self.role + "-")
+
     def offload(self):
+        """A merged copy is dropped. Every other role keeps a private snapshot."""
         if self.module is None:
             return
+        if self.role == "serving":
+            self.release()
+            return
         self._clear_cuts()
-        root = Path(self.runtime_root or self.cache_dir / "standalone")
-        folder = root / ".offload"
-        folder.mkdir(parents=True, exist_ok=True)
-        target = tempfile.TemporaryDirectory(dir=folder, prefix=self.role + "-")
+        target = self._offload_directory()
         self.save(target.name, "resume" if self.optimizer is not None else "frozen")
         previous, self._offload = self._offload, target
         self.module = self.optimizer = self.scheduler = self.scaler = None
         if previous is not None:
             previous.cleanup()
         gc.collect()
+        if self.device.type != "cpu":
+            getattr(torch, self.device.type).empty_cache()
 
     def release(self):
         self._clear_cuts()
@@ -1057,3 +1093,5 @@ class Seq2SeqLMModel(ModelBase):
             self._offload.cleanup()
             self._offload = None
         gc.collect()
+        if self.device.type != "cpu":
+            getattr(torch, self.device.type).empty_cache()

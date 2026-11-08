@@ -75,14 +75,15 @@ dataset.preprocess(views, InstructionPreprocessing(**model.preprocessing_kwargs(
 CLINC, Schuster, Bitext, and TRACE are fetched into that same JSONL schema. The pipeline prepares them with the local model's tokenizer:
 
 ```python
-from src.datasets.dataset_sources import fetch_source, load_instruction_source
+from src.datasets.dataset_instruction import InstructionDataset
+from src.datasets.dataset_sources import fetch_source, load_source
 
 directory = fetch_source("schuster", "src/datasets/data")
-dataset, raw = load_instruction_source(directory)
+dataset, raw = load_source(directory, InstructionDataset)
 pipeline.bind_instruction_dataset(dataset, raw)
 ```
 
-`download_datasets.sh` fetches `clinc_oos`, `schuster`, `bitext_customer_support`, and `trace`. Task order is `dataset.manifest["source"]["task_order"]`.
+`download_datasets.sh` fetches `clinc_oos`, `schuster`, `bitext_customer_support`, `trace`, and `xlsum` (English and Hindi summarization JSONL). Task order is `dataset.manifest["source"]["task_order"]`.
 
 Qwen always renders with `enable_thinking=False`. Prepared targets containing explicit thinking/analysis tags are reported and dropped, and prompt tokens remain unsupervised. Standard templates are used for LFM2.5 and SmolLM2. Teacher/probe roles use the same non-thinking identity. Generation accepts conversations or `dataset.collate_prompts(records)` and returns IDs, completion texts and generated token IDs. `evaluate` returns negative token NLL and perplexity; supply `evaluation_spec["generation"]` for exact-match accuracy. For direct evaluation outside a pipeline, inject `collate=dataset.collate` and `collate_prompts=dataset.collate_prompts` when constructing the model.
 

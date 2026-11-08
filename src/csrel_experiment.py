@@ -11,7 +11,7 @@ smoke and scientific read src/datasets/data/clinc_oos_domains/<commit>/.
 Neither command deletes an existing attempt directory.
 """
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from collections import Counter, defaultdict
 from pathlib import Path
 import argparse
@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 
 from src.pipelines.csrel import CSReLConfig, CSReLPipeline
 from src.pipelines.memory_baselines import MemoryBaselineConfig, MemoryBaselinePipeline
-from src.utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec, fingerprint
+from src.utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec
 from src.utils.numerics import continual_metrics
 from src.utils.state import read_json, write_json
 
@@ -51,8 +51,9 @@ class LimitedViews:
 
     @property
     def fingerprint(self):
-        return fingerprint({"base": self._dataset.fingerprint, "max_train": self.max_train,
-                            "max_eval": self.max_eval, "order": "arrival_prefix"})
+        return json.dumps({"base": self._dataset.fingerprint, "max_train": self.max_train,
+                           "max_eval": self.max_eval, "order": "arrival_prefix"},
+                          sort_keys=True, default=str)
 
     def training_view(self, task_id):
         rows = self._dataset.training_view(task_id)
@@ -76,10 +77,10 @@ class BalancedViews:
 
     @property
     def fingerprint(self):
-        return fingerprint({"base": self._dataset.fingerprint, "train_per_class": self.train_per_class,
-                            "eval_per_class": self.eval_per_class, "seed": self.seed,
-                            "max_prompt_tokens": self.max_prompt_tokens,
-                            "sampling": "seeded-class-balanced-v1"})
+        return json.dumps({"base": self._dataset.fingerprint, "train_per_class": self.train_per_class,
+                           "eval_per_class": self.eval_per_class, "seed": self.seed,
+                           "max_prompt_tokens": self.max_prompt_tokens,
+                           "sampling": "seeded-class-balanced-v1"}, sort_keys=True, default=str)
 
     def _select(self, rows, count, task, split):
         groups = defaultdict(list)
@@ -353,7 +354,7 @@ def resolved_config(args):
 def load_real_dataset(config):
     """Load SmolLM2 and either the tiny smoke JSONL or the domain CLINC snapshot."""
     from src.datasets.dataset_instruction import InstructionDataset
-    from src.datasets.dataset_sources import CLINC_DOMAINS, load_instruction_source
+    from src.datasets.dataset_sources import CLINC_DOMAINS, load_source
     from src.models.model_causal_lm import CausalLMSettings
     from src.models.model_smollm2 import SmolLM2Model
 
@@ -374,7 +375,7 @@ def load_real_dataset(config):
             raise SystemExit(
                 "CLINC domain JSONL is missing. Fetch it with:\n"
                 "python -m src.datasets.dataset_sources clinc_oos_domains src/datasets/data")
-        dataset, raw = load_instruction_source(max(ready, key=lambda path: (path / "manifest.json").stat().st_mtime))
+        dataset, raw = load_source(max(ready, key=lambda path: (path / "manifest.json").stat().st_mtime), InstructionDataset)
         order = tuple(dataset.manifest["source"]["task_order"])
         requested = tuple(item for item in config["tasks"].split(",") if item) if config["tasks"] else order
         if config["task_count"]:
@@ -488,10 +489,11 @@ def attempt_for(parent, config_hash):
 def run_arm(config, arm, budget, rounds, model, dataset, raw, tasks):
     """Run one arm into a new-or-resumed directory and return its summary row."""
     spec = run_spec(config, tasks, budget, arm, rounds)
-    digest = fingerprint({"spec": spec.scientific(), "arm": arm, "rounds": rounds,
-                          "configuration": {key: value for key, value in config.items()
-                                            if key not in {"output", "resume", "initial_weights"}},
-                          "dataset_limits": [config["max_train_examples"], config["max_eval_examples"]]})
+    digest = json.dumps({"spec": spec.scientific(), "arm": arm, "rounds": rounds,
+                         "configuration": {key: value for key, value in config.items()
+                                           if key not in {"output", "resume", "initial_weights"}},
+                         "dataset_limits": [config["max_train_examples"], config["max_eval_examples"]]},
+                        sort_keys=True, default=str)
     parent = ROOT / config["output"] / config["protocol"] / arm / f"seed-{config['seed']}" / f"budget-{budget}" / f"rounds-{rounds}"
     output, completed = attempt_for(parent, digest)
     row = {"arm": arm, "budget": budget, "rounds": rounds,
@@ -551,7 +553,7 @@ def main(argv=None):
     try:
         model, dataset, raw, tasks = load_real_dataset(config)
         initial = (ROOT / config["output"] / config["protocol"] /
-                   f"shared-initial-{fingerprint(asdict(model.settings))[:12]}")
+                   "shared-initial")
         if not (initial / "metadata.json").is_file():
             model.activate()
             initial.mkdir(parents=True, exist_ok=True)
