@@ -1,5 +1,7 @@
 # ALSARPipeline
 
+> **Current plan:** not used by the [summarization plan](/design/summarization-plan.md). Block choice there is a fixed, pre-registered plan, not a Fisher-based prefix. This contract is unchanged and applies to earlier work only.
+
 Owns `src/pipelines/al_sar.py` and `ALSARPipeline`. Keep **similarity-aware retrieval (SAR)** and **adaptive layer freezing (aL)** separately selectable for ablation; the full method contains both.
 
 Source and derivation: [aL-SAR reference](/Papers/aL-SAR-summary.md), §§3.1–3.2, Eqs. 4–8, Algorithm 1, Appendices A.1 and A.18.

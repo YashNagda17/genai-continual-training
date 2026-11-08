@@ -1,5 +1,7 @@
 # AnswerSelectionPipeline
 
+> **Current plan:** not used. The [summarization plan](/design/summarization-plan.md) replaces this recipe with the simpler G1–G3 rules in [revision.md](/design/revision.md). Pieces it reuses: `Record.practice`, `practice_record`, `token_mode="weighted"`, `TokenTargets`, and `rouge_l`. This contract is unchanged and applies to the TRACE recipe only.
+
 Owns `src/pipelines/answer_selection.py`: `AnswerSelectionConfig`, `AnswerSelectionPipeline(CSReLPipeline)`, and `FixedMemorySelection`. This is Part 1 of [Idea_Refined.md](/Idea_Refined.md), "Pick the best old questions". Its role is **memory construction only**. The [recipe guardrails](/design/generation-replay.md) apply.
 
 Base: [CSReL reference](/Papers/CSReL-summary.md) and [CSReL contract](/design/csrel.md). Replacing CSReL's loss with answer disagreement is a labeled `adaptation`, not a reproduction.
