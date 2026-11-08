@@ -10,6 +10,7 @@ pypdf
 
 torch>=2.6
 transformers>=5.0,<6
+sentencepiece>=0.2
 safetensors>=0.4
 huggingface_hub
 pyarrow>=14
