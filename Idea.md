@@ -2,7 +2,13 @@
 
 Determine how much representative historical data is needed to update a fine-tuned model on new arrivals while preserving earlier knowledge. Vary replay budgets and compare with new-data-only fine-tuning and complete-data retraining. Measure old/new-task performance, forgetting, training time, and storage; seek performance close to complete retraining at lower cost.
 
-## Pipeline
+## Current plan (2026-11-08)
+
+The current plan is [Idea_Refined_2.md](/Idea_Refined_2.md). An English news summarizer (mT5-small, LoRA only) learns Hindi from XL-Sum. A fixed pool of 500 English examples is replayed at a fixed budget. The model's own writing decides what to revise, what to revise with, when to stop, and how small the adapter becomes, and every cost is counted: training, analysis, serving latency, and storage. It compares against Hindi-only fine-tuning, random replay, and replay of the full English set. Implementation design: [summarization-plan.md](/design/summarization-plan.md).
+
+The four-paper pipeline below is the original framing. It stays implemented, but the current plan doesn't use it.
+
+## Original pipeline
 
 | Stage | Paper | Role |
 |---|---|---|
