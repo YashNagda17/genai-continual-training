@@ -1,4 +1,4 @@
-"""Fetch CLINC, Schuster, Bitext, and TRACE into the shared instruction JSONL schema.
+"""Fetch CLINC, Schuster, Bitext, TRACE, and XL-Sum into canonical JSONL.
 
 These classes convert source files. They are not DatasetBase subclasses: identical
 instruction processing stays in InstructionDataset. Importing this module does not download.
@@ -9,6 +9,7 @@ import hashlib
 import json
 import random
 import re
+import tarfile
 import zipfile
 
 from .dataset_instruction import InstructionDataset
@@ -182,6 +183,44 @@ def trace_class(task, answer):
     if task == "ScienceQA" and text[:1] in "ABCD" and (len(text) == 1 or text[1] == "\n"):
         return text[0]
     return None
+
+
+XLSUM_LANGUAGES = ("english", "hindi")
+XLSUM_SPLIT_FILES = (("train", "train"), ("validation", "val"), ("test", "test"))
+
+
+def xlsum_archive_rows(archive_path, language):
+    """Read one language tar. Official `val` is stored as `validation`.
+
+    The article is `text` and the summary is `summary`. The row id is the language
+    plus the article id, so the same article in two languages stays distinct.
+    """
+    rows, dropped, seen = [], 0, set()
+    with tarfile.open(archive_path, "r:bz2") as archive:
+        members = {Path(member.name).name: member for member in archive.getmembers() if member.isfile()}
+        for split, suffix in XLSUM_SPLIT_FILES:
+            name = f"{language}_{suffix}.jsonl"
+            member = members.get(name)
+            if member is None:
+                raise ValueError(f"{archive_path} is missing {name}")
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise ValueError(f"{archive_path} could not read {name}")
+            for line in handle:
+                data = json.loads(line)
+                article_id = str(data.get("id", "")).strip()
+                article = str(data.get("text", "")).strip()
+                summary = str(data.get("summary", "")).strip()
+                if not article_id or not article or not summary:
+                    dropped += 1
+                    continue
+                row_id = f"{language}/{article_id}"
+                if row_id in seen:
+                    raise ValueError(f"Duplicate XL-Sum id {row_id}")
+                seen.add(row_id)
+                rows.append({"id": row_id, "task": language, "split": split, "language": language,
+                             "text": article, "summary": summary})
+    return rows, dropped
 
 
 def trace_rows(tasks):
@@ -361,6 +400,38 @@ class BitextSource(InstructionSource):
             return bitext_rows(list(csv.DictReader(handle)))
 
 
+class XLSumSource(InstructionSource):
+    """English and Hindi XL-Sum. Marathi and Gujarati stay out until Phase 7."""
+
+    dataset_id = "xlsum"
+    source = "csebuetnlp/xlsum"
+    patterns = tuple(f"data/{language}_XLSum_v2.0.tar.bz2" for language in XLSUM_LANGUAGES)
+    extra = {"protocol": "official", "license": "cc-by-nc-sa-4.0", "schema": "summarization",
+             "languages": list(XLSUM_LANGUAGES),
+             "usage": "Official splits. The article is the input and the summary is the target."}
+
+    def convert(self, snapshot):
+        rows, dropped, checksums = [], 0, {}
+        for language in XLSUM_LANGUAGES:
+            archive = snapshot / "data" / f"{language}_XLSum_v2.0.tar.bz2"
+            if not archive.is_file():
+                raise ValueError(f"XL-Sum snapshot is missing {archive.name}")
+            checksums[archive.name] = hashlib.sha256(archive.read_bytes()).hexdigest()
+            language_rows, language_dropped = xlsum_archive_rows(archive, language)
+            rows.extend(language_rows)
+            dropped += language_dropped
+        self.archive_report = {"tar_sha256": checksums, "empty_dropped": dropped}
+        return rows
+
+    def fetch(self, root, token=None, revision="main"):
+        """Publish the summarization JSONL, including each tar checksum."""
+        snapshot = self.download(root, token, revision)
+        rows = self.convert(snapshot)
+        extra = dict(self.extra)
+        extra.update(self.archive_report)
+        return publish(root, self.dataset_id, self.source, snapshot_revision(snapshot), rows, extra)
+
+
 class TraceSource(InstructionSource):
     dataset_id = "trace"
     source = "YeMoKoo/TRACE"
@@ -384,7 +455,8 @@ class TraceSource(InstructionSource):
 
 
 SOURCES = {"clinc_oos": ClincOOSSource, "clinc_oos_domains": ClincDomainSource,
-           "schuster": SchusterSource, "bitext_customer_support": BitextSource, "trace": TraceSource}
+           "schuster": SchusterSource, "bitext_customer_support": BitextSource, "trace": TraceSource,
+           "xlsum": XLSumSource}
 
 
 def fetch_source(name, root, token=None, revision="main"):

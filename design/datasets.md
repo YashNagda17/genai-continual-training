@@ -51,3 +51,31 @@ Used by the [generation replay recipe](/design/generation-replay.md). Datasets s
 - `collate` needs no change. A row from `practice_record` already carries its answer or cut as `target`, and its count as `tokens`.
 - The dataset may not assign groups. Question groups are a policy decision in [answer-selection.md](/design/answer-selection.md). `class_id` stays genuine labels only.
 - No new source or fetcher. The recipe uses the existing TRACE snapshot and `TraceSource`, plus CLINC for the class-group check.
+
+## Summarization plan additions
+
+Used by the [summarization plan](/design/summarization-plan.md). Summarization records need encoder-decoder processing, so they get their own subclass, `SummarizationDataset(DatasetBase)` in `src/datasets/dataset_summarization.py`. `InstructionDataset` is unchanged.
+
+**Record.** `input = {"text": article}`, `target = {"text": summary}`, and `metadata.language` (`english`, `hindi`, and later `marathi`, `gujarati`). `task_id` is the language. `sample_id` comes from XL-Sum's article ID and language, so the same article never gets two IDs.
+
+**`Seq2SeqPreprocessing`:**
+
+| Field | Meaning |
+|---|---|
+| `tokenizer` | The pinned mT5 tokenizer |
+| `max_source`, `max_target` | 256 and 64 in the plan. The source keeps its **first** tokens, since news puts facts first. The target keeps its first tokens, and the row records `target_truncated` |
+| `prefix` | `None`, or a template such as `"summarize in {language}: "`, prepended to the article before tokenizing. G4 uses it. It enters the prepared-view fingerprint |
+
+Rows with an empty article or summary are dropped with a recorded reason. Truncation counts are reported per language.
+
+**Operations:**
+
+- `collate(records)`: encoder input IDs and mask, plus labels padded with `-100`, in record order.
+- `collate_sources(records)`: encoder inputs only, with no labels, for generation. Held-out records go through the same guard as elsewhere.
+- `practice_record(record)` from utilities swaps the target to a past summary for G2. The dataset itself never sees past summaries.
+
+**Protocol subsets.** The experiment runner, not the dataset, draws the fixed ID lists: 2,000 train, the 500-row English pool inside English train, 200 validation, and 500 test per language. The dataset exposes them as views, and the lists are saved in the manifest.
+
+**Pilot measurements.** The dataset reports tokens per character per language, the share of articles longer than `max_source`, and the share of summaries longer than `max_target`. The runner computes the truncation-coverage check.
+
+**Not used by this plan:** chat templates, `allow_reasoning`, `reserve_response`, `collate_prefixes`, and class or group annotations.
