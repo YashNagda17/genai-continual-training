@@ -30,15 +30,15 @@ Run these from the repository root after `source ~/venv/bin/activate`. The defau
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
-python -m src.summarization_experiment --device cuda:0
+python -m src.summarization_experiment --device cuda
 ```
 
-`--pilot` runs the pilot instead. `--output` chooses another directory. `--phase N` runs only that phase and reads the earlier reports from the same directory.
+`--pilot` runs the pilot instead. `--output` chooses another directory. `--phase N` runs only that phase and reads the earlier reports from the same directory. `--device` is `cuda` or `xpu`.
 
 ```sh
-python -m src.summarization_experiment --pilot --device cuda:0
-python -m src.summarization_experiment --output results/code/summarization --device cuda:0
-python -m src.summarization_experiment --phase 3 --device cuda:0
+python -m src.summarization_experiment --pilot --device cuda
+python -m src.summarization_experiment --output results/code/summarization --device xpu
+python -m src.summarization_experiment --phase 3 --device cuda
 ```
 
 A scientific run stops after Phase 1 when the gate is not `continue`. Smoke, for a local check that is not a result:

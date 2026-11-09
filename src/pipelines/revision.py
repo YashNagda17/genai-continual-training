@@ -178,6 +178,7 @@ class RevisionPipeline(SummarizationPipeline):
             raise ValueError('Only the English stage may write past summaries for its training pool')
         work = self.policy['work'].setdefault('write', {'cursor': 0, 'records': []})
         self.model.activate()
+        print(f"write english pool {work['cursor']}/{len(pool)} samples", flush=True)
         while work['cursor'] < len(pool):
             rows = tuple(pool[work['cursor']:work['cursor'] + self.config.analysis_batch])
             generated = self._generate(rows, 'pool_generation')
@@ -200,6 +201,7 @@ class RevisionPipeline(SummarizationPipeline):
                 offset += count
                 work['records'].append(asdict(row))
             work['cursor'] += len(rows)
+            self.log_sample_progress("write english pool", work['cursor'], len(pool))
             self._commit()
         return tuple(Record(**row) for row in work['records'])
 
@@ -302,10 +304,12 @@ class RevisionPipeline(SummarizationPipeline):
             return
         work = self.policy['work'].setdefault('validation', {'cursor': 0, 'predictions': []})
         rows = self.held_out('english', 'validation')
+        print(f"validation english {work['cursor']}/{len(rows)} samples", flush=True)
         while work['cursor'] < len(rows):
             part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
             work['predictions'] += self._generate(part, 'validation_generation', held_out=True)['texts']
             work['cursor'] += len(part)
+            self.log_sample_progress("validation english", work['cursor'], len(rows))
             self._commit()
         scores = summary_metrics(work['predictions'], [r.target['text'] for r in rows], 'english')
         best = self.policy['best']
@@ -404,11 +408,13 @@ class RevisionPipeline(SummarizationPipeline):
                         continue
                     rows = self.held_out(language, split)
                     work = self.policy['work'].setdefault('evaluation', {'cursor': 0, 'texts': []})
+                    print(f"generate {key} {work['cursor']}/{len(rows)} samples", flush=True)
                     guard = ({'block': 'devanagari'} if language == 'english' else {'penalize': 'latin', 'penalty': 2.0}) if guarded else None
                     while work['cursor'] < len(rows):
                         part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
                         work['texts'] += self._generate(part, 'guard_generation' if guarded else 'evaluation_generation', held_out=True, guard=guard)['texts']
                         work['cursor'] += len(part)
+                        self.log_sample_progress(f"generate {key}", work['cursor'], len(rows))
                         self._commit()
                     scores = summary_metrics(work['texts'], [r.target['text'] for r in rows], language)
                     self.metrics.append({'checkpoint_task': self.config.stage, 'task': key, 'metrics': scores})

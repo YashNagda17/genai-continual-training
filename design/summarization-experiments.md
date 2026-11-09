@@ -49,7 +49,7 @@ The runner uses the values below. It does not read `preregistration.json`.
 
 | Setting | Value |
 |---|---|
-| Model | `google/mt5-small`, bf16 or fp32 |
+| Model | `google/mt5-small`, fp32 |
 | LoRA | Rank 16, alpha 32, all projections of all blocks |
 | Limits | 256 input tokens, 64 output tokens |
 | Replay | 2 pool rows per 16 Hindi rows |

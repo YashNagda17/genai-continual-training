@@ -49,7 +49,7 @@ Phase 6  Can a prompt prevent the slip                 G4
 
 ## Part 2: The setup
 
-**Model: mT5-small**, an encoder-decoder. The encoder reads the article. The decoder writes the summary one token at a time, looking back at the article through cross-attention. It has 8 + 8 blocks and 300,176,768 parameters, 85% of them in the 250,112-token vocabulary. Use bf16 or fp32, since fp16 can overflow.
+**Model: mT5-small**, an encoder-decoder. The encoder reads the article. The decoder writes the summary one token at a time, looking back at the article through cross-attention. It has 8 + 8 blocks and 300,176,768 parameters, 85% of them in the 250,112-token vocabulary. Weights stay in fp32.
 
 **LoRA:**
 
@@ -64,7 +64,7 @@ parameters = r x (n_in + n_out)
 | One decoder block (self-attention + cross-attention + feed-forward) | 11,776 |
 | All 16 blocks | 159,744 |
 
-At rank 16 on all blocks that's **2,555,904** parameters, about **5.1 MB** in bf16, while the full model is about 600 MB.
+At rank 16 on all blocks that's **2,555,904** parameters, about **10.2 MB** in fp32, while the full model is about 1.2 GB.
 
 **Merging:** `W_new = W + B x A` before serving costs no extra time per summary. An unmerged decoder adapter costs time at every one of the 64 writing steps.
 

@@ -157,15 +157,24 @@ class SummarizationModelTests(unittest.TestCase):
         probe.release()
 
 
-    def test_load_dtype_is_never_fp16(self):
-        with self.assertRaises(ValueError):
-            TinyMT5(Seq2SeqSettings(optimizer_dtype="float16"), device="cpu", pretrained=False)
+    def test_load_dtype_is_fp32(self):
+        for name in ("float16", "bfloat16", "float32"):
+            role = TinyMT5(Seq2SeqSettings(optimizer_dtype=name), device="cpu", pretrained=False)
+            self.assertEqual(role._load_dtype(), torch.float32)
         role = model()
-        self.assertNotEqual(role._load_dtype(), torch.float16)
         role.activate()
-        self.assertNotEqual(next(role.module.parameters()).dtype, torch.float16)
+        self.assertEqual(next(role.module.parameters()).dtype, torch.float32)
         head, shared = role.module.lm_head.weight, role.module.shared.weight
         self.assertIsNot(head, shared)
+        self.assertIs(role._compiled_module(), role.module)
+        role.device = torch.device("xpu")
+        with patch("src.models.model_seq2seq.torch.compile", return_value="compiled") as compile:
+            self.assertEqual(role._compiled_module(), "compiled")
+            self.assertEqual(compile.call_count, 1)
+            self.assertEqual(role._compiled_module(), "compiled")
+            self.assertEqual(compile.call_count, 1)
+        role._drop_compile()
+        self.assertIsNone(role._compiled)
 
     def test_example_loss_matches_separate_rows_and_ignores_padding(self):
         role = model()
@@ -249,9 +258,19 @@ class SummarizationModelTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(scores[0, role.tokenizer.eos_token_id]))
         self.assertEqual(scores[0, 5].item(), float("-inf"))
         source = batch()
-        first = role.predict(source, {"max_new_tokens": 3, "script_guard": {"block": "devanagari"}})
-        second = role.predict(source, {"max_new_tokens": 3, "script_guard": {"block": "devanagari"}})
+        spec = {"max_new_tokens": 3, "script_guard": {"block": "devanagari"}}
+        with role._execution(), torch.no_grad():
+            payload = role._payload(source)
+            reference = role.module.generate(
+                input_ids=payload["input_ids"], attention_mask=payload["attention_mask"],
+                max_new_tokens=3, do_sample=False, use_cache=False,
+                logits_processor=[role._guard(spec)])
+        first = role.predict(source, spec)
+        second = role.predict(source, spec)
         self.assertEqual(first["token_ids"], second["token_ids"])
+        self.assertEqual(first["token_ids"], role._trim_generated(
+            [row[1:] if row and row[0] == role.config.decoder_start_token_id else row
+             for row in reference.tolist()]))
         self.assertTrue(all(5 not in row for row in first["token_ids"]))
 
     def test_zero_weights_take_no_step(self):

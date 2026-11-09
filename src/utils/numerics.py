@@ -27,12 +27,12 @@ def resolve_device(preferred="auto"):
             return torch.device("cuda:0")
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             return torch.device("xpu:0")
-        _notice_cpu("no CUDA or XPU is available. Pass device=\"cuda:0\" or device=\"xpu:0\" "
+        _notice_cpu("no CUDA or XPU is available. Pass device=\"cuda\" or device=\"xpu\" "
                     "when an accelerator is present.")
         return torch.device("cpu")
     device = torch.device(preferred)
     if device.type == "cpu":
-        _notice_cpu("device was set to cpu. Pass device=\"cuda:0\" or device=\"xpu:0\" "
+        _notice_cpu("device was set to cpu. Pass device=\"cuda\" or device=\"xpu\" "
                     "to run on an accelerator.")
         return device
     backend = getattr(torch, device.type, None)
@@ -40,7 +40,7 @@ def resolve_device(preferred="auto"):
             and backend.is_available()
             and (device.index is None or device.index < backend.device_count())):
         return device
-    _notice_cpu(f"requested {preferred} is not available. Pass an available cuda:N or xpu:N device.")
+    _notice_cpu(f"requested {preferred} is not available. Pass device=\"cuda\" or device=\"xpu\".")
     return torch.device("cpu")
 
 

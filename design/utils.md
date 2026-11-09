@@ -17,7 +17,7 @@ Only the summarization plan is active. Removed mechanisms include legacy selecti
 | `ModelInfo`, `ResourceBudget`, `ReplayBudget` | Total/trainable parameters and CPU/device/disk/payload bounds |
 | `RunSpec`, `RunContext`, `RunResult` | Finite ordered work, injected adapters, scientific identity and persisted outcome references |
 
-Plain JSON stores policy, IDs, manifests and events. Torch performs training and numerical calculations. Transient gradients stay on their compute device. `resolve_device` chooses CUDA/ROCm, then XPU, then CPU and prints CPU placement. Nested tensor transfers preserve integer/boolean dtypes and autograd. mT5 uses bf16 where supported, otherwise fp32.
+Plain JSON stores policy, IDs, manifests and events. Torch performs training and numerical calculations. Transient gradients stay on their compute device. `resolve_device` chooses CUDA/ROCm, then XPU, then CPU and prints CPU placement. Nested tensor transfers preserve integer/boolean dtypes and autograd. mT5 uses fp32.
 
 `ReplayStore` owns payload/membership and budget checks; it never chooses records. Pool examples, past summaries and token baselines count toward retained storage. Recovery-only data cannot augment active training access. The Hindi access rule is enforced by pipeline boundaries.
 

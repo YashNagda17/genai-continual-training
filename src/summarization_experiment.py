@@ -1,5 +1,10 @@
 """Run the registered summarization phases with one saved report per phase."""
 
+import os
+
+# The Intel driver otherwise waits for the GPU by spinning one core. Read before any XPU context exists.
+os.environ.setdefault("EventHostSynchronizeLinuxUserFenceKmdWait", "1")
+
 from pathlib import Path
 import argparse
 

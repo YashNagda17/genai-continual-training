@@ -7,9 +7,9 @@ Use Python 3.11+ with the dependencies in [requirements.txt](/requirements.txt).
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
-python -m src.summarization_experiment --device cuda:0
-python -m src.summarization_experiment --pilot --device cuda:0
-python -m src.summarization_experiment --output results/code/summarization --phase 3 --device cuda:0
+python -m src.summarization_experiment --device cuda
+python -m src.summarization_experiment --pilot --device xpu
+python -m src.summarization_experiment --output results/code/summarization --phase 3 --device cuda
 ```
 
 The default protocol is scientific and the default output is the current directory. With no `--phase`, the run continues from the last phase through Phase 7, or starts at Phase 0 when `progress.json` is absent. `--phase N` runs only that phase. The project description and the remaining work are in [README.md](/README.md).

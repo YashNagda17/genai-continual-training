@@ -21,7 +21,9 @@ Used by the [summarization plan](/design/summarization-plan.md). No branch here 
 | Rule | Detail |
 |---|---|
 | Parameter count | 300,176,768 from the pinned config, with the output head **not** tied to the embeddings. Count from the hub config, since a locally built `MT5Config` may default to tied weights |
-| Precision | Load in bf16 where the device supports it, otherwise fp32. **Never fp16**: T5-family models overflow in fp16. This rule applies on every device |
+| Precision | Load and train in fp32 on every device |
+| Compile | CUDA and XPU compile the training forward with `torch.compile` and dynamic shapes. CPU stays eager. A changed adapter layout compiles again. Greedy generation stays eager so each decoder step runs as accelerator kernels |
+| Host wait | On XPU, the process sets `EventHostSynchronizeLinuxUserFenceKmdWait` before the device context exists. The Intel driver then waits on a kernel fence. Loss sums stay on the device until the step reads one scalar after the optimizer update |
 | Tokenizer | mT5's SentencePiece tokenizer. Phase 0 checks the environment can load it. If it needs `sentencepiece`, that's a dependency the plan explicitly requires |
 | Training mode | LoRA only. `mode="full"` is rejected |
 | LoRA targets | Every block's `q`, `k`, `v`, `o` in self-attention and decoder cross-attention, and `wi_0`, `wi_1`, `wo` in the feed-forward layers. Named `(stack, block, part, projection)`. `W_used = W + (alpha / r) B A`, with `B` starting at zero |

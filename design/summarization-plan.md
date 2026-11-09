@@ -36,7 +36,7 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 | Active scope | Keep only this plan's models, source, pipelines and behavior tests. Earlier paper references and research workflows remain available |
 | Layout | Modules go where the table below says. Namespace packages, relative imports, no `__init__.py` |
 | Dependencies | Models contain no method or arm names. Datasets know nothing of replay or past summaries. Utilities import no concrete model, dataset, or pipeline. The three new pipelines never import each other; the experiment runner composes them |
-| Numerics | Native Torch for training, calculations, and generation, with GPU detection and CPU fallback through `resolve_device`. mT5 runs in bf16 where supported, otherwise fp32, **never fp16** |
+| Numerics | Native Torch for training, calculations, and generation, with GPU detection and CPU fallback through `resolve_device`. mT5 runs in fp32 |
 | Learner updates | Only the executor steps an optimizer. `predict`, `score`, probes, and shrink tests preserve weights, optimizer state, modes, and training RNG |
 | Data access | During the Hindi stage, training and policy code see only the Hindi training view and the English pool. Validation is read only for declared decisions. Test reaches only evaluation |
 | State | Policy state is plain JSON. Each component has its own RNG. Generation is greedy, so it needs no seed |
