@@ -35,6 +35,12 @@ Nested CPU-to-accelerator batch transfers request `non_blocking=True` and preser
 
 The writer lock is exclusive/non-blocking (POSIX `flock`, Windows `msvcrt`). File writes flush before atomic rename. Directory fsync is best-effort where unavailable. Windows permission retries are bounded; no copy/delete replacement substitutes for atomic publication. Obsolete-tree cleanup stays within the owning attempt, preserves retained recovery and tolerates already-removed obsolete files.
 
+Storage reservations rescan the attempt using `os.scandir` directory entries and
+their cached metadata. They still count every payload/audit file, exclude only
+Explorer metadata files, and add immutable external bytes and staging bytes.
+Directory symlinks are not traversed. This changes scan cost, not budget or
+checkpoint publication/retention rules.
+
 The runtime records status, counters, metrics, costs and checkpoints. A failed/interrupted attempt keeps its last complete recovery point. Learner and one analysis role run sequentially: offload the learner before acquiring an auxiliary, release that role before switching, then restore the learner. Every role is capped at 700M total parameters.
 
 Phase reports are owned by [phases/artifacts.py](/src/phases/artifacts.py): saved arm records, per-seed summaries, status events, and JSON/CSV/Markdown publication after final snapshots. Missing tables rebuild from completed reports without model execution.

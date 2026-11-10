@@ -11,6 +11,7 @@ pypdf
 torch>=2.6
 transformers>=5.0,<6
 sentencepiece>=0.2
+protobuf
 safetensors>=0.4
 huggingface_hub
 tiktoken

@@ -6,6 +6,12 @@ Owns `src/summarization_experiment.py`: phases, arms, fixed settings, winner rul
 python -m src.summarization_experiment [--pilot] [--output <dir>] [--phase N]
 ```
 
+For a development comparison, `--pilot --epochs 5` overrides both English and
+Hindi training passes to five. The default is four passes per language.
+Nondefault epoch counts require a pilot or smoke protocol and a separate output
+directory; they are not the fixed scientific protocol. The chosen pass counts
+enter the saved settings, run identity, step budgets and epoch reports.
+
 `src/summarization_experiment.py` runs Phase 0 through Phase 7 in order. The default protocol is `scientific`. `--pilot` selects the pilot. The default output is the current directory. Each phase lives in `src/phases/phaseN.py` and calls the existing revision, adapter-room, and shrink pipelines. With no `--phase`, a directory that already has `progress.json` continues from that last phase through Phase 7. A directory with no progress runs Phase 0 through Phase 7. `--phase N` runs that phase only, reading earlier reports from the same output. Each attempt directory is kept. A finished `report.json` is reused and is not deleted. Only `scientific` results are reported. `pilot` and `smoke` are development evidence. The runner does not read or require `preregistration.json`.
 
 **Resume.** A finished phase report is the boundary between phases: a later run reads it and does not repeat that phase. Inside a phase, each finished arm writes `arm.json` next to its `run.json`. A later run of that phase reads `arm.json` and does not load or retrain that arm. An arm with no `arm.json` resumes through the attempt checkpoint. Phase 0 writes `progress.json` and `final/batch` after its one batch; a later run rebuilds the report from those files. Restarting a finished attempt does not add the reload to its wall-clock time.
@@ -70,7 +76,7 @@ The runner uses the values below. It does not read `preregistration.json`.
 | Optimizer | AdamW, learning rate `1e-3`, weight decay 0.01, gradient clip 1. Linear learning-rate warm-up over the first 5% of each stage's updates, then constant. Every stage starts a fresh optimizer |
 | Passes | `english_passes = 5`, `hindi_passes = 5`. The English stage validates after each pass, saves every pass's chrF, ROUGE-L, and right-language share, and keeps the best pass by validation chrF |
 | Batches | 16 Hindi rows per update (plus replay). Generation, scoring, and evaluation use 16 rows per batch (`analysis_batch = 16`). The model accepts up to 32 rows |
-| Loss chunk | 512 target positions per full-vocabulary cross-entropy call (`logit_chunk_size`). Measured on the Intel Arc GPU: 1.2 s per 18-row update instead of 8.5–11.4 s with 8 positions, at the same peak memory (about 6.6 GB) |
+| Loss chunk | 32 target positions per full-vocabulary cross-entropy call (`logit_chunk_size`), with a custom first-order backward that fills one logits-gradient buffer in chunks. This bounds scratch memory and avoids repeated full-logits gradient additions. Previous Intel Arc measurements using the old 512-position loss are historical timings, not measurements of this backward implementation |
 | Replay | 2 pool rows per 16 Hindi rows |
 | Slots | Half from the ranking, half random |
 | Replay warm-up | The first 10% of Hindi steps, with random replay |

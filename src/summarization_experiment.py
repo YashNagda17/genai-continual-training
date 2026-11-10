@@ -8,6 +8,7 @@ os.environ.setdefault("EventHostSynchronizeLinuxUserFenceKmdWait", "1")
 from pathlib import Path
 import argparse
 from functools import partial
+from dataclasses import replace
 
 from .models.model_mt5 import MT5SmallModel
 from .models.model_seq2seq import Seq2SeqSettings
@@ -36,7 +37,14 @@ def parse_args(argv):
     parser.add_argument("--output", default=".")
     parser.add_argument("--phase", type=int, choices=range(8))
     parser.add_argument("--device", default=None)
-    return parser.parse_args(argv)
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Training passes per language (default: 4; nondefault values require --pilot or smoke)")
+    args = parser.parse_args(argv)
+    if args.epochs is not None and args.epochs < 1:
+        parser.error("--epochs must be positive")
+    if args.epochs not in (None, PhaseSettings().english_passes) and not args.pilot and args.protocol == "scientific":
+        parser.error("Nondefault --epochs requires --pilot or --protocol smoke")
+    return args
 
 
 def selected_phases(root, phase):
@@ -53,7 +61,7 @@ def selected_phases(root, phase):
     return tuple(range(start, 8))
 
 
-def prepare(protocol, device, settings=None):
+def prepare(protocol, device, settings=None, *, epochs=None):
     if protocol == "smoke":
         factory = partial(build_smoke_model, device=device or "cpu")
         # The tiny smoke model takes at most four rows per update and runs every conditional arm.
@@ -63,10 +71,12 @@ def prepare(protocol, device, settings=None):
         settings = settings or PhaseSettings(protocol=protocol, batch_size=16, analysis_batch=16,
                         max_new_tokens=64, stability_threshold=0.5, sample_size=64)
         def factory():
-            # GPU speed: 16-row analysis batches and 512 target positions per loss call (about 0.5 GB of fp32 logits).
-            return MT5SmallModel(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=512,
+            # The custom backward uses one gradient buffer; small chunks bound vocabulary scratch memory.
+            return MT5SmallModel(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=32,
                                                 learning_rate=settings.learning_rate,
                                                 seed=settings.seed), device=device or "auto")
+    if epochs is not None:
+        settings = replace(settings, english_passes=epochs, hindi_passes=epochs)
     model = factory()
     try:
         if protocol == "smoke":
@@ -117,7 +127,7 @@ def main(argv=None):
     args = parse_args(argv)
     protocol = "pilot" if args.pilot else args.protocol
     output = Path(args.output).resolve()
-    dataset, factory, settings = prepare(protocol, args.device)
+    dataset, factory, settings = prepare(protocol, args.device, epochs=args.epochs)
     if protocol != "smoke" and not (output / "prepared" / "manifest.json").is_file():
         dataset.save(output / "prepared")
     run_phases(output, dataset, factory, settings, args.phase)

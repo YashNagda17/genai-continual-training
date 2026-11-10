@@ -14,6 +14,17 @@ python -m src.summarization_experiment --output results/code/summarization --pha
 
 The default protocol is scientific and the default output is the current directory. With no `--phase`, the run continues from the last phase through Phase 7, or starts at Phase 0 when `progress.json` is absent. `--phase N` runs only that phase. The project description and the remaining work are in [README.md](/README.md).
 
+For a five-epoch development comparison, use a new output folder:
+
+```sh
+python -u -m src.summarization_experiment --pilot --phase 1 --epochs 5 --device cuda:0 --output results/code/summarization-pilot-5epochs
+```
+
+This trains English for five passes, then Hindi for five passes. Each stage has
+625 updates at batch size 16 on its 2,000 examples. Default real-data runs use four
+pass per language. Changing epochs requires a new output folder, and later
+phases using this pilot must also receive `--epochs 5` to match its saved settings.
+
 Locked settings are in [the experiment contract](/design/summarization-experiments.md). English uses seed 0; Hindi arms use seeds 1, 2, and 3. Validation decides gates, winners and shrink ranks. Test scores are report-only. A failed scientific X gate stops later phases.
 
 For local checks without downloads:
@@ -24,6 +35,22 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest src.tests.test_summarizat
 ```
 
 Smoke uses a tiny random mT5 on CPU by default; `--device cuda:0` runs it on NVIDIA CUDA. Its metrics and timings are development evidence. Routine CPU tests do not establish real-weight/GPU behavior or scientific results.
+
+For bounded performance checks, `python -u -m src.performance_check` runs three
+English batches with a fresh disposable adapter on CUDA. It defaults to the
+prepared data in `results/code/summarization-passes5/prepared` and uses local
+model assets, without phases, validation or checkpoint
+publication. It prints synchronized update/wall times and peak memory, then
+saves one JSON under `results/performance/`. It never saves trained weights.
+`--batches` is limited to 10; the warm mean excludes the first batch when possible.
+
+`python -u -m src.performance_check --mode generation --examples 2 --checkpoint PATH_TO_ENGLISH_CHECKPOINT --prepared PATH_TO_MATCHING_PREPARED_DATA`
+compares fixed-limit generation with all-row EOS stopping on two validation
+articles. It checks identical output token IDs and records decoder steps and
+timings. The checkpoint and prepared-data prefixes must match. This is an
+inference-only check; the CPU tests do not establish its GPU speedup.
+Generation requires actual adapter weights, not metadata alone. The checkpoint
+weights referenced by the pulled `summarization-passes5` reports are not yet present.
 
 For an NVIDIA cloud host, use a CUDA-enabled PyTorch image or select a matching wheel from the [official installer](https://pytorch.org/get-started/locally/), then install [requirements.txt](/requirements.txt). The same native-Torch gather, weighted-loss, nonblocking-copy and packed-reporting optimizations apply on CUDA; no inference backend or precision change is needed.
 

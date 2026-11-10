@@ -172,8 +172,14 @@ class Checkpoints:
 
     def reserve(self, additional):
         """Charge retained artifacts and offload files before allocating a staging checkpoint."""
-        used = sum(p.stat().st_size for p in self.root.rglob("*")
-                   if not is_folder_metadata(p) and p.is_file())
+        used, pending = 0, [self.root]
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(entry.path)
+                    elif not is_folder_metadata(entry.name) and entry.is_file():
+                        used += entry.stat().st_size
         external = self.external_bytes() if callable(self.external_bytes) else self.external_bytes
         if used + external + additional > self.disk_bytes:
             raise OSError("Run storage budget cannot hold checkpoint staging")

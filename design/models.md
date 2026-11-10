@@ -31,8 +31,16 @@ Used by the [summarization plan](/design/summarization-plan.md). No branch here 
 | LoRA targets | Every block's `q`, `k`, `v`, `o` in self-attention and decoder cross-attention, and `wi_0`, `wi_1`, `wo` in the feed-forward layers. Named `(stack, block, part, projection)`. `W_used = W + (alpha / r) B A`, with `B` starting at zero |
 | Inputs | Encoder input IDs and mask, plus labels with padding masked out. The decoder input is shifted from the labels inside the model. Per-example loss is the mean NLL over the summary's tokens |
 | Batches | One microbatch per update. Support `hindi_batch + replay_per_batch`, or `2 x hindi_batch` for the full-English reference. The scientific runner sets `max_batch_size = 32` |
-| Loss chunk | `_position_nll` computes cross-entropy over `logit_chunk_size` target positions per call (default 32; the scientific runner uses 512). The result is identical for any chunk size; larger chunks make far fewer kernel launches |
+| Loss chunk | `_position_nll` computes cross-entropy over `logit_chunk_size` target positions per call (32 in the executor and runner). The custom first-order backward fills one gradient buffer in chunks, avoiding repeated full-logits gradient additions. Chunk size bounds temporary vocabulary memory |
 | Optimization | AdamW at `learning_rate`, with a linear warm-up over `warmup_steps`, then constant (`total_steps = None`). The runner sets the rate (`1e-3`) and the warm-up (5% of the stage's updates) per [summarization-experiments.md](/design/summarization-experiments.md) |
+
+Per-position cross-entropy uses `logit_chunk_size` token positions per native
+Torch chunk, with FP32 arithmetic and zero loss/gradient for label `-100`.
+Its first-order autograd operation saves the logits and labels, recomputes
+probabilities in bounded chunks during backward, and writes each chunk into one
+logits-gradient buffer. It must not create a separate full-logits gradient for
+every token slice. Arbitrary upstream per-token weights and the existing
+per-example reductions are preserved. Higher-order derivatives are unsupported.
 
 ### Adapter names
 
@@ -77,6 +85,8 @@ forward, backward, or optimizer step itself.
 When that hook supplies weights, the executor honors `per_example_mean` by first
 averaging weighted token losses within each row, then averaging rows. Precomputed
 `TokenTargets` retain their existing flat-token reduction for compatibility.
+The hook receives detached token losses; the losses used for the weighted
+objective retain their autograd graph so the adapter can receive gradients.
 
 Token-loss scoring and weighted training gather with the payload's `supervised_indices`. For custom payloads without these indices, the executor derives them before device transfer; custom device-resident labels must supply indices to avoid a synchronizing fallback. Weighted row ownership declares `output_size=flat.numel()` in `repeat_interleave`. Per-example weighted means use full-size masked arithmetic, excluding rows with no positive weights without compacting device tensors. The all-zero-weight optimizer skip remains mandatory.
 
@@ -86,7 +96,7 @@ These synchronization reductions apply equally to NVIDIA CUDA and XPU through th
 
 Strictly positive token targets use a scalar-read-free weighted-loss path; ordinary targets preserve the zero-active-token skip. Gradient clipping traverses optimizer groups instead of the frozen base. Execution restores `requires_grad` only when a flag changed. Generation uses `torch.inference_mode()` because it returns host text/IDs; differentiable scoring and training keep their existing autograd behavior.
 
-LoRA forward uses native `addmm` to combine the B projection, scale and residual addition. This preserves the equation and gradients within fp32 tolerance, including extra rank. Execution changes module modes only when needed and restores mixed caller modes. Greedy generation preallocates its token buffer, exposes only the written prefix to repetition/guard logic, and selects EOS padding with a boolean device mask; it keeps the same fixed maximum-token loop and first-EOS trimming.
+LoRA forward uses native `addmm` to combine the B projection, scale and residual addition. This preserves the equation and gradients within fp32 tolerance, including extra rank. Execution changes module modes only when needed and restores mixed caller modes. Greedy generation preallocates its token buffer, exposes only the written prefix to repetition/guard logic, and selects EOS padding with a boolean device mask. Every four decoder steps it checks whether all rows emitted EOS and returns early if so; unfinished rows retain the full token budget and first-EOS trimming is unchanged. `generation_spec.stop_on_eos=False` disables only this work-saving check for diagnostic comparisons; returned summaries must match. Prediction cost includes the actual `decoder_steps`.
 
 | Operation | Behavior |
 |---|---|

@@ -25,6 +25,7 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 from torch import nn
 from torch.nn import functional as F
+from torch.autograd.function import once_differentiable
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer, LogitsProcessor
 
 from .model_base import ModelBase
@@ -59,6 +60,41 @@ _PROJECTIONS = {"q", "k", "v", "o", "wi_0", "wi_1", "wo"}
 _PARTS = {"SelfAttention": "self_attention", "EncDecAttention": "cross_attention",
           "DenseReluDense": "feed_forward"}
 _BANDS = ("1-2", "3-4", "5-6", "7-8")
+
+
+class _ChunkedPositionNLL(torch.autograd.Function):
+    """First-order CE with one logits-gradient buffer instead of one per slice."""
+
+    @staticmethod
+    def forward(ctx, logits, labels, chunk_size):
+        flat_logits = logits.reshape(-1, logits.shape[-1])
+        flat_labels = labels.reshape(-1)
+        losses = torch.empty_like(flat_labels, dtype=torch.float32)
+        for start in range(0, flat_labels.numel(), chunk_size):
+            stop = start + chunk_size
+            losses[start:stop] = F.cross_entropy(
+                flat_logits[start:stop].float(), flat_labels[start:stop],
+                ignore_index=-100, reduction="none")
+        ctx.save_for_backward(flat_logits, flat_labels)
+        ctx.chunk_size, ctx.logits_shape = chunk_size, logits.shape
+        return losses.view_as(labels)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_output):
+        logits, labels = ctx.saved_tensors
+        upstream = grad_output.reshape(-1)
+        gradient = torch.empty_like(logits)
+        for start in range(0, labels.numel(), ctx.chunk_size):
+            stop = start + ctx.chunk_size
+            targets = labels[start:stop]
+            valid = targets != -100
+            probabilities = F.softmax(logits[start:stop].float(), dim=-1)
+            probabilities.scatter_add_(1, targets.masked_fill(~valid, 0).unsqueeze(1),
+                                       -valid.to(probabilities.dtype).unsqueeze(1))
+            probabilities.mul_((upstream[start:stop].float() * valid).unsqueeze(1))
+            gradient[start:stop].copy_(probabilities)
+        return gradient.view(ctx.logits_shape), None, None
 
 
 def cpu_tree(value):
@@ -637,6 +673,10 @@ class Seq2SeqLMModel(ModelBase):
                            decoder_input_ids=decoder_input_ids, use_cache=False, return_dict=True)
 
     def _position_nll(self, logits, labels):
+        """Per-position NLL with bounded scratch space and one backward gradient buffer."""
+        if self.settings.logit_chunk_size < 1:
+            raise ValueError("logit_chunk_size must be positive")
+        return _ChunkedPositionNLL.apply(logits, labels, self.settings.logit_chunk_size)
         """Per-position NLL. Padding is zero. The slice count comes from the tensor shape, so the host does not read the device."""
         flat_labels = labels.reshape(-1)
         flat_logits = logits.reshape(-1, logits.shape[-1])
@@ -790,8 +830,7 @@ class Seq2SeqLMModel(ModelBase):
                         model_boundary(targets is not None, "Weighted training requires token targets")
                         row_counts = counts if hooks and hooks.token_targets and objective.reduction == 'per_example_mean' else None
                         loss, numer, denom = self._weighted_loss(flat, targets, row_counts)
-                        # diagnostics["token_surprise"] = flat.float().tolist()
-                        diagnostics["token_surprise"] = flat.detach().float()
+                        diagnostics["token_surprise"] = flat.float().tolist()
                     else:
                         model_boundary(training.token_targets is None, "Unweighted training takes no token targets")
                         loss = self._reduce(means, sums, counts, objective.reduction)
@@ -905,8 +944,8 @@ class Seq2SeqLMModel(ModelBase):
         penalty = torch.zeros(matched.shape, dtype=scores.dtype, device=scores.device).masked_fill_(matched, float("-inf"))
         return scores.scatter_add_(1, windows[:, :, -1], penalty)
 
-    def _greedy_ids(self, input_ids, attention_mask, max_new, guard, no_repeat=0):
-        """Greedy tokens with a decoder cache. The host does not read the device until the summary is done."""
+    def _greedy_ids(self, input_ids, attention_mask, max_new, guard, no_repeat=0, *, stop_on_eos=True):
+        """Cached greedy tokens; check all-row completion once every four steps."""
         sentinels = self._sentinels()
         encoder_outputs = self.module.encoder(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
@@ -940,6 +979,8 @@ class Seq2SeqLMModel(ModelBase):
             chosen = torch.where(unfinished, chosen, pad_id)
             generated[:, step + 1].copy_(chosen)
             unfinished.logical_and_(chosen.ne(eos_id))
+            if stop_on_eos and (step + 1) % 4 == 0 and not bool(unfinished.any()):
+                return generated[:, :step + 2]
         return generated
 
     def predict(self, inputs, generation_spec):
@@ -951,7 +992,8 @@ class Seq2SeqLMModel(ModelBase):
             guard = self._guard(generation_spec)
             output = self._greedy_ids(
                 payload["input_ids"], payload.get("attention_mask"), max_new, guard,
-                int(generation_spec.get("no_repeat_ngram_size", 0)))
+                int(generation_spec.get("no_repeat_ngram_size", 0)),
+                stop_on_eos=bool(generation_spec.get("stop_on_eos", True)))
             rows = output.tolist()
             start_id = getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id)
             if rows and rows[0] and rows[0][0] == start_id:
@@ -959,7 +1001,8 @@ class Seq2SeqLMModel(ModelBase):
             token_ids = self._trim_generated(rows)
             texts = self.tokenizer.batch_decode(token_ids, skip_special_tokens=True)
             ids = inputs.ids if hasattr(inputs, "ids") else ()
-            return {"ids": ids, "texts": texts, "token_ids": token_ids, "cost": self._timing_cost(start)}
+            return {"ids": ids, "texts": texts, "token_ids": token_ids,
+                    "cost": self._timing_cost(start, decoder_steps=output.shape[1] - 1)}
 
     def _trim_generated(self, rows):
         eos, pad = self.tokenizer.eos_token_id, self.tokenizer.pad_token_id

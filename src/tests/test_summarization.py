@@ -114,6 +114,77 @@ class SourceConversionTests(unittest.TestCase):
 
 
 
+class CheckpointBudgetTests(unittest.TestCase):
+    def test_scan_counts_nested_audit_payload_external_and_staging_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "nested").mkdir()
+            (root / "weights.pt").write_bytes(b"weights")
+            (root / "nested" / "complete.json").write_bytes(b"audit")
+            (root / "Desktop.INI").write_bytes(b"ignored" * 100)
+            (root / "nested" / "Thumbs.db").write_bytes(b"ignored" * 100)
+            manager = Checkpoints(root, "budget", disk_bytes=18, external_bytes=lambda: 4)
+            manager.reserve(2)  # 12 payload/audit + 4 external + 2 staging.
+            with self.assertRaisesRegex(OSError, "budget"):
+                manager.reserve(3)
+            (root / "nested" / "extra.json").write_bytes(b"new")
+            with self.assertRaisesRegex(OSError, "budget"):
+                manager.reserve(0)  # Fresh scans must see newly written files.
+
+
+class PositionLossTests(unittest.TestCase):
+    """Loss arithmetic only: no model loading, training loop, or optimizer updates."""
+
+    def test_chunked_loss_and_weighted_gradients_match_torch_cross_entropy(self):
+        generator = torch.Generator().manual_seed(19)
+        values = torch.randn(3, 11, 7, generator=generator).transpose(1, 2)
+        targets = torch.randint(11, (3, 7), generator=generator)
+        targets[0, 2] = -100
+        targets[2] = -100
+        weights = torch.randn(3, 7, generator=generator)
+        for chunk_size in (1, 5, 32):
+            with self.subTest(chunk_size=chunk_size):
+                role = TinyMT5(Seq2SeqSettings(logit_chunk_size=chunk_size), device="cpu", pretrained=False)
+                logits = values.detach().clone().requires_grad_()
+                reference = values.detach().clone().requires_grad_()
+                actual = role._position_nll(logits, targets)
+                expected = torch.nn.functional.cross_entropy(
+                    reference.reshape(-1, 11), targets.reshape(-1),
+                    ignore_index=-100, reduction="none").view_as(targets)
+                actual_grad, = torch.autograd.grad((actual * weights).sum(), logits)
+                expected_grad, = torch.autograd.grad((expected * weights).sum(), reference)
+                torch.testing.assert_close(actual, expected)
+                torch.testing.assert_close(actual_grad, expected_grad, atol=2e-6, rtol=1e-5)
+                self.assertTrue(torch.equal(actual_grad[2], torch.zeros_like(actual_grad[2])))
+
+    def test_large_logits_and_per_example_reduction_match_torch(self):
+        role = TinyMT5(Seq2SeqSettings(logit_chunk_size=2), device="cpu", pretrained=False)
+        logits = torch.tensor([[[1000., -1000., 0.], [2., 3., 4.]],
+                               [[-1000., 1000., 0.], [7., 8., 9.]]], requires_grad=True)
+        targets = torch.tensor([[2, -100], [1, 2]])
+        counts = (targets != -100).sum(-1)
+        actual = role._position_nll(logits, targets)
+        expected = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, 3), targets.reshape(-1), ignore_index=-100,
+            reduction="none").view_as(targets)
+        left, = torch.autograd.grad((actual.sum(-1) / counts).mean(), logits)
+        right, = torch.autograd.grad((expected.sum(-1) / counts).mean(), logits)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(left, right)
+
+    def test_all_padding_and_empty_sequences_have_zero_gradients(self):
+        role = TinyMT5(Seq2SeqSettings(logit_chunk_size=3), device="cpu", pretrained=False)
+        for length in (0, 4):
+            with self.subTest(length=length):
+                logits = torch.zeros(2, length, 5, requires_grad=True)
+                targets = torch.full((2, length), -100)
+                losses = role._position_nll(logits, targets)
+                gradient, = torch.autograd.grad(losses.sum(), logits)
+                self.assertEqual(losses.shape, targets.shape)
+                self.assertTrue(torch.equal(losses, torch.zeros_like(losses)))
+                self.assertTrue(torch.equal(gradient, torch.zeros_like(gradient)))
+
+
 class SummarizationModelTests(unittest.TestCase):
     def test_fused_lora_matches_equation_gradients_and_dense_norm(self):
         for extra in (False, True):
@@ -159,6 +230,37 @@ class SummarizationModelTests(unittest.TestCase):
             self.assertEqual(output.tolist(), [[0, 1, 0, 0], [0, 7, 1, 0]])
             self.assertEqual([item.shape[1] for item in seen], [1, 1, 1] if cached else [1, 2, 3])
         role.release()
+
+    def test_generation_stops_only_when_all_rows_finish_and_preserves_tokens(self):
+        from types import SimpleNamespace
+        role = model()
+        role.activate()
+        source = batch().payload
+        try:
+            for cached in (False, True):
+                for unfinished in (False, True):
+                    with self.subTest(cached=cached, unfinished=unfinished):
+                        calls = []
+                        def forward(**kwargs):
+                            calls.append(kwargs['decoder_input_ids'].shape[1])
+                            step = len(calls)
+                            chosen = (1 if step >= 2 else 3,
+                                      1 if step >= 5 and not unfinished else 7)
+                            logits = torch.full((2, 1, 32), -100.)
+                            logits[torch.arange(2), 0, torch.tensor(chosen)] = 100.
+                            return SimpleNamespace(logits=logits, past_key_values=object() if cached else None)
+                        with patch.object(role.module.encoder, 'forward', return_value=None), \
+                                patch.object(role.module, 'forward', side_effect=forward), torch.no_grad():
+                            reference = role._greedy_ids(source['input_ids'], source['attention_mask'],
+                                                         64, None, stop_on_eos=False)
+                            self.assertEqual(len(calls), 64)
+                            calls.clear()
+                            actual = role._greedy_ids(source['input_ids'], source['attention_mask'], 64, None)
+                        self.assertEqual(role._trim_generated(actual[:, 1:].tolist()),
+                                         role._trim_generated(reference[:, 1:].tolist()))
+                        self.assertEqual(len(calls), 64 if unfinished else 8)
+        finally:
+            role.release()
 
     def test_planned_resume_reproduces_the_next_dropout_update(self):
         role, restored = model(), model()

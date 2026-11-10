@@ -57,6 +57,22 @@ class ServingTimingTests(unittest.TestCase):
 
 
 class PhaseRuleTests(unittest.TestCase):
+    def test_epoch_override_reaches_both_stage_budgets(self):
+        from ..summarization_experiment import parse_args, prepare
+        from ..phases.support import run_spec
+        args = parse_args(["--pilot", "--epochs", "5"])
+        dataset, factory, settings = prepare("smoke", "cpu", epochs=args.epochs)
+        self.assertEqual((settings.english_passes, settings.hindi_passes), (5, 5))
+        role = factory()
+        try:
+            for stage in ("english", "hindi"):
+                spec = run_spec(stage, settings, getattr(settings, stage + "_passes"), stage, dataset, role)
+                rows = len(dataset.training_view(stage))
+                self.assertEqual(spec.max_steps, ((rows + settings.batch_size - 1) // settings.batch_size) * 5)
+                self.assertEqual(spec.passes, 5)
+        finally:
+            role.release()
+
     def test_truncation_keeps_words_from_the_token_prefix(self):
         article = "alpha beta gamma delta epsilon"
         words = article.split()
