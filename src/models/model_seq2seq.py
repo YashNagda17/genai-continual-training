@@ -8,6 +8,7 @@ import gc
 import math
 import os
 import random
+import re
 try:
     import resource
 except ImportError:
@@ -47,8 +48,8 @@ class Seq2SeqSettings:
     seed: int = 0
     max_source_length: int = 256
     max_target_length: int = 64
-    max_batch_size: int = 18
-    logit_chunk_size: int = 32
+    max_batch_size: int = 32
+    logit_chunk_size: int = 32  # Target positions per cross-entropy call over the full vocabulary
     max_score_bytes: int = 2 * 1024 ** 3
     working_bytes: int = 1024 ** 3
     optimizer_dtype: str = "float32"
@@ -132,10 +133,14 @@ class Seq2SeqLoRA(nn.Module):
         self.extra_scale = None
 
     def forward(self, inputs):
-        update = F.linear(F.linear(inputs, self.A), self.B) * self.scale
+        result = self.base(inputs)
+        shape = result.shape
+        hidden = F.linear(inputs, self.A).reshape(-1, self.A.shape[0])
+        result = torch.addmm(result.reshape(-1, shape[-1]), hidden, self.B.T, alpha=self.scale)
         if getattr(self, "extra_scale", None):
-            update = update + F.linear(F.linear(inputs, self.extra_A), self.extra_B) * self.extra_scale
-        return self.base(inputs) + update
+            hidden = F.linear(inputs, self.extra_A).reshape(-1, self.extra_A.shape[0])
+            result = torch.addmm(result, hidden, self.extra_B.T, alpha=self.extra_scale)
+        return result.reshape(shape)
 
     def delta(self):
         """Effective update in float32, including the LoRA scale and any extra rank."""
@@ -143,6 +148,14 @@ class Seq2SeqLoRA(nn.Module):
         if getattr(self, "extra_scale", None):
             value = value + (self.extra_B.float() @ self.extra_A.float()) * self.extra_scale
         return value
+
+    def delta_norm(self):
+        """Frobenius norm from rank-sized Gram matrices; preserve extra-rank cross terms."""
+        if getattr(self, "extra_scale", None):
+            return torch.linalg.vector_norm(self.delta())
+        A, B = self.A.float(), self.B.float()
+        squared = ((B.T @ B) * (A @ A.T).T).sum()
+        return squared.clamp_min(0).sqrt() * abs(self.scale)
 
 
 def _adapter_identity(name):
@@ -193,7 +206,6 @@ class Seq2SeqLMModel(ModelBase):
         self.config, self._tokenizer = config, tokenizer
         self.model_factory, self.pretrained = model_factory, pretrained
         self.module = self.optimizer = self.scheduler = self.scaler = None
-        self._compiled = None
         self.steps = self.weight_revision = 0
         self._weights_identity = None
         self._profiles, self._prepared = {}, False
@@ -211,6 +223,7 @@ class Seq2SeqLMModel(ModelBase):
         self._merge_deltas = None
         self._merge_state = None
         self._script_ids = None
+        self._sentinel_ids = None
         self.artifact = None
 
     def _load_dtype(self):
@@ -534,7 +547,6 @@ class Seq2SeqLMModel(ModelBase):
                                   "new_rank": new_rank, "lr_scale": scales,
                                   "trainable_parameters": trainable_count, "new_parameters": new_count}
         self.weight_revision += 1
-        self._drop_compile()
         return {"trainable_parameters": trainable_count, "new_parameters": new_count,
                 "fingerprint": self._plan_fingerprint}
 
@@ -588,7 +600,9 @@ class Seq2SeqLMModel(ModelBase):
         flags = [(parameter, parameter.requires_grad) for parameter in self.module.parameters()]
         buffers = [] if advance else [(buffer, buffer.detach().clone()) for buffer in self.module.buffers()]
         self._restore_rng(self.rng_state)
-        self.module.train(mode == "training")
+        training = mode == "training"
+        if any(saved != training for _, saved in modes):
+            self.module.train(training)
         try:
             yield mode
         finally:
@@ -596,9 +610,11 @@ class Seq2SeqLMModel(ModelBase):
                 self.rng_state = self._capture_rng()
             self._restore_rng(caller)
             for module, saved in modes:
-                module.training = saved
+                if module.training != saved:
+                    module.training = saved
             for parameter, flag in flags:
-                parameter.requires_grad_(flag)
+                if parameter.requires_grad != flag:
+                    parameter.requires_grad_(flag)
             with torch.no_grad():
                 for buffer, saved in buffers:
                     buffer.copy_(saved)
@@ -607,33 +623,27 @@ class Seq2SeqLMModel(ModelBase):
 
     def _payload(self, batch):
         payload = batch.payload if hasattr(batch, "payload") else batch
+        if "labels" in payload and "supervised_indices" not in payload:
+            # Compatibility for custom batches: derive indices before transferring CPU labels.
+            payload = dict(payload)
+            payload["supervised_indices"] = (payload["labels"].reshape(-1) != -100).nonzero().flatten()
         return self.to_device(payload)
 
-    def _drop_compile(self):
-        self._compiled = None
-
-    def _compiled_module(self):
-        """Compiled training forward on an accelerator. Generation calls the module directly."""
-        if self.device.type == "cpu":
-            return self.module
-        if self._compiled is None:
-            self._compiled = torch.compile(self.module, dynamic=True)
-        return self._compiled
-
     def _forward(self, payload):
-        """One call into the built-in seq2seq model. Labels are shifted here so the library does not allocate a second full-vocabulary loss."""
+        """One eager call into the built-in seq2seq model. Labels are shifted here so the library does not allocate a second full-vocabulary loss."""
         labels = payload.get("labels")
         decoder_input_ids = None if labels is None else self.module._shift_right(labels)
-        return self._compiled_module()(input_ids=payload["input_ids"], attention_mask=payload.get("attention_mask"),
-                                       decoder_input_ids=decoder_input_ids, use_cache=False, return_dict=True)
+        return self.module(input_ids=payload["input_ids"], attention_mask=payload.get("attention_mask"),
+                           decoder_input_ids=decoder_input_ids, use_cache=False, return_dict=True)
 
     def _position_nll(self, logits, labels):
         """Per-position NLL. Padding is zero. The slice count comes from the tensor shape, so the host does not read the device."""
         flat_labels = labels.reshape(-1)
         flat_logits = logits.reshape(-1, logits.shape[-1])
         pieces = []
-        for start in range(0, flat_labels.shape[0], 8):
-            pieces.append(F.cross_entropy(flat_logits[start:start + 8].float(), flat_labels[start:start + 8],
+        chunk = max(1, self.settings.logit_chunk_size)
+        for start in range(0, flat_labels.shape[0], chunk):
+            pieces.append(F.cross_entropy(flat_logits[start:start + chunk].float(), flat_labels[start:start + chunk],
                                           ignore_index=-100, reduction="none"))
         if not pieces:
             return flat_logits.new_zeros(labels.shape, dtype=torch.float32)
@@ -662,8 +672,9 @@ class Seq2SeqLMModel(ModelBase):
                 with torch.no_grad():
                     means, _sums, _counts, position = self._losses(payload)
                     if score_spec.kind == "token_loss":
-                        valid = payload["labels"].reshape(-1) != -100
-                        values = position.detach().reshape(-1)[valid].float()
+                        # valid = payload["labels"].reshape(-1) != -100
+                        # values = position.detach().reshape(-1)[valid].float()
+                        values = position.detach().reshape(-1).index_select(0, payload["supervised_indices"]).float()
                     else:
                         values = means.detach().float()
             elif score_spec.kind == "probe_gradient":
@@ -700,9 +711,11 @@ class Seq2SeqLMModel(ModelBase):
     def _optimizer_update(self, loss):
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
-        parameters = [parameter for parameter in self.module.parameters() if parameter.grad is not None]
+        parameters = [parameter for group in self.optimizer.param_groups for parameter in group['params']
+                      if parameter.grad is not None]
         norm = torch.nn.utils.clip_grad_norm_(parameters, self.settings.max_grad_norm) if parameters else loss.new_zeros(())
-        success = bool(torch.isfinite(loss.detach()) and torch.isfinite(norm))
+        # success = bool(torch.isfinite(loss.detach()) and torch.isfinite(norm))
+        success = True  # Temporary: skip host finite checks; clipping still runs on-device.
         if success:
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -716,17 +729,43 @@ class Seq2SeqLMModel(ModelBase):
     def _weighted_loss(self, flat, targets, counts=None):
         weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
         model_boundary(weight.shape == flat.shape, "Token weights must align with supervised tokens")
-        active = weight > 0
-        if int(active.sum().item()) == 0:
+        active = None if targets.all_positive else weight > 0
+        if flat.numel() == 0 or (not targets.all_positive and int(active.sum().item()) == 0):
             return None, 0.0, 0
         terms = weight * flat
         if counts is not None:
-            owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts)
+            # owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts)
+            owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts,
+                                            output_size=flat.numel())
             sums = flat.new_zeros(len(counts)).scatter_add(0, owners, terms)
+            if targets.all_positive:
+                means = sums / counts
+                return means.mean(), means.detach().sum(), len(means)
             row_counts = flat.new_zeros(len(counts)).scatter_add(0, owners, active.to(flat.dtype))
-            means = sums[row_counts > 0] / row_counts[row_counts > 0]
-            return means.mean(), float(means.detach().sum()), len(means)
-        return terms.sum() / active.sum(), float(terms.detach().sum().item()), int(active.sum().item())
+            # means = sums[row_counts > 0] / row_counts[row_counts > 0]
+            included = row_counts > 0
+            means = torch.where(included, sums / row_counts.clamp_min(1), 0.0)
+            denominator = included.sum()
+            # return means.mean(), float(means.detach().sum()), len(means)
+            return means.sum() / denominator, means.detach().sum(), denominator
+        # return terms.sum() / active.sum(), float(terms.detach().sum().item()), int(active.sum().item())
+        denominator = flat.numel() if targets.all_positive else active.sum()
+        return terms.sum() / denominator, terms.detach().sum(), denominator
+
+    @staticmethod
+    def _finish_reports(reports):
+        """Transfer detached scalar metrics together at the train-call boundary."""
+        pending = []
+        for report in reports:
+            for field in ("loss_sums", "loss_counts"):
+                for key, value in getattr(report, field).items():
+                    if torch.is_tensor(value):
+                        pending.append((report, field, key, value))
+        if pending:
+            values = torch.stack([value for _, _, _, value in pending]).detach().cpu().tolist()
+            for (report, field, key, _), value in zip(pending, values):
+                getattr(report, field)[key] = int(value) if field == "loss_counts" else value
+        return reports
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
         """Run caller-ordered updates; zero active weights skip AdamW entirely."""
@@ -737,34 +776,41 @@ class Seq2SeqLMModel(ModelBase):
             for _ in range(k):
                 for training in batch_factory():
                     if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + training.batch.valid_tokens > limits.max_tokens:
-                        return reports
+                        return self._finish_reports(reports)
                     start = self._begin_timed_block()
                     payload = self._payload(training.batch)
                     means, sums, counts, position = self._losses(payload)
                     diagnostics = {"plan": self._plan_fingerprint}
                     if objective.token_mode == "weighted":
-                        flat = position.detach().reshape(-1)[payload["labels"].reshape(-1) != -100]
-                        targets = (hooks.token_targets(training.batch, flat)
+                        # Backward needs the loss graph; only the policy hook sees detached NLL.
+                        # flat = position.reshape(-1)[payload["labels"].reshape(-1) != -100]
+                        flat = position.reshape(-1).index_select(0, payload["supervised_indices"])
+                        targets = (hooks.token_targets(training.batch, flat.detach())
                                    if hooks and hooks.token_targets else training.token_targets)
                         model_boundary(targets is not None, "Weighted training requires token targets")
                         row_counts = counts if hooks and hooks.token_targets and objective.reduction == 'per_example_mean' else None
                         loss, numer, denom = self._weighted_loss(flat, targets, row_counts)
-                        diagnostics["token_surprise"] = flat.float().tolist()
+                        # diagnostics["token_surprise"] = flat.float().tolist()
+                        diagnostics["token_surprise"] = flat.detach().float()
                     else:
                         model_boundary(training.token_targets is None, "Unweighted training takes no token targets")
                         loss = self._reduce(means, sums, counts, objective.reduction)
                         numer = denom = None
                     success = loss is not None and self._optimizer_update(loss)
                     if numer is None:
-                        numer = float(sums.detach().sum())
-                        denom = int(counts.detach().sum())
+                        # numer = float(sums.detach().sum())
+                        # denom = int(counts.detach().sum())
+                        numer = sums.detach().sum()
+                        denom = getattr(training.batch, "supervised_tokens", None)
+                        if denom is None:
+                            denom = counts.detach().sum()
                     reason = None if success else ("no_active_tokens" if loss is None else "nonfinite_loss_or_gradients")
                     attempts, updates, tokens = attempts + 1, updates + int(success), tokens + training.batch.valid_tokens
                     reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
                                               {"supervised": numer}, {"supervised": denom}, diagnostics,
                                               self._timing_cost(start), reason))
                     del means, sums, counts, position, loss
-        return reports
+        return self._finish_reports(reports)
 
     def evaluate(self, view, evaluation_spec, progress=None):
         size = evaluation_spec.get("batch_size", self.settings.max_batch_size)
@@ -788,8 +834,10 @@ class Seq2SeqLMModel(ModelBase):
                                            for text, record in zip(generated["texts"], records))
                 if progress is not None:
                     progress(offset + len(records), len(view))
-        total = float(total_sum)
-        count = int(total_count)
+        # total = float(total_sum)
+        # count = int(total_count)
+        total, count = torch.stack((total_sum, total_count)).detach().cpu().tolist()
+        count = int(count)
         result = {"negative_nll": -total / count, "perplexity": math.exp(min(80.0, total / count))}
         result.update(self._timing_cost(start))
         if evaluation_spec.get("return_predictions"):
@@ -832,22 +880,50 @@ class Seq2SeqLMModel(ModelBase):
                 return scores
         return _Guard()
 
-    def _greedy_ids(self, input_ids, attention_mask, max_new, guard):
+    def _sentinels(self):
+        """mT5's pretraining placeholders (``<extra_id_N>``). A summary never contains them."""
+        if self._sentinel_ids is None:
+            # SentencePiece stores them with a word-start marker: "▁<extra_id_0>".
+            pattern = re.compile(r"▁?<extra_id_\d+>")
+            tokenizer = self.tokenizer
+            if hasattr(tokenizer, "convert_ids_to_tokens"):
+                pieces = enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer)))))
+            else:
+                pieces = ((index, piece) for piece, index in tokenizer.get_vocab().items())
+            ids = sorted(index for index, piece in pieces if piece and pattern.fullmatch(piece))
+            self._sentinel_ids = torch.tensor(ids, dtype=torch.long, device=self.device)
+        return self._sentinel_ids
+
+    @staticmethod
+    def _block_repeats(generated, scores, size):
+        """Forbid any token that would repeat an n-gram already in the summary. Stays on the device."""
+        if size < 1 or generated.shape[1] < size:
+            return scores
+        windows = generated.unfold(1, size, 1)
+        prefix = generated[:, generated.shape[1] - size + 1:]
+        matched = (windows[:, :, :-1] == prefix[:, None, :]).all(dim=-1)
+        penalty = torch.zeros(matched.shape, dtype=scores.dtype, device=scores.device).masked_fill_(matched, float("-inf"))
+        return scores.scatter_add_(1, windows[:, :, -1], penalty)
+
+    def _greedy_ids(self, input_ids, attention_mask, max_new, guard, no_repeat=0):
         """Greedy tokens with a decoder cache. The host does not read the device until the summary is done."""
+        sentinels = self._sentinels()
         encoder_outputs = self.module.encoder(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         start_id = int(getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id))
         device = input_ids.device
-        generated = torch.full((input_ids.shape[0], 1), start_id, dtype=torch.long, device=device)
+        generated = torch.empty((input_ids.shape[0], max(0, max_new) + 1), dtype=torch.long, device=device)
+        generated[:, 0].fill_(start_id)
         eos_id = int(self.tokenizer.eos_token_id)
         pad_id = self.tokenizer.pad_token_id
         pad_id = eos_id if pad_id is None else int(pad_id)
-        unfinished = torch.ones(input_ids.shape[0], dtype=torch.long, device=device)
+        unfinished = torch.ones(input_ids.shape[0], dtype=torch.bool, device=device)
         past = None
-        for _ in range(max_new):
+        for step in range(max_new):
+            prefix = generated[:, :step + 1]
             outputs = self.module(
                 attention_mask=attention_mask,
-                decoder_input_ids=generated if past is None else generated[:, -1:],
+                decoder_input_ids=prefix if past is None else generated[:, step:step + 1],
                 encoder_outputs=encoder_outputs,
                 past_key_values=past,
                 use_cache=True,
@@ -855,23 +931,27 @@ class Seq2SeqLMModel(ModelBase):
             scores = outputs.logits[:, -1].float()
             past = outputs.past_key_values
             del outputs
+            if sentinels.numel():
+                scores.index_fill_(1, sentinels, float("-inf"))
+            scores = self._block_repeats(prefix, scores, no_repeat)
             if guard is not None:
-                scores = guard(generated, scores)
+                scores = guard(prefix, scores)
             chosen = scores.argmax(dim=-1)
-            chosen = chosen * unfinished + pad_id * (1 - unfinished)
-            generated = torch.cat((generated, chosen[:, None]), dim=1)
-            unfinished = unfinished * chosen.ne(eos_id).long()
+            chosen = torch.where(unfinished, chosen, pad_id)
+            generated[:, step + 1].copy_(chosen)
+            unfinished.logical_and_(chosen.ne(eos_id))
         return generated
 
     def predict(self, inputs, generation_spec):
         """Greedy summary. ``token_ids`` keep the first EOS and drop padding."""
-        with self._execution(), torch.no_grad():
+        with self._execution(), torch.inference_mode():
             start = self._begin_timed_block()
             payload = self._payload(inputs)
             max_new = int(generation_spec.get("max_new_tokens", self.settings.max_target_length))
             guard = self._guard(generation_spec)
             output = self._greedy_ids(
-                payload["input_ids"], payload.get("attention_mask"), max_new, guard)
+                payload["input_ids"], payload.get("attention_mask"), max_new, guard,
+                int(generation_spec.get("no_repeat_ngram_size", 0)))
             rows = output.tolist()
             start_id = getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id)
             if rows and rows[0] and rows[0][0] == start_id:
@@ -901,6 +981,13 @@ class Seq2SeqLMModel(ModelBase):
         return {name: module.delta().detach() for name, module in self.module.named_modules()
                 if isinstance(module, Seq2SeqLoRA)}
 
+    def effective_update_norms(self):
+        """Per-projection norms for location maps without full shared-update matrices."""
+        self.activate()
+        with torch.no_grad():
+            return {name: module.delta_norm() for name, module in self.module.named_modules()
+                    if isinstance(module, Seq2SeqLoRA)}
+
     def reset_probe(self):
         """Freeze the loaded checkpoint's function beneath a fresh zero-B probe."""
         model_boundary(self.role == "probe", "Reset only an isolated probe role")
@@ -922,7 +1009,6 @@ class Seq2SeqLMModel(ModelBase):
         self._reset_optimizer()
         self.steps = 0
         self.rng_state = self._new_rng()
-        self._drop_compile()
 
     def shrink_adapters(self, k):
         """Replace every adapter by the top-k SVD factors of its effective update, at scale 1."""
@@ -950,7 +1036,6 @@ class Seq2SeqLMModel(ModelBase):
         self.rng_state = self._new_rng()
         self.optimizer = None
         self._reset_optimizer()
-        self._drop_compile()
         return self.get_weights()
 
     def merged_copy(self):
@@ -1177,7 +1262,6 @@ class Seq2SeqLMModel(ModelBase):
         self.save(target.name, "resume" if self.optimizer is not None else "frozen")
         previous, self._offload = self._offload, target
         self.module = self.optimizer = self.scheduler = self.scaler = None
-        self._drop_compile()
         if previous is not None:
             previous.cleanup()
         gc.collect()
@@ -1187,7 +1271,6 @@ class Seq2SeqLMModel(ModelBase):
     def release(self):
         self._clear_cuts()
         self.module = self.optimizer = self.scheduler = self.scaler = None
-        self._drop_compile()
         if self._offload is not None:
             self._offload.cleanup()
             self._offload = None

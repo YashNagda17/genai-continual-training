@@ -19,6 +19,12 @@ Only the summarization plan is active. Removed mechanisms include legacy selecti
 
 Plain JSON stores policy, IDs, manifests and events. Torch performs training and numerical calculations. Transient gradients stay on their compute device. `resolve_device` chooses CUDA/ROCm, then XPU, then CPU and prints CPU placement. Nested tensor transfers preserve integer/boolean dtypes and autograd. mT5 uses fp32.
 
+`TokenTargets` may hold detached tensors on CPU or the compute device. Transient `StepReport.diagnostics.token_surprise` stays on the compute device and is excluded from persisted summaries. Loss sums/counts are plain numbers when `train()` returns, after a combined transfer of pending device metrics.
+
+`TokenTargets.all_positive` defaults to false. A producer may set it only when every aligned token weight is strictly positive by construction. The executor then uses shape metadata for active-token/row counts, avoiding a device scalar read; arbitrary targets retain zero-weight skipping. The repair producer supplies this guarantee for its `1 + beta * clamp(...)` normalized weights under the existing finite-input assumption.
+
+Nested CPU-to-accelerator batch transfers request `non_blocking=True` and preserve dtype/autograd. Source batch tensors remain unmodified until device work completes; consumers run on the same device stream. Transfers to CPU remain blocking so host consumers see completed data. Pageable input staging may still block the host; this removes per-tensor explicit stream waits, without promising transfer/compute overlap.
+
 `ReplayStore` owns payload/membership and budget checks; it never chooses records. Pool examples, past summaries and token baselines count toward retained storage. Recovery-only data cannot augment active training access. The Hindi access rule is enforced by pipeline boundaries.
 
 ## Recovery and artifacts

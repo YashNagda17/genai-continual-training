@@ -1,9 +1,13 @@
-"""Phase 3: location maps, block plans, and the combined run."""
+"""Phase 3: location maps, block plans, and the combined run.
+
+Arms are screened on one seed. The best revision gets the other seeds only when X's seed spread is too wide,
+and G1's compute-matched control runs only when G1 is the best revision."""
 
 from ..pipelines.adapter_room import AdapterRoomPipeline
 from ..utils.numerics import interaction
 from ..utils.state import read_json, write_json
-from .support import hindi_pipeline, run_hindi, room_config, choose_winner, phase, run_pipeline, score
+from .support import (combined_pipeline, hindi_pipeline, matched_extra_steps, revision_pipeline, run_hindi, room_config,
+                      choose_winner, phase, run_pipeline, score, screening)
 from ..pipelines.revision import load_pool
 from .artifacts import annotate, compare_arms, save_report
 
@@ -40,29 +44,45 @@ def run(directory, dataset, model_factory, settings, context, clock):
     best_blocks = choose_winner(before, [arms["random"], arms["late"], arms["early_late"]], arms["random"])
     revision_names = ("loss", "drift", "past", "repair_stop")
     best_revision = choose_winner(before, [arms[name] for name in revision_names], arms["random"])
-    combined_pipeline = hindi_pipeline(settings, pool, checkpoint, selector=best_revision["selector"],
+    conditional = {}
+    if context["phase1"].get("confirm_revision") or settings.force_conditional:
+        name = best_revision["name"]
+        arms[name] = run_hindi(directory.parent / "phase2" / name, name,
+                               revision_pipeline(settings, pool, checkpoint, best_revision), dataset, model_factory,
+                               settings, seeds=settings.hindi_seeds, selector=best_revision["selector"],
                                replay_text=best_revision["replay_text"], repair_stop=best_revision["repair_stop"])
-    combined_pipeline.adapter_plan = room.adapter_plan(
-        {"random": "all", "late": "late", "early_late": "early_late"}[best_blocks["name"]])
+        best_revision = arms[name]
+        conditional["confirmed_revision"] = name
+    if best_revision["name"] == "drift" or settings.force_conditional:
+        extra = matched_extra_steps(arms["random"], arms["drift"])
+        arms["random_compute_matched"] = run_hindi(
+            directory / "random_compute_matched", "random_compute_matched",
+            hindi_pipeline(settings, pool, checkpoint, selector="random", extra_random_steps=extra),
+            dataset, model_factory, settings, selector="random", replay_text="reference", repair_stop=False,
+            extra_random_steps=extra)
+        conditional["compute_matched_extra_steps"] = extra
     arms["combined"] = run_hindi(
-        directory / "combined", "combined", combined_pipeline, dataset, model_factory, settings,
+        directory / "combined", "combined", combined_pipeline(settings, pool, checkpoint, best_revision,
+                                                             best_blocks["name"]), dataset, model_factory, settings,
         selector=best_revision["selector"], replay_text=best_revision["replay_text"],
         repair_stop=best_revision["repair_stop"], blocks=best_blocks["name"])
     arms["full_english"] = run_hindi(
         directory / "full_english", "full_english", hindi_pipeline(settings, pool, checkpoint, selector="full"),
         dataset, model_factory, settings, selector="full", replay_text="reference", repair_stop=False)
-    english_score = score(arms["combined"]["metrics"], "english/validation/plain")
-    interaction_value = interaction(
-        score(arms["random"]["metrics"], "english/validation/plain"),
-        score(best_revision["metrics"], "english/validation/plain"),
-        score(best_blocks["metrics"], "english/validation/plain"), english_score)
+    def english(arm):
+        return score(screening(arm)["metrics"], "english/validation/plain")
+    interaction_value = interaction(english(arms["random"]), english(best_revision), english(best_blocks),
+                                    english(arms["combined"]))
     trained = [maps_record, arms["late"], arms["early_late"], arms["combined"], arms["full_english"]]
+    trained += [arms[name] for name in ("random_compute_matched",) if name in arms]
+    comparisons = [("late", "early_late"), ("combined", "random"), ("combined", best_revision["name"])]
+    if "random_compute_matched" in arms:
+        comparisons.append(("drift", "random_compute_matched"))
     details = annotate(
         {"prediction": prediction, "best_blocks": best_blocks["name"],
          "best_revision": best_revision["name"], "interaction": interaction_value,
-         "maps_stable": maps["stable"],
-         "comparisons": [compare_arms(arms[a], arms[b]) for a, b in (
-             ("late", "early_late"), ("combined", "random"), ("combined", best_revision["name"]))]},
+         "maps_stable": maps["stable"], "conditional": conditional,
+         "comparisons": [compare_arms(arms[a], arms[b]) for a, b in comparisons]},
         clock, trained, arms["combined"].get("final_model"))
     kept = maps
     update = {"maps": kept, "best_blocks": best_blocks["name"],

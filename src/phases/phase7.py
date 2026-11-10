@@ -25,7 +25,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
         skipped.append({"name": "room_placed_frozen",
                         "reason": context.get("room_reason") or context.get("room_status")})
     else:
-        plans, reason = room_plans(settings, context, frozen=True)
+        plans, reason = room_plans(settings, context, names=("room_placed_frozen",))
         chosen = next((plan for plan in plans if plan.identity["arm"] == "room_placed_frozen"), None)
         if chosen is None and not any(item["name"] == "room_placed_frozen" for item in skipped):
             skipped.append({"name": "room_placed_frozen", "reason": reason})

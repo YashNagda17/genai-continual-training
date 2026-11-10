@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+import csv
 import math
 
 import torch
@@ -183,21 +184,24 @@ class RevisionPipeline(SummarizationPipeline):
             rows = tuple(pool[work['cursor']:work['cursor'] + self.config.analysis_batch])
             generated = self._generate(rows, 'pool_generation')
             baseline = self._score(rows, ScoreSpec('token_loss', 'none'), 'pool_scoring')
+            baseline = baseline.detach().cpu().tolist()
             offset = 0
             written = []
             for row, text, ids in zip(rows, generated['texts'], generated['token_ids']):
                 count = len(row.target['ids'])
-                old = baseline[offset:offset + count].tolist()
+                # old = baseline[offset:offset + count].tolist()
+                old = baseline[offset:offset + count]
                 offset += count
                 written.append(replace(row, practice={'answer_text': text, 'answer_ids': ids,
                     'baseline': old, 'past_baseline': [], 'loss_before': sum(old) / len(old),
                     'writer': 'english_checkpoint'}))
             nonempty = tuple(practice_record(r) for r in written if r.practice['answer_ids'])
-            past = self._score(nonempty, ScoreSpec('token_loss', 'none'), 'pool_scoring') if nonempty else []
+            past = self._score(nonempty, ScoreSpec('token_loss', 'none'), 'pool_scoring').detach().cpu().tolist() if nonempty else []
             offset = 0
             for row in written:
                 count = len(row.practice['answer_ids'])
-                row.practice['past_baseline'] = list(past[offset:offset + count].tolist()) if count else []
+                # row.practice['past_baseline'] = list(past[offset:offset + count].tolist()) if count else []
+                row.practice['past_baseline'] = past[offset:offset + count] if count else []
                 offset += count
                 work['records'].append(asdict(row))
             work['cursor'] += len(rows)
@@ -279,39 +283,43 @@ class RevisionPipeline(SummarizationPipeline):
         return tuple(self.policy['retired'])
 
     def token_targets(self, batch, surprise):
-        pieces, offset = [], 0
+        baselines, spans, offset = [], [], 0
+        key = 'past_baseline' if self.config.replay_text == 'past' else 'baseline'
         for row in batch.records:
             count = len(row.target['ids'])
-            now = surprise[offset:offset + count]
             if row.task_id == 'english':
-                key = 'past_baseline' if self.config.replay_text == 'past' else 'baseline'
-                before = torch.as_tensor(row.practice[key], device=now.device, dtype=now.dtype)
+                before = row.practice[key]
                 if len(before) != count:
                     raise ValueError('Saved token baseline no longer aligns with replay text')
-                weight = 1 + self.config.repair_beta * (now - before).clamp_min(0)
-                weight = weight / weight.mean()
-            else:
-                weight = torch.ones_like(now)
-            pieces.append(weight)
+                spans.append((offset, count, len(baselines)))
+                baselines.extend(before)
             offset += count
         if offset != surprise.numel():
             raise ValueError('Token targets and training batch disagree')
-        weights = torch.cat(pieces).detach().float().cpu()
-        return TokenTargets(torch.zeros_like(weights), weights)
+        weights = torch.ones_like(surprise, dtype=torch.float32)
+        if spans:
+            before = torch.tensor(baselines, dtype=surprise.dtype).to(surprise.device, non_blocking=True)
+            for offset, count, start in spans:
+                now = surprise[offset:offset + count]
+                weight = 1 + self.config.repair_beta * (now - before[start:start + count]).clamp_min(0)
+                weights[offset:offset + count] = weight / weight.mean()
+        return TokenTargets(torch.zeros_like(weights), weights.detach(), all_positive=True)
 
     def _validation_pass(self):
         if self.policy['completed_passes'] <= self.policy['validated_passes']:
             return
         work = self.policy['work'].setdefault('validation', {'cursor': 0, 'predictions': []})
         rows = self.held_out('english', 'validation')
-        print(f"validation english {work['cursor']}/{len(rows)} samples", flush=True)
+        label = f"validation english epoch {self.policy['completed_passes']}/{self.spec.passes}"
+        print(f"{label} {work['cursor']}/{len(rows)} samples", flush=True)
         while work['cursor'] < len(rows):
             part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
             work['predictions'] += self._generate(part, 'validation_generation', held_out=True)['texts']
             work['cursor'] += len(part)
-            self.log_sample_progress("validation english", work['cursor'], len(rows))
+            self.log_sample_progress(label, work['cursor'], len(rows))
             self._commit()
         scores = summary_metrics(work['predictions'], [r.target['text'] for r in rows], 'english')
+        self._save_scores(self.policy['completed_passes'], 'english/validation/plain', scores)
         best = self.policy['best']
         if best is None or scores['chrf'] > best['scores']['chrf']:
             self.policy['best'] = {'path': self.artifacts.blob(self.model), 'scores': scores,
@@ -400,7 +408,11 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy.pop('pool_rows', None)  # Older recovery snapshots may contain this unused field.
 
     def _evaluate_seen(self):
+        announced_test = False
         for split in ('validation', 'test'):
+            if split == 'test' and not announced_test:
+                print(f"test after {self.spec.passes} training epochs", flush=True)
+                announced_test = True
             for language in ('english', 'hindi'):
                 for guarded in (False, True):
                     key = f'{language}/{split}/{"guarded" if guarded else "plain"}'
@@ -417,6 +429,7 @@ class RevisionPipeline(SummarizationPipeline):
                         self.log_sample_progress(f"generate {key}", work['cursor'], len(rows))
                         self._commit()
                     scores = summary_metrics(work['texts'], [r.target['text'] for r in rows], language)
+                    self._save_scores('final', key, scores)
                     self.metrics.append({'checkpoint_task': self.config.stage, 'task': key, 'metrics': scores})
                     folder = Path(self.context.output) / 'predictions'
                     folder.mkdir(exist_ok=True)
@@ -424,3 +437,18 @@ class RevisionPipeline(SummarizationPipeline):
                         {'id': r.sample_id, 'target': r.target['text'], 'prediction': text} for r, text in zip(rows, work['texts'])])
                     self.policy['work'].pop('evaluation', None)
                     self._commit()
+
+    def _save_scores(self, pass_number, task, scores):
+        """Keep every chrF, ROUGE-L, and right-language score for the run report."""
+        row = {'pass': pass_number, 'task': task,
+               'rouge_l': scores['rouge_l'], 'chrf': scores['chrf'], 'right_language': scores['right_language']}
+        saved = [item for item in self.policy.get('score_history') or []
+                 if not (item.get('pass') == pass_number and item.get('task') == task)]
+        saved.append(row)
+        self.policy['score_history'] = saved
+        path = Path(self.context.output) / 'scores.csv'
+        with path.open('w', newline='', encoding='utf-8') as handle:
+            writer = csv.writer(handle)
+            writer.writerow(('pass', 'task', 'rouge_l', 'chrf', 'right_language'))
+            writer.writerows((item['pass'], item['task'], item['rouge_l'], item['chrf'], item['right_language'])
+                             for item in saved)

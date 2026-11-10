@@ -11,7 +11,7 @@ from ..phases.phase0 import summary_word_coverage
 from ..phases.data import build_smoke_dataset, build_smoke_model, choose_ids, with_prefix
 from ..phases.settings import PhaseSettings
 from ..phases.serving import measure
-from ..phases.support import hindi_pipeline, phase, run_hindi
+from ..phases.support import execute, hindi_pipeline, phase, run_hindi
 from ..pipelines.revision import load_pool
 from ..phases.support import choose_winner, gate_decision, script_share_of_forgetting
 from ..summarization_experiment import main
@@ -83,9 +83,14 @@ class PhaseRuleTests(unittest.TestCase):
         past = arm("past", 29, 10)
         self.assertEqual(choose_winner(before, [loss, drift, past], random)["name"], "loss")
         self.assertEqual(choose_winner(before, [past], random)["name"], "random")
+        # Decisions use the screening seed, so a confirmed arm is judged on the same seed as the others.
+        confirmed = dict(arm("loss", 10, 25), seed_runs=[loss, arm("loss", 10, 25)])
+        self.assertEqual(choose_winner(before, [confirmed, drift], random)["name"], "loss")
         self.assertEqual(gate_decision(8, 17), "continue")
         self.assertEqual(gate_decision(0.5, 17), "stop_replay")
         self.assertEqual(gate_decision(8, 0), "fix_setup")
+        self.assertEqual(gate_decision(8, 17, english_score=11.6, lead_score=22.0), "fix_english")
+        self.assertEqual(gate_decision(8, 17, english_score=25.0, lead_score=22.0), "continue")
         self.assertEqual(script_share_of_forgetting(30, 22, 27), 0.625)
         self.assertIsNone(script_share_of_forgetting(22, 22, 27))
 
@@ -141,6 +146,22 @@ class PhaseRuleTests(unittest.TestCase):
             model.release()
 
 
+class DecodingTests(unittest.TestCase):
+    def test_a_repeated_trigram_is_blocked(self):
+        import torch
+        from ..models.model_seq2seq import Seq2SeqLMModel
+        generated = torch.tensor([[0, 5, 6, 7, 5, 6], [0, 1, 2, 3, 4, 5]])
+        scores = Seq2SeqLMModel._block_repeats(generated, torch.zeros(2, 10), 3)
+        self.assertEqual(scores[0, 7].item(), float("-inf"))
+        self.assertEqual(int(torch.isinf(scores[0]).sum()), 1)
+        self.assertEqual(int(torch.isinf(scores[1]).sum()), 0)
+
+    def test_lead_sentence_splits_english_and_hindi(self):
+        from ..phases.support import lead_sentence
+        self.assertEqual(lead_sentence("One here.  Two there."), "One here.")
+        self.assertEqual(lead_sentence("क ख। ग"), "क ख।")
+
+
 class PhaseSmokeTests(unittest.TestCase):
     def test_smoke_writes_every_phase_report_and_keeps_it(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,7 +185,8 @@ class PhaseSmokeTests(unittest.TestCase):
             self.assertIn("english", phase0["tokens_per_character"])
             self.assertIn("hindi", phase0["tokens_per_character"])
             phase1 = json.loads((root / "phase1" / "report.json").read_text())
-            self.assertIn(phase1["details"]["gate"], {"continue", "stop_replay", "fix_setup"})
+            self.assertIn(phase1["details"]["gate"], {"continue", "stop_replay", "fix_setup", "fix_english"})
+            self.assertIn("chrf", phase1["details"]["lead_1"]["english"])
             self.assertIn("script_share_of_forgetting", phase1["details"])
             self.assertEqual(phase1["context"]["hindi_only"]["status"], "completed")
             self.assertEqual(phase1["details"]["decision_split"], "validation")
@@ -184,7 +206,10 @@ class PhaseSmokeTests(unittest.TestCase):
             self.assertGreaterEqual(shrink["k_E"], 1)
             self.assertGreaterEqual(shrink["k_G"], 1)
             phase6 = json.loads((root / "phase6" / "report.json").read_text())["details"]
+            self.assertEqual(phase6["status"], "completed")
             self.assertEqual(phase6["prefix"], phase6["stored_prefix"])
+            phase3 = json.loads((root / "phase3" / "report.json").read_text())["details"]
+            self.assertIn("compute_matched_extra_steps", phase3["conditional"])
             phase7 = json.loads((root / "phase7" / "report.json").read_text())["details"]
             self.assertIn("reverse_order", {item["name"] for item in phase7["skipped"]})
             self.assertTrue((root / "phase7" / "drift_past" / "run.json").is_file())
@@ -216,12 +241,18 @@ class PhaseSmokeTests(unittest.TestCase):
             model = build_smoke_model()
             dataset = build_smoke_dataset(model)
             model.release()
-            settings = PhaseSettings(protocol="scientific", max_new_tokens=8, shrink_tolerance=100.0)
+            settings = PhaseSettings(protocol="scientific", batch_size=2, analysis_batch=2, english_passes=1,
+                                     hindi_passes=1, max_new_tokens=8, shrink_tolerance=100.0)
             pool = load_pool(phase1["context"]["pool"])
             checkpoint = phase1["context"]["english_checkpoint"]
             pipeline = hindi_pipeline(settings, pool, checkpoint, selector="random")
             output = root / "three_seed"
-            seeded = run_hindi(output, "random", pipeline, dataset, build_smoke_model, settings)
+            screened = run_hindi(output, "random", pipeline, dataset, build_smoke_model, settings)
+            self.assertEqual([run["seed"] for run in screened["seed_runs"]], [1])
+            with patch("src.phases.support.execute", wraps=execute) as trained:
+                seeded = run_hindi(output, "random", pipeline, dataset, build_smoke_model, settings,
+                                   seeds=settings.hindi_seeds)
+            self.assertEqual(trained.call_count, 2)
             self.assertEqual([run["seed"] for run in seeded["seed_runs"]], [1, 2, 3])
             self.assertEqual(seeded["steps"], sum(run["steps"] for run in seeded["seed_runs"]))
             self.assertEqual(seeded["costs"]["forward_pass_units"],
@@ -229,7 +260,8 @@ class PhaseSmokeTests(unittest.TestCase):
             for final in seeded["final_models"].values():
                 self.assertTrue((Path(final) / "metadata.json").is_file())
             with patch("src.phases.support.execute", side_effect=AssertionError("finished seeds retrained")):
-                cached = run_hindi(output, "random", pipeline, dataset, build_smoke_model, settings)
+                cached = run_hindi(output, "random", pipeline, dataset, build_smoke_model, settings,
+                                   seeds=settings.hindi_seeds)
             self.assertEqual(seeded["metrics"], cached["metrics"])
 
 

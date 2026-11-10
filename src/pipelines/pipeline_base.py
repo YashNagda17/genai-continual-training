@@ -112,12 +112,31 @@ class PipelineBase(PipelineRuntime, ABC):
         print(f"{phase} {done}/{total} samples ({bucket * 5}%)", flush=True)
 
     def current_batch(self, selector=None, *, peek=False):
-        """Scan arrivals, then print when the training cursor crosses another 5%."""
-        before = self.progress.get("cursor", 0) if isinstance(self.progress, dict) else 0
+        """Scan arrivals, then print when this epoch's cursor crosses another 5%.
+
+        Later epochs reuse the admitted rows, so their cursor stays at the end.
+        The repeat cursor is the one that moves, and the last batch of a repeat
+        epoch resets it while advancing the pass count.
+        """
+        progress = self.progress if isinstance(self.progress, dict) else {}
+        before = (progress.get("cursor", 0), progress.get("repeat_cursor", 0), progress.get("pass", 1))
         batch = super().current_batch(selector, peek=peek)
-        done = self.progress.get("cursor", 0) if isinstance(self.progress, dict) else 0
-        if done != before and self.current:
-            self.log_sample_progress(f"train task={self.task_id}", done, len(self.current))
+        if not batch or not self.current or not isinstance(self.progress, dict):
+            return batch
+        total = len(self.current)
+        cursor = self.progress.get("cursor", 0)
+        repeat = self.progress.get("repeat_cursor", 0)
+        epoch_pass = self.progress.get("pass", 1)
+        if epoch_pass != before[2]:
+            epoch, done = epoch_pass, total
+        elif cursor != before[0]:
+            epoch, done = 1, cursor
+        elif repeat != before[1]:
+            epoch, done = epoch_pass + 1, repeat
+        else:
+            return batch
+        passes = getattr(getattr(self, "spec", None), "passes", epoch)
+        self.log_sample_progress(f"train task={self.task_id} epoch {epoch}/{passes}", done, total)
         return batch
 
     def evaluate(self, view, evaluation_spec):
@@ -206,9 +225,10 @@ class SummarizationPipeline(PipelineBase):
         batch = self.dataset.collate(records)
         result = (model or self.model).score(batch, spec).validate(batch, spec)
         values = result.values
-        tensors = [values] if torch.is_tensor(values) else values["gradients"]
-        if any(not torch.isfinite(value).all() for value in tensors):
-            raise ValueError("Nonfinite policy scores")
+        # tensors = [values] if torch.is_tensor(values) else values["gradients"]
+        # if any(not torch.isfinite(value).all() for value in tensors):
+        #     raise ValueError("Nonfinite policy scores")
+        # Temporary: consume scores on their compute device without a host finite check.
         self._cost(category, records, result.cost)
         return values
 

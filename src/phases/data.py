@@ -44,14 +44,14 @@ class SmokeModel(Seq2SeqLMModel):
     untie_head = True
 
 
-def build_smoke_model():
+def build_smoke_model(device="cpu"):
     settings = Seq2SeqSettings(rank=4, alpha=8.0, learning_rate=0.05, max_source_length=16,
                                max_target_length=8, max_batch_size=4, seed=3)
     config = MT5Config(vocab_size=32, d_model=32, d_ff=64, d_kv=8, num_heads=4, num_layers=2,
                        num_decoder_layers=2, dropout_rate=0.0, feed_forward_proj="gated-gelu",
                        tie_word_embeddings=False, decoder_start_token_id=0, eos_token_id=1,
                        pad_token_id=0, initializer_factor=0.5)
-    role = SmokeModel(settings, device="cpu", pretrained=False, config=config,
+    role = SmokeModel(settings, device=device, pretrained=False, config=config,
                       tokenizer=SmokeTokenizer(), model_factory=MT5ForConditionalGeneration)
     role.runtime_root = Path(tempfile.mkdtemp())
     return role

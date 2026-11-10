@@ -235,6 +235,7 @@ class SummarizationDataset(DatasetBase):
                    "attention_mask": padded([[1] * len(seq) for seq in sources]).bool()}
         if labels:
             payload["labels"] = padded([r.target["ids"] for r in records], IGNORE_INDEX)
+            payload["supervised_indices"] = (payload["labels"].reshape(-1) != IGNORE_INDEX).nonzero().flatten()
         return Batch(records, payload, sum(map(len, sources)),
                      sum(len(r.target["ids"]) for r in records) if labels else 0)
 

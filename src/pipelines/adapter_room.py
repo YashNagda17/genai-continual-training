@@ -7,7 +7,7 @@ import torch
 
 from .pipeline_base import SummarizationPipeline
 from ..utils.contracts import AdapterPlan, ScoreSpec
-from ..utils.numerics import cosine
+from ..utils.numerics import cosine, cosine_tensor
 from ..utils.state import write_json
 
 
@@ -81,9 +81,13 @@ class AdapterRoomPipeline(SummarizationPipeline):
     def _change_map(self, path, kind):
         role = self.acquire_auxiliary('analysis', str(path), checkpoint=path, state_kind=kind)
         result = {}
-        for name, value in role.effective_updates().items():
+        for name, value in role.effective_update_norms().items():
             cell = cell_of(name)
-            result[cell] = result.get(cell, 0.0) + float(torch.linalg.vector_norm(value))
+            # result[cell] = result.get(cell, 0.0) + float(torch.linalg.vector_norm(value))
+            result[cell] = result.get(cell, 0.0) + value
+        if result:
+            totals = torch.stack(list(result.values())).detach().cpu().tolist()
+            result = dict(zip(result, totals))
         self.release_auxiliary()
         return result
 
@@ -97,13 +101,27 @@ class AdapterRoomPipeline(SummarizationPipeline):
             if work['groups'] is not None and groups != work['groups']:
                 raise ValueError('Probe group layout changed during a sweep')
             work['groups'] = groups
-            for group, gradient in zip(groups, values['gradients']):
-                previous = torch.as_tensor(work['sum'].get(group, [0.0] * gradient.numel()),
-                                           device=gradient.device, dtype=gradient.dtype)
-                work['sum'][group] = (previous + len(part) * gradient).tolist()
+            gradients = values['gradients']
+            sizes = [gradient.numel() for gradient in gradients]
+            if gradients:
+                # Restore the JSON totals with one transfer across all groups.
+                previous = torch.tensor([item for group, size in zip(groups, sizes)
+                                         for item in work['sum'].get(group, [0.0] * size)],
+                                        dtype=gradients[0].dtype)
+                previous = previous.to(gradients[0].device, non_blocking=True)
+                packed = (previous + len(part) * torch.cat(gradients)).detach().cpu().tolist()
+                offset = 0
+                for group, size in zip(groups, sizes):
+                    work['sum'][group] = packed[offset:offset + size]
+                    offset += size
             work['cursor'] += len(part)
             self._commit()
-        return {group: torch.tensor(value, device=probe.device) / len(rows) for group, value in work['sum'].items()}
+        # return {group: torch.tensor(value, device=probe.device) / len(rows) for group, value in work['sum'].items()}
+        groups = list(work['sum'])
+        sizes = [len(work['sum'][group]) for group in groups]
+        packed = torch.tensor([item for group in groups for item in work['sum'][group]], dtype=torch.float32)
+        means = packed.to(probe.device, non_blocking=True) / len(rows)
+        return dict(zip(groups, means.split(sizes)))
 
     def location_maps(self):
         if self.policy['result'] is not None:
@@ -143,9 +161,16 @@ class AdapterRoomPipeline(SummarizationPipeline):
                     ids = self.policy['samples'][language][index * n:(index + 1) * n]
                     rows = tuple(lookup[i] for i in ids)
                     means[language] = self._mean_gradient(rows, view, f'{view}/{language}', probe)
-                result[view] = {group: {'pull': float(means['hindi'][group].norm()),
-                                        'agreement': cosine(means['english'][group], means['hindi'][group])}
-                                for group in sorted(means['english'])}
+                # result[view] = {group: {'pull': float(means['hindi'][group].norm()),
+                #                         'agreement': cosine(means['english'][group], means['hindi'][group])}
+                #                 for group in sorted(means['english'])}
+                groups = sorted(means['english'])
+                metrics = [torch.stack((means['hindi'][group].norm(),
+                                       cosine_tensor(means['english'][group], means['hindi'][group])))
+                           for group in groups]
+                rows = torch.stack(metrics).detach().cpu().tolist() if metrics else []
+                result[view] = {group: {'pull': pull, 'agreement': agreement}
+                                for group, (pull, agreement) in zip(groups, rows)}
             self.policy['maps'].append(result)
             self.policy['sample_index'] += 1
             self.policy['work'] = {}

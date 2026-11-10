@@ -115,6 +115,51 @@ class SourceConversionTests(unittest.TestCase):
 
 
 class SummarizationModelTests(unittest.TestCase):
+    def test_fused_lora_matches_equation_gradients_and_dense_norm(self):
+        for extra in (False, True):
+            adapter = Seq2SeqLoRA(torch.nn.Linear(7, 5), 3, 4.5, block_key="encoder.1",
+                block_index=0, part="self_attention", projection="q", deterministic=True, seed=7)
+            if extra:
+                adapter.add_extra(2, 11)
+            with torch.no_grad():
+                adapter.B.normal_()
+                if extra:
+                    adapter.extra_B.normal_()
+            inputs = torch.randn(2, 3, 7).transpose(0, 1).requires_grad_()
+            reference = adapter.base(inputs) + torch.nn.functional.linear(
+                torch.nn.functional.linear(inputs, adapter.A), adapter.B) * adapter.scale
+            if extra:
+                reference = reference + torch.nn.functional.linear(
+                    torch.nn.functional.linear(inputs, adapter.extra_A), adapter.extra_B) * adapter.extra_scale
+            actual = adapter(inputs)
+            torch.testing.assert_close(actual, reference)
+            parameters = (inputs, adapter.A, adapter.B, *((adapter.extra_A, adapter.extra_B) if extra else ()))
+            expected_gradients = torch.autograd.grad(reference.square().sum(), parameters)
+            actual_gradients = torch.autograd.grad(actual.square().sum(), parameters)
+            for expected, observed in zip(expected_gradients, actual_gradients):
+                torch.testing.assert_close(observed, expected)
+            torch.testing.assert_close(adapter.delta_norm(), torch.linalg.vector_norm(adapter.delta()))
+
+    def test_preallocated_generation_handles_mixed_eos_and_cacheless_prefixes(self):
+        from types import SimpleNamespace
+        role = model()
+        role.activate()
+        source = batch().payload
+        for cached in (False, True):
+            seen = []
+            def forward(**kwargs):
+                seen.append(kwargs['decoder_input_ids'].clone())
+                chosen = ((1, 7), (8, 1), (9, 9))[len(seen) - 1]
+                logits = torch.full((2, 1, 32), -100.)
+                logits[torch.arange(2), 0, torch.tensor(chosen)] = 100.
+                return SimpleNamespace(logits=logits, past_key_values=object() if cached else None)
+            with patch.object(role.module.encoder, 'forward', return_value=None), \
+                    patch.object(role.module, 'forward', side_effect=forward), torch.no_grad():
+                output = role._greedy_ids(source['input_ids'], source['attention_mask'], 3, None)
+            self.assertEqual(output.tolist(), [[0, 1, 0, 0], [0, 7, 1, 0]])
+            self.assertEqual([item.shape[1] for item in seen], [1, 1, 1] if cached else [1, 2, 3])
+        role.release()
+
     def test_planned_resume_reproduces_the_next_dropout_update(self):
         role, restored = model(), model()
         role.config.dropout_rate = restored.config.dropout_rate = 0.1
@@ -166,15 +211,6 @@ class SummarizationModelTests(unittest.TestCase):
         self.assertEqual(next(role.module.parameters()).dtype, torch.float32)
         head, shared = role.module.lm_head.weight, role.module.shared.weight
         self.assertIsNot(head, shared)
-        self.assertIs(role._compiled_module(), role.module)
-        role.device = torch.device("xpu")
-        with patch("src.models.model_seq2seq.torch.compile", return_value="compiled") as compile:
-            self.assertEqual(role._compiled_module(), "compiled")
-            self.assertEqual(compile.call_count, 1)
-            self.assertEqual(role._compiled_module(), "compiled")
-            self.assertEqual(compile.call_count, 1)
-        role._drop_compile()
-        self.assertIsNone(role._compiled)
 
     def test_example_loss_matches_separate_rows_and_ignores_padding(self):
         role = model()
@@ -265,8 +301,11 @@ class SummarizationModelTests(unittest.TestCase):
                 input_ids=payload["input_ids"], attention_mask=payload["attention_mask"],
                 max_new_tokens=3, do_sample=False, use_cache=False,
                 logits_processor=[role._guard(spec)])
+        role.module.decoder.block[0].eval()
+        modes = [module.training for module in role.module.modules()]
         first = role.predict(source, spec)
         second = role.predict(source, spec)
+        self.assertEqual([module.training for module in role.module.modules()], modes)
         self.assertEqual(first["token_ids"], second["token_ids"])
         self.assertEqual(first["token_ids"], role._trim_generated(
             [row[1:] if row and row[0] == role.config.decoder_start_token_id else row
@@ -282,6 +321,31 @@ class SummarizationModelTests(unittest.TestCase):
         self.assertFalse(reports[0].success)
         self.assertEqual(reports[0].skip_reason, "no_active_tokens")
         self.assertEqual(role.steps, 0)
+
+    def test_weighted_rows_exclude_inactive_rows_and_preserve_gradients(self):
+        flat = torch.tensor([2., 4., 9., 6., 10., 14.], requires_grad=True)
+        weights = torch.tensor([1., 0., 0., 0., 2., 1.])
+        loss, total, count = model()._weighted_loss(
+            flat, TokenTargets(torch.zeros_like(weights), weights), torch.tensor([2, 1, 3]))
+        self.assertEqual(float(loss), 9.5)  # Active row means: 2 and 17.
+        self.assertEqual(float(total), 19.)
+        self.assertEqual(int(count), 2)
+        loss.backward()
+        torch.testing.assert_close(flat.grad, torch.tensor([.5, 0., 0., 0., .5, .25]))
+
+    def test_positive_weight_fast_path_matches_general_loss_and_gradients(self):
+        role = model()
+        weights = torch.tensor([1., 2., .5, 1.5, 3.])
+        for counts in (None, torch.tensor([2, 3])):
+            general = torch.tensor([2., 4., 6., 8., 10.], requires_grad=True)
+            positive = general.detach().clone().requires_grad_()
+            expected = role._weighted_loss(general, TokenTargets(None, weights), counts)
+            actual = role._weighted_loss(positive, TokenTargets(None, weights, all_positive=True), counts)
+            for left, right in zip(actual, expected):
+                torch.testing.assert_close(torch.as_tensor(left), torch.as_tensor(right))
+            actual[0].backward()
+            expected[0].backward()
+            torch.testing.assert_close(positive.grad, general.grad)
 
     def test_english_checkpoint_pool_and_hindi_export(self):
         role = model()
@@ -409,6 +473,7 @@ class SummarizationDatasetTests(unittest.TestCase):
             batch = plain.collate(plain.training_view("english"))
             self.assertTrue(bool((batch.payload["labels"][0] == -100).any()))
             self.assertEqual(batch.ids, ("english/2", "english/1"))
+            self.assertEqual(batch.payload["supervised_indices"].tolist(), [0, 1, 3, 4, 5])
             sources = plain.collate_sources(plain.views["test"])
             self.assertNotIn("labels", sources.payload)
             saved = Path(directory) / "prepared"
@@ -421,6 +486,36 @@ class SummarizationDatasetTests(unittest.TestCase):
 
 
 class SummarizationPipelineTests(unittest.TestCase):
+    def test_probe_means_resume_with_unequal_groups_and_partial_batches(self):
+        from types import SimpleNamespace
+        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+        config = AdapterRoomConfig(.5, analysis_batch=2)
+        probe = SimpleNamespace(device=torch.device("cpu"))
+        calls, saved = [], []
+
+        def score(part, *_args):
+            calls.append(tuple(part))
+            mean = sum(part) / len(part)
+            return {"groups": ("a", "b"), "gradients": (
+                torch.tensor([mean, mean + 1]), torch.tensor([2 * mean]))}
+
+        pipeline = AdapterRoomPipeline(config)
+        pipeline._score = score
+        def interrupt():
+            saved.append(json.loads(json.dumps(pipeline.policy)))
+            raise KeyboardInterrupt()
+        pipeline._commit = interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            pipeline._mean_gradient(tuple(range(5)), "cell", "sample", probe)
+
+        restored = AdapterRoomPipeline(config)
+        restored.policy, restored._score = saved[0], score
+        restored._commit = lambda: json.dumps(restored.policy)
+        means = restored._mean_gradient(tuple(range(5)), "cell", "sample", probe)
+        self.assertEqual(calls, [(0, 1), (2, 3), (4,)])
+        torch.testing.assert_close(means["a"], torch.tensor([2., 3.]))
+        torch.testing.assert_close(means["b"], torch.tensor([4.]))
+
     def fixture(self):
         from ..utils.contracts import Record
         dataset = SummarizationDataset()
@@ -504,6 +599,10 @@ class SummarizationPipelineTests(unittest.TestCase):
         self.assertTrue(torch.equal(targets.weight[:2], torch.ones(2)))
         self.assertAlmostEqual(float(targets.weight[2:].mean()), 1)
         self.assertGreater(float(targets.weight[-1]), float(targets.weight[-2]))
+        mixed = dataset.collate((batch_.records[0], rows[0], rows[1]))
+        packed = pipeline.token_targets(mixed, torch.tensor([1., 2., .6, 1.6, .6, 1.6, 2.6]))
+        self.assertTrue(packed.all_positive)
+        torch.testing.assert_close(packed.weight, torch.tensor([1., 1., 2 / 3, 4 / 3, .5, 1., 1.5]))
         worse = replace(rows[1], practice={**rows[1].practice, "answer_text": "the the the weather"})
         filtered = pipeline.filter_past((rows[0], worse, *rows[2:]))
         self.assertNotIn(worse.sample_id, {r.sample_id for r in filtered})

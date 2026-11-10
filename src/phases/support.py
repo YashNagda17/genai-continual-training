@@ -7,10 +7,12 @@ import copy
 import json
 import math
 import random
+import re
 import statistics
 
 from ..pipelines.revision import RevisionConfig, RevisionPipeline
 from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+from ..utils.numerics import summary_metrics
 from ..utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec, fingerprint
 from ..utils.state import read_json, write_json
 from .artifacts import PhaseClock, accuracies_of, arm_record, ensure_final, finish_arm, finished_arm, remember_arm, save_report
@@ -31,9 +33,11 @@ def run_spec(stage, settings, passes, arm, dataset, model, extra_steps=0):
 def execute(pipeline, model, dataset, output, stage, settings, passes, arm):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    if model.pretrained:
-        model.settings = replace(model.settings, seed=settings.seed)
     spec = run_spec(stage, settings, passes, arm, dataset, model, getattr(pipeline.config, "extra_random_steps", 0))
+    if model.pretrained:
+        # Linear warm-up over the first part of this stage's updates, then a constant rate.
+        model.settings = replace(model.settings, seed=settings.seed,
+                                 warmup_steps=math.ceil(settings.warmup_fraction * spec.max_steps) if passes else 0)
     info = model.info
     accelerator = 0 if model.device.type == "cpu" else info.accelerator_bytes
     spec = replace(spec, resources=ResourceBudget(info.cpu_bytes + spec.resources.cpu_bytes, accelerator))
@@ -42,13 +46,19 @@ def execute(pipeline, model, dataset, output, stage, settings, passes, arm):
 
 
 def run_pipeline(pipeline, model_factory, dataset, directory, stage, settings, passes, name,
-                 describe=None, plan_factory=None, **fields):
-    """One implementation for training/analysis, caching, per-seed attempts, and exports."""
+                 describe=None, plan_factory=None, seeds=None, **fields):
+    """One implementation for training/analysis, caching, per-seed attempts, and exports.
+
+    Scientific Hindi arms run the screening seed (the first Hindi seed) unless ``seeds`` asks for more.
+    Finished seeds are reused, so confirming an arm later trains only the missing seeds."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     if stage == "hindi" and settings.protocol == "scientific":
+        seeds = tuple(seeds or settings.hindi_seeds[:1])
+        if seeds[0] != settings.hindi_seeds[0] or not set(seeds) <= set(settings.hindi_seeds):
+            raise ValueError("Hindi seeds must start with the screening seed and come from hindi_seeds")
         runs = []
-        for seed in settings.hindi_seeds:
+        for seed in seeds:
             child = copy.copy(pipeline)
             child.policy = copy.deepcopy(pipeline.policy)
             child.rng = random.Random(seed)
@@ -57,7 +67,7 @@ def run_pipeline(pipeline, model_factory, dataset, directory, stage, settings, p
             runs.append(single_run(child, model_factory, dataset, directory / f"seed-{seed}", stage,
                                    replace(settings, seed=seed), passes, f"{name}-seed-{seed}", describe, fields))
         record = aggregate_runs(name, directory, runs)
-        write_json(directory / "run.json", {"status": "completed", "seeds": list(settings.hindi_seeds)})
+        write_json(directory / "run.json", {"status": "completed", "seeds": list(seeds)})
         return remember_arm(directory, record)
     return single_run(pipeline, model_factory, dataset, directory, stage, settings, passes, name, describe, fields)
 
@@ -119,6 +129,16 @@ def score(metrics, task, name="chrf"):
         raise ValueError(f"Missing {name} for {task}") from error
 
 
+def screening(arm):
+    """The arm's screening-seed run. Every arm has it, so decisions compare arms on the same Hindi batches."""
+    runs = arm.get("seed_runs")
+    return runs[0] if runs else arm
+
+
+def confirmed(arm):
+    return len(arm.get("seed_runs", ())) > 1
+
+
 def forgetting(before, arm):
     return score(before, "english/validation/plain") - score(arm["metrics"], "english/validation/plain")
 
@@ -131,16 +151,24 @@ def choose_winner(before, candidates, baseline):
     """Lowest English validation forgetting among arms within 1 Hindi point of the baseline."""
     if not candidates:
         raise ValueError("Winner selection needs at least one arm")
-    floor = gain(before, baseline) - 1
-    eligible = [arm for arm in candidates if gain(before, arm) >= floor]
+    floor = gain(before, screening(baseline)) - 1
+    eligible = [arm for arm in candidates if gain(before, screening(arm)) >= floor]
     pool = eligible or [baseline]
-    return sorted(pool, key=lambda arm: (forgetting(before, arm),
-                                         arm.get("update_seconds", arm.get("wall_clock_seconds")) or 0, arm["name"]))[0]
+    return lower_forgetting(before, pool)
 
 
 def lower_forgetting(before, arms):
-    return sorted(arms, key=lambda arm: (forgetting(before, arm),
-                                         arm.get("update_seconds", arm.get("wall_clock_seconds")) or 0, arm["name"]))[0]
+    """Compared on the screening seed. Ties go to the cheaper arm by update time."""
+    def key(arm):
+        run = screening(arm)
+        return forgetting(before, run), run.get("update_seconds", run.get("wall_clock_seconds")) or 0, arm["name"]
+    return sorted(arms, key=key)[0]
+
+
+def beats(before, arm, others, margin=1.0):
+    """True when ``arm`` forgets at least ``margin`` points less English than every other arm, on the screening seed."""
+    mine = forgetting(before, screening(arm))
+    return all(mine <= forgetting(before, screening(other)) - margin for other in others)
 
 
 def script_share_of_forgetting(before, plain, guarded):
@@ -150,7 +178,25 @@ def script_share_of_forgetting(before, plain, guarded):
     return (guarded - plain) / drop
 
 
-def gate_decision(forget, hindi_gain):
+def lead_sentence(text):
+    """The article's first sentence: the no-training floor every checkpoint must beat."""
+    text = " ".join(text.split())
+    return re.split(r"(?<=[.!?\u0964])\s+", text, maxsplit=1)[0]
+
+
+def lead_baseline(dataset, language, split="validation"):
+    named = dataset.views.get(f"{language}/{split}")
+    rows = tuple(named if named is not None else
+                 (row for row in dataset.views.get(split, ()) if row.task_id == language))
+    if not rows:
+        raise ValueError(f"No {language} {split} rows for the lead-1 floor")
+    return summary_metrics([lead_sentence(row.inputs["text"]) for row in rows],
+                           [row.target["text"] for row in rows], language)
+
+
+def gate_decision(forget, hindi_gain, english_score=None, lead_score=None):
+    if english_score is not None and lead_score is not None and english_score <= lead_score:
+        return "fix_english"
     if hindi_gain < 1:
         return "fix_setup"
     if forget < 1:
@@ -213,9 +259,10 @@ def phase(index):
 
 
 def revision_config(settings, **overrides):
+    label = {} if "prefix" in overrides or not settings.task_prefix else {"prefix": "summarize"}
     return RevisionConfig(hindi_batch=settings.batch_size, replay_per_batch=settings.replay_per_batch,
                           hindi_passes=settings.hindi_passes, analysis_batch=settings.analysis_batch,
-                          generation=generation_spec(settings), **overrides)
+                          generation=generation_spec(settings), **label, **overrides)
 
 
 def hindi_pipeline(settings, pool, checkpoint, **overrides):
@@ -223,11 +270,39 @@ def hindi_pipeline(settings, pool, checkpoint, **overrides):
                             pool=pool, english_checkpoint=checkpoint)
 
 
-def run_hindi(directory, name, pipeline, dataset, model_factory, settings, plan_factory=None, **fields):
+def run_hindi(directory, name, pipeline, dataset, model_factory, settings, plan_factory=None, seeds=None, **fields):
     fields = {"selector": pipeline.config.selector, "replay_text": pipeline.config.replay_text,
               "repair_stop": pipeline.config.repair_stop, **fields}
     return run_pipeline(pipeline, model_factory, dataset, directory, "hindi", settings,
-                        settings.hindi_passes, name, plan_factory=plan_factory, **fields)
+                        settings.hindi_passes, name, plan_factory=plan_factory, seeds=seeds, **fields)
+
+
+BLOCK_PLANS = {"random": "all", "late": "late", "early_late": "early_late"}
+
+
+def revision_pipeline(settings, pool, checkpoint, revision):
+    """Rebuild a revision arm from its record. The config matches the screening run, so its seed is reused."""
+    return hindi_pipeline(settings, pool, checkpoint, selector=revision["selector"],
+                          replay_text=revision["replay_text"], repair_stop=revision["repair_stop"],
+                          extra_random_steps=revision.get("extra_random_steps", 0))
+
+
+def combined_pipeline(settings, pool, checkpoint, revision, blocks):
+    """D: the best revision on the best blocks."""
+    pipeline = revision_pipeline(settings, pool, checkpoint, revision)
+    pipeline.adapter_plan = AdapterRoomPipeline(room_config(settings)).adapter_plan(BLOCK_PLANS[blocks])
+    return pipeline
+
+
+def matched_extra_steps(random_arm, drift_arm):
+    """Extra random-replay updates that spend G1's measured extra time (scoring, writing, and updates)."""
+    def total(run):
+        return (run.get("update_seconds") or 0) + sum((run.get("costs") or {}).get("analysis_seconds", {}).values())
+    random_run, drift_run = screening(random_arm), screening(drift_arm)
+    per_step = (random_run.get("update_seconds") or 0) / max(1, random_run.get("steps") or 0)
+    if per_step <= 0:
+        return 0
+    return max(0, math.ceil((total(drift_run) - total(random_run)) / per_step))
 
 
 def room_config(settings):
@@ -236,12 +311,13 @@ def room_config(settings):
         decoder_blocks=settings.decoder_blocks, new_room_budget=settings.new_room_budget)
 
 
-def room_plans(settings, context, seed=None, frozen=False):
+ROOM_ARMS = ("room_placed", "room_random", "room_spread")
+
+
+def room_plans(settings, context, seed=None, names=ROOM_ARMS):
+    """Plans for the named E arms. E4 (``room_placed_slow``) and E5 are requested separately, when they run."""
     room = AdapterRoomPipeline(room_config(replace(settings, seed=settings.seed if seed is None else seed)))
-    shared = room.adapter_plan("all" if context["best_blocks"] == "random" else context["best_blocks"])
-    names = ["room_placed", "room_random", "room_spread", "room_placed_slow"]
-    if frozen:
-        names.append("room_placed_frozen")
+    shared = room.adapter_plan(BLOCK_PLANS[context["best_blocks"]])
     plans = [room.adapter_plan(name, maps=context["maps"], shared=shared) for name in names]
     if any(plan is None for plan in plans):
         return (), room.policy.get("room_status", "skipped")

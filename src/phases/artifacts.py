@@ -52,6 +52,7 @@ def arm_record(name, output, checkpoint, result, manifest, pipeline, **fields):
               "time": {"wall_clock_seconds": manifest.get("wall_clock_seconds"),
                        "gpu_hours": manifest.get("gpu_hours"), "peak_memory_mb": manifest.get("peak_memory_mb")},
               "costs": costs,
+              "scores": list(pipeline.policy.get("scores") or []),
               "update_seconds": costs["update_seconds"], "trainable_parameters": pipeline.model.info.trainable_parameters,
               "storage_bytes": sum(file.stat().st_size for file in Path(output).rglob("*") if file.is_file()), **fields}
     record["accuracies"] = accuracies_of(record["metrics"])
@@ -131,7 +132,7 @@ class PhaseClock:
 
 def run_summary(record):
     summary = {key: record.get(key) for key in (
-        "name", "seed", "status", "steps", "epochs", "accuracies", "time", "costs", "storage_bytes",
+        "name", "seed", "status", "steps", "epochs", "accuracies", "scores", "time", "costs", "storage_bytes",
         "trainable_parameters", "retired_share", "adapter_plan", "checkpoint", "final_model", "final_models", "metric_std")}
     for key in ("k_E", "k_G"):
         if key in record:
@@ -192,7 +193,9 @@ def save_report(directory, phase, details, context):
 
 
 def compare_arms(left, right, split="test"):
-    """Paired article bootstrap after averaging the declared seeds, never selecting on test."""
+    """Paired article bootstrap after averaging the seeds both arms ran, never selecting on test.
+
+    Screening arms have one seed, so a screening arm meets a confirmed arm on the screening seed."""
     from ..utils.numerics import chrf, paired_bootstrap, rouge_l
     def values(arm, language, metric):
         runs = arm.get("seed_runs", [arm])
@@ -205,13 +208,19 @@ def compare_arms(left, right, split="test"):
         if any(set(rows) != identifiers for rows in by_seed.values()):
             raise ValueError("Paired seed predictions have different article IDs")
         return by_seed, sorted(identifiers)
+    shared = sorted({run["seed"] for run in left.get("seed_runs", [left])} &
+                    {run["seed"] for run in right.get("seed_runs", [right])}, key=str)
+    if not shared:
+        raise ValueError("Comparisons require at least one shared seed")
     result = {}
     for language in ("english", "hindi"):
         for name, metric in (("chrf", chrf), ("rouge_l", lambda a, b: 100 * rouge_l(a, b))):
             a, ids = values(left, language, metric)
             b, other = values(right, language, metric)
-            if ids != other or set(a) != set(b):
-                raise ValueError("Comparisons require matched seeds and article IDs")
+            a = {seed: a[seed] for seed in shared}
+            b = {seed: b[seed] for seed in shared}
+            if ids != other:
+                raise ValueError("Comparisons require matched article IDs")
             averaged_a = [statistics.mean(seed[i] for seed in a.values()) for i in ids]
             averaged_b = [statistics.mean(seed[i] for seed in b.values()) for i in ids]
             summary = paired_bootstrap(averaged_a, averaged_b, 1000, 0)
@@ -220,4 +229,4 @@ def compare_arms(left, right, split="test"):
             deltas = list(summary["per_seed"].values())
             summary["seed_std"] = statistics.stdev(deltas) if len(deltas) > 1 else None
             result[f"{language}/{name}"] = summary
-    return {"left": left["name"], "right": right["name"], "split": split, "metrics": result}
+    return {"left": left["name"], "right": right["name"], "split": split, "seeds": shared, "metrics": result}

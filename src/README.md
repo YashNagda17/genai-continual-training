@@ -23,7 +23,20 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m src.summarization_experiment --pro
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest src.tests.test_summarization src.tests.test_phases -q
 ```
 
-Smoke uses a tiny random mT5 on CPU. Its metrics and timings are development evidence. Routine tests do not establish real-weight/GPU behavior or scientific results.
+Smoke uses a tiny random mT5 on CPU by default; `--device cuda:0` runs it on NVIDIA CUDA. Its metrics and timings are development evidence. Routine CPU tests do not establish real-weight/GPU behavior or scientific results.
+
+For an NVIDIA cloud host, use a CUDA-enabled PyTorch image or select a matching wheel from the [official installer](https://pytorch.org/get-started/locally/), then install [requirements.txt](/requirements.txt). The same native-Torch gather, weighted-loss, nonblocking-copy and packed-reporting optimizations apply on CUDA; no inference backend or precision change is needed.
+
+Validate the cloud environment before downloading the full model and dataset:
+
+```sh
+nvidia-smi
+python -c 'import torch; assert torch.version.cuda and torch.cuda.is_available(), "NVIDIA CUDA is required"; print(torch.__version__, torch.cuda.get_device_name(0))'
+python -m unittest src.tests.test_cuda -v
+python -m src.summarization_experiment --protocol smoke --device cuda:0 --phase 0 --output results/code/cuda-smoke
+```
+
+The CUDA tests exercise weighted training, token scoring, generation and dropout/checkpoint resume with tiny local weights. They explicitly skip without NVIDIA CUDA; a skip is not GPU validation. Existing device fallback remains available, so the availability assertion above matters on a cloud host. CUDA timing and speedup claims still require measurement on that host.
 
 Each phase is a small experiment definition:
 

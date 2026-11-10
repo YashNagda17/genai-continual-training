@@ -103,9 +103,10 @@ class Objective:
 
 @dataclass(frozen=True)
 class TokenTargets:
-    """Flat float32 CPU baseline and weight, one value per supervised token."""
+    """Flat detached float32 baseline and weight on CPU or the compute device."""
     baseline: Any
     weight: Any
+    all_positive: bool = False
 
 
 @dataclass(frozen=True)

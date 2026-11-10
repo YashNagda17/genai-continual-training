@@ -7,6 +7,7 @@ os.environ.setdefault("EventHostSynchronizeLinuxUserFenceKmdWait", "1")
 
 from pathlib import Path
 import argparse
+from functools import partial
 
 from .models.model_mt5 import MT5SmallModel
 from .models.model_seq2seq import Seq2SeqSettings
@@ -54,13 +55,17 @@ def selected_phases(root, phase):
 
 def prepare(protocol, device, settings=None):
     if protocol == "smoke":
-        factory = build_smoke_model
-        settings = PhaseSettings(max_new_tokens=8, shrink_tolerance=100.0)
+        factory = partial(build_smoke_model, device=device or "cpu")
+        # The tiny smoke model takes at most four rows per update and runs every conditional arm.
+        settings = PhaseSettings(batch_size=2, analysis_batch=2, english_passes=1, hindi_passes=1,
+                                 max_new_tokens=8, shrink_tolerance=100.0, force_conditional=True)
     else:
-        settings = settings or PhaseSettings(protocol=protocol, batch_size=16, analysis_batch=8,
+        settings = settings or PhaseSettings(protocol=protocol, batch_size=16, analysis_batch=16,
                         max_new_tokens=64, stability_threshold=0.5, sample_size=64)
         def factory():
-            return MT5SmallModel(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32,
+            # GPU speed: 16-row analysis batches and 512 target positions per loss call (about 0.5 GB of fp32 logits).
+            return MT5SmallModel(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=512,
+                                                learning_rate=settings.learning_rate,
                                                 seed=settings.seed), device=device or "auto")
     model = factory()
     try:
@@ -79,7 +84,8 @@ def prepare(protocol, device, settings=None):
                     subsets[f"{language}/{split}"] = ids
                     identifiers.update(ids)
                 selected[split] = tuple(row for row in views[split] if row.sample_id in identifiers)
-            dataset.preprocess(selected, Seq2SeqPreprocessing(**model.preprocessing_kwargs()))
+            dataset.preprocess(selected, Seq2SeqPreprocessing(
+                **model.preprocessing_kwargs(), prefix=settings.task_prefix or None))
             for name, ids in subsets.items():
                 dataset.expose(name, ids)
             dataset.expose("english/pool", choose_ids(dataset.training_view("english"), 500, settings.seed + 1))

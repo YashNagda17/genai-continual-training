@@ -1,11 +1,13 @@
-"""Phase 5: validation-based shrinking of A and the overall winner, without training."""
+"""Phase 5: validation-based shrinking of A and the overall winner, without training.
+
+Shrinking runs on the screening seed only; the seed-averaged claims stay with the trained adapters."""
 
 from dataclasses import replace
 from pathlib import Path
 
 from ..pipelines.generation_shrink import GenerationShrinkPipeline, ShrinkConfig
 from ..utils.state import read_json
-from .support import aggregate_runs, phase, run_pipeline
+from .support import phase, run_pipeline
 from .artifacts import annotate, save_report
 from .serving import benchmark
 from .settings import generation_spec
@@ -21,7 +23,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
     for source in sources:
         name = source["name"]
         runs = []
-        for original in source.get("seed_runs", [source]):
+        for original in source.get("seed_runs", [source])[:1]:
             checkpoint = original["checkpoint"]
             metadata = read_json(Path(checkpoint) / "metadata.json")
             rank = int(metadata["rank"]) + max((int(value) for value in metadata.get("new_rank", {}).values()), default=0)
@@ -41,7 +43,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
                         "rank_table": result["table"]}
             runs.append(run_pipeline(pipeline, model_factory, dataset, output, "analysis",
                         replace(settings, seed=original["seed"]), 0, original["name"], describe=shrink_fields))
-        results[name] = aggregate_runs(name, directory / name, runs) if source.get("seed_runs") else runs[0]
+        results[name] = runs[0]
         results[name]["ranks"] = {str(run["seed"]): {"k_E": run["k_E"], "k_G": run["k_G"]} for run in runs}
     checkpoints = {"best_blocks": context["arms"][context["best_blocks"]]["checkpoint"],
                    "winner": winner["checkpoint"], "shrunk_winner": results[sources[-1]["name"]]["checkpoint"]}

@@ -19,10 +19,24 @@ the referenced snapshots and tabular logs. Failed/interrupted work keeps its
 prior checkpoints and records its error. Analysis jobs report zero training
 epochs; Phase 0 reports its actual fraction of an English epoch.
 
-Scientific and pilot runs use the fixed settings below. Hindi arms use seeds 1, 2, and 3, with
-per-seed attempts and averaged validation metrics for decisions. Source checkpoints
-and final exports remain available per seed. A pilot/smoke result is never reused
+Scientific and pilot runs use the fixed settings below. A pilot/smoke result is never reused
 as a scientific result.
+
+**Seeds: screen on one, confirm on three** (2026-11-10). Every scientific Hindi arm runs the
+**screening seed** (seed 1) first. All arms use it, so they see the same Hindi batches in the same
+order. Three arms are **confirmed** on seeds 1, 2, and 3, because the headline claims rest on them:
+
+| Confirmed arm | When its extra seeds run |
+|---|---|
+| X (`hindi_only`) | Phase 1, from the start. Its spread is the seed-noise check below |
+| A (`random`) | Phase 2, from the start. It is the bar every method must beat |
+| The overall winner | Phase 4, after the winner rule picks it |
+| The best revision | Phase 3, only if X's English validation chrF has a standard deviation above `max_seed_spread` (1 point) across seeds |
+
+Confirmation reuses the arm's attempt directory, so seed 1 is read from its `arm.json` and only
+seeds 2 and 3 train. A confirmed best revision is written back into its Phase 2 directory, and a
+confirmed D into Phase 3's. Per-seed attempts and final exports stay available. Arms with one seed
+are reported as "single seed, screening".
 
 ## Protocols
 
@@ -51,19 +65,32 @@ The runner uses the values below. It does not read `preregistration.json`.
 |---|---|
 | Model | `google/mt5-small`, fp32 |
 | LoRA | Rank 16, alpha 32, all projections of all blocks |
+| Task prompt | `summarize: ` is prepended to every English and Hindi article before tokenization |
 | Limits | 256 input tokens, 64 output tokens |
+| Optimizer | AdamW, learning rate `1e-3`, weight decay 0.01, gradient clip 1. Linear learning-rate warm-up over the first 5% of each stage's updates, then constant. Every stage starts a fresh optimizer |
+| Passes | `english_passes = 5`, `hindi_passes = 5`. The English stage validates after each pass, saves every pass's chrF, ROUGE-L, and right-language share, and keeps the best pass by validation chrF |
+| Batches | 16 Hindi rows per update (plus replay). Generation, scoring, and evaluation use 16 rows per batch (`analysis_batch = 16`). The model accepts up to 32 rows |
+| Loss chunk | 512 target positions per full-vocabulary cross-entropy call (`logit_chunk_size`). Measured on the Intel Arc GPU: 1.2 s per 18-row update instead of 8.5–11.4 s with 8 positions, at the same peak memory (about 6.6 GB) |
 | Replay | 2 pool rows per 16 Hindi rows |
 | Slots | Half from the ranking, half random |
-| Warm-up | The first 10% of Hindi steps, with random replay |
+| Replay warm-up | The first 10% of Hindi steps, with random replay |
 | G2 filter | 0.2 |
 | G3 | `beta = 1`, `stop_similarity = 0.9`, `refresh_steps = 200` |
 | E | `gamma = 1`, `floor = 0.25`, `new_room_budget = 638,976` |
 | C1 | `stability_threshold = 0.5` |
 | F | Tolerance 1 point, energy 0.9, grid 12, 8, 6, 4 |
-| Decoding | Greedy, up to 64 new tokens, the same for every arm |
+| Decoding | Greedy, up to 64 new tokens, mT5's 100 placeholder tokens (`<extra_id_N>`) never generated, no repeated trigram (`no_repeat_ngram_size = 3`). The same for every arm |
 | Meaningful difference | 1 ROUGE-L or 1 chrF point |
-| Seeds | English stage: seed 0. Hindi stage: seeds 1, 2, 3 |
-| Passes | `english_passes = 1`, `hindi_passes = 1` |
+| Seeds | English stage: seed 0. Hindi stage: screening seed 1; confirmation seeds 2 and 3 for the arms above |
+| Conditional thresholds | `max_seed_spread = 1` chrF point; `g4_min_share = 0.25` |
+
+**Why these changed (2026-11-10).** The first Phase 1 run used one pass at learning rate `2e-4`:
+125 English updates. English loss was still falling steeply (22 → 6 per token), every summary began
+with mT5's pretraining placeholder `<extra_id_0>`, and the English checkpoint scored 11.6 chrF on
+validation against 22.0 for copying the article's first sentence. Hindi-only training then *raised*
+English chrF, because the adapter was still learning the task itself. Forgetting can't be measured
+before English is learned, so the learning rate, passes, decoding rules, and the lead-1 gate below
+were added.
 
 ## Jobs and arms
 
@@ -77,19 +104,24 @@ The runner uses the values below. It does not read `preregistration.json`.
 | `drift` | G1 | `selector=drift` |
 | `past` | G2 | `selector=random`, `replay_text=past` |
 | `repair_stop` | G3 | Parent of B or G1 by the winner rule, `repair_stop=true` |
-| `random_compute_matched` | G1's control | `selector=random`, `extra_random_steps` set from measured times |
+| `random_compute_matched` | G1's control, **only if G1 is the best revision** | `selector=random`, `extra_random_steps = ceil((G1's update + analysis seconds − A's) / A's seconds per update)`, on the screening seed |
 | `late`, `early_late` | C2 | `selector=random`, block plan |
 | `combined` | D | Best blocks plus best revision |
 | `full_english` | Reference | `selector=full` |
-| `room_placed`, `room_random`, `room_spread`, `room_placed_slow` | E1–E4 | D's setup plus room plan |
-| `room_placed_frozen` | E5, optional | As above |
-| `hindi_only --prefix` | G4 | `selector=none` from the prefixed English checkpoint |
+| `room_placed`, `room_random`, `room_spread` | E1–E3 | D's setup plus room plan |
+| `room_placed_slow` | E4, **only if E1 beats E2 and E3** by at least 1 English chrF point of forgetting on the screening seed | As E1, plus `lr_scale` |
+| `room_placed_frozen` | E5, Phase 7 only | As above |
+| `english --prefix`, `hindi_only --prefix` | G4, **only if G5's validation script share of forgetting is at least `g4_min_share`** | `selector=none` from the prefixed English checkpoint. Otherwise Phase 6 reports `skipped` with the share |
 | `maps` | C1 | Analysis job on the English checkpoint and X |
 | `shrink` | F | Analysis job on `random` and the overall winner |
 | `serving` | Serving timing | Analysis job |
 | `report` | All comparisons | No model work |
 
-G5 isn't a job. Every evaluation reports both unguarded and guarded scores.
+G5 isn't a job. Every evaluation reports both unguarded and guarded scores. Phase 1 reports G5's
+share on test (a measure) and on validation (the G4 decision).
+
+The `smoke` protocol sets `force_conditional`, so every conditional arm runs there and its code
+path is tested. Scientific and pilot runs leave it off.
 
 C1 and C2 are `ablation`. E and F are `project`.
 
@@ -100,6 +132,12 @@ These rules decide which adapter parts can change, where new room goes, and how 
 ### C1: the location maps
 
 The `maps` job uses the **English checkpoint**, an immutable saved artifact, not the evolving learner. The change map reads saved adapters and needs no forward pass. The pull and clash maps use a separate **probe** role: the English checkpoint plus a fresh LoRA adapter on every projection with `B = 0` and a deterministic `A`. Gradients are taken with respect to the probe's `B` factors only, with no optimizer step. The learner is untouched.
+
+Change-map projection norms accumulate by cell on the compute device, with one packed transfer for the completed map. Probe-gradient running totals are packed for one device-to-host transfer per analysis batch, split into the existing plain-JSON group lists, and committed with the cursor at the same recovery boundary. Group layout and sample-weighted means are unchanged.
+
+Probe totals also pack CPU-to-device restoration across groups, both for each batch and for the returned mean gradients. Pull norms and cosine agreements are collected on-device and transferred together once per cell/block view. Persisted maps remain plain JSON.
+
+The change map requests `effective_update_norms()` from the model. Shared-only adapters use low-rank Gram products instead of allocating full update matrices; extra-rank adapters use the dense sum so all cross terms are included. The map still sums each projection's Frobenius norm in its cell, within float32 tolerance.
 
 ```text
 change map:  c(cell)      = ‖(alpha/r) B A‖_F summed over the cell's projections,
@@ -203,7 +241,7 @@ if it passes: step down through the grid ranks below k_E (12, 8, 6, 4), stop at 
 if it fails:  step up through the grid ranks above k_E, then the full rank; k_G = the first rank that passes
 ```
 
-**Run on:** `random` (A) and the overall winner, chosen by the winner rule below.
+**Run on:** `random` (A) and the overall winner, chosen by the winner rule below, on the screening seed only.
 
 **Outputs:** `k_E`, `k_G`, the full table of ranks tested with scores and storage, and the shrunk adapter saved at `k_G`. Cost is recorded as `shrink_generation`.
 
@@ -216,11 +254,12 @@ if it fails:  step up through the grid ranks above k_E, then the full rank; k_G 
 
 ## Winner rules
 
-Chosen on **validation**, never test:
+Chosen on **validation**, never test, and on the **screening seed** for every arm, including
+confirmed ones, so arms are compared on the same Hindi batches. Ties use seed 1's update time:
 
 | Choice | Rule |
 |---|---|
-| G3's parent | Of `loss` and `drift`, the one with lower English validation forgetting (chrF), averaged over seeds |
+| G3's parent | Of `loss` and `drift`, the one with lower English validation forgetting (chrF) |
 | Best revision | Of `loss`, `drift`, `past`, and `repair_stop`, the one with the lowest English validation forgetting whose Hindi validation gain is within 1 point of `random`'s. Ties go to the cheaper arm by total update time |
 | Best blocks | Of `all`, `late`, and `early_late`, by the same rule |
 | Overall winner | Of `combined` and the E arms that ran, by the same rule |
@@ -232,12 +271,16 @@ If no arm meets the Hindi condition, the winner is `random`, and that's reported
 | After | Condition | Then |
 |---|---|---|
 | Pilot | Most of 20 summaries readable; truncation keeps nearly all summary words | Continue. Otherwise change limits or steps, or switch to Qwen3-0.6B |
+| English checkpoint | English validation chrF at or below **lead-1** (the article's first sentence, split at `.`, `!`, `?`, or `।`) | `fix_english`: train English further before any Hindi arm. Checked before the X conditions |
 | X | English validation forgetting at least 1 point **and** Hindi validation gain at least 1 point | Continue |
 | X | English forgetting under 1 point | Stop the replay story. Report it. Run the reverse order |
 | X | Hindi gain under 1 point | Fix the setup |
+| X | English validation chrF standard deviation across seeds above `max_seed_spread` | Confirm the best revision on all seeds |
+| Best revision | It is G1 (`drift`) | Run `random_compute_matched` |
 | C1 | Two-sample agreement below `stability_threshold` | Don't run E |
 | E | The clash map gives no block below zero | Don't run E. Report it |
-| E | E1 ties E3 | Stop E there. Report "placement doesn't matter" |
+| E | E1 doesn't beat both E2 and E3 by 1 point of forgetting | Don't run E4. Report "placement doesn't matter" |
+| G5 | Validation script share of forgetting below `g4_min_share`, or undefined | Don't run G4 |
 
 ## Measures
 
@@ -283,13 +326,14 @@ Batch size 32 is optional.
 
 For two arms on the same articles:
 
-1. Average each article's score over the 3 seeds for each arm.
+1. Average each article's score over the seeds **both** arms ran: all three for two confirmed arms, the screening seed otherwise. The comparison records those seeds.
 2. `Δ = mean over articles of (score_1 - score_2)`.
 3. `paired_bootstrap` with 1,000 resamples of articles and a fixed seed gives the 95% interval.
 4. A difference **counts** if `|Δ| >= 1` point and the interval excludes 0. Otherwise it's reported as a tie.
-5. Also report the per-seed `Δ` and its standard deviation across seeds.
+5. Also report the per-seed `Δ` and, with more than one shared seed, its standard deviation across seeds.
 
-Never pick seeds, drop failed seeds silently, or report a confidence interval from one run.
+Never pick seeds or drop failed seeds silently. A single-seed comparison's interval covers article
+noise only, and is labelled "screening".
 
 ## Manual check
 
@@ -311,10 +355,12 @@ winner selection, and shrinking use validation.
 
 ## Tiers
 
-| Tier | Jobs | Training runs |
+| Group | Jobs | Hindi training runs |
 |---|---|---:|
-| 1 | `english`, `hindi_only`, `random`, `loss`, `drift`, `past`, `late`, `early_late`, `combined`, `full_english` (9 Hindi arms x 3 seeds), plus `maps`, `shrink`, `serving` | 27 |
-| 2 | `room_placed`, `room_random`, `room_spread`, `room_placed_slow`, `repair_stop` | 15 |
-| 3 | `english --prefix`, `hindi_only --prefix`, `random_compute_matched`, `room_placed_frozen` | 9 |
+| Screening (seed 1) | `hindi_only`, `random`, `loss`, `drift`, `past`, `repair_stop`, `late`, `early_late`, `combined`, `full_english`, `room_placed`, `room_random`, `room_spread`, plus `maps`, `shrink`, `serving` | 13 |
+| Confirmation (seeds 2, 3) | `hindi_only`, `random`, the overall winner | 6 |
+| Conditional | `room_placed_slow`, `random_compute_matched`, `hindi_only --prefix` (plus its English checkpoint), and the best revision's seeds 2 and 3 | 0–5 |
+| Phase 7 | `drift_past`, `room_placed_frozen` | 1–2 |
 
-The English checkpoints aren't counted as Hindi-stage runs. Run the tiers in order, and the plan's running order within them.
+That is 19 required Hindi runs, against 51 before. The English checkpoints aren't counted as
+Hindi-stage runs. If the winner is `random`, nothing extra is confirmed.

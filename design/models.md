@@ -10,6 +10,8 @@ Only `Seq2SeqLMModel` and `MT5SmallModel` are active. Native Torch owns numerica
 
 Bookkeeping uses plain model/revision/step identifiers and seeded Python/Torch generators, without hashing batches or base assets. The outer checkpoint manager owns checksums and retention. Model code does not import datasets or pipelines.
 
+Temporary synchronization reduction: optimizer loss/gradient finite checks and pipeline score finite checks are disabled. Updates assume finite inputs; nonfinite updates are no longer skipped. Token-target weights and transient token-surprise diagnostics stay on the compute device. Loss totals remain detached device scalars until `train()` returns, when they are transferred together for plain-number reports; unweighted token counts use batch metadata. Zero-active-token skipping and synchronized timing remain in force.
+
 ## Seq2seq execution
 
 Used by the [summarization plan](/design/summarization-plan.md). No branch here names an arm or method.
@@ -22,13 +24,15 @@ Used by the [summarization plan](/design/summarization-plan.md). No branch here 
 |---|---|
 | Parameter count | 300,176,768 from the pinned config, with the output head **not** tied to the embeddings. Count from the hub config, since a locally built `MT5Config` may default to tied weights |
 | Precision | Load and train in fp32 on every device |
-| Compile | CUDA and XPU compile the training forward with `torch.compile` and dynamic shapes. CPU stays eager. A changed adapter layout compiles again. Greedy generation stays eager so each decoder step runs as accelerator kernels |
-| Host wait | On XPU, the process sets `EventHostSynchronizeLinuxUserFenceKmdWait` before the device context exists. The Intel driver then waits on a kernel fence. Loss sums stay on the device until the step reads one scalar after the optimizer update |
+| Compile | Training and generation stay eager. The executor does not call `torch.compile` |
+| Host wait | On XPU, the process sets `EventHostSynchronizeLinuxUserFenceKmdWait` before the device context exists. The Intel driver then waits on a kernel fence. Loss metrics stay on the device until a combined transfer when `train()` returns |
 | Tokenizer | mT5's SentencePiece tokenizer. Phase 0 checks the environment can load it. If it needs `sentencepiece`, that's a dependency the plan explicitly requires |
 | Training mode | LoRA only. `mode="full"` is rejected |
 | LoRA targets | Every block's `q`, `k`, `v`, `o` in self-attention and decoder cross-attention, and `wi_0`, `wi_1`, `wo` in the feed-forward layers. Named `(stack, block, part, projection)`. `W_used = W + (alpha / r) B A`, with `B` starting at zero |
 | Inputs | Encoder input IDs and mask, plus labels with padding masked out. The decoder input is shifted from the labels inside the model. Per-example loss is the mean NLL over the summary's tokens |
-| Batches | One microbatch per update. Support `hindi_batch + replay_per_batch`, or `2 x hindi_batch` for the full-English reference |
+| Batches | One microbatch per update. Support `hindi_batch + replay_per_batch`, or `2 x hindi_batch` for the full-English reference. The scientific runner sets `max_batch_size = 32` |
+| Loss chunk | `_position_nll` computes cross-entropy over `logit_chunk_size` target positions per call (default 32; the scientific runner uses 512). The result is identical for any chunk size; larger chunks make far fewer kernel launches |
+| Optimization | AdamW at `learning_rate`, with a linear warm-up over `warmup_steps`, then constant (`total_steps = None`). The runner sets the rate (`1e-3`) and the warm-up (5% of the stage's updates) per [summarization-experiments.md](/design/summarization-experiments.md) |
 
 ### Adapter names
 
@@ -74,12 +78,22 @@ When that hook supplies weights, the executor honors `per_example_mean` by first
 averaging weighted token losses within each row, then averaging rows. Precomputed
 `TokenTargets` retain their existing flat-token reduction for compatibility.
 
+Token-loss scoring and weighted training gather with the payload's `supervised_indices`. For custom payloads without these indices, the executor derives them before device transfer; custom device-resident labels must supply indices to avoid a synchronizing fallback. Weighted row ownership declares `output_size=flat.numel()` in `repeat_interleave`. Per-example weighted means use full-size masked arithmetic, excluding rows with no positive weights without compacting device tensors. The all-zero-weight optimizer skip remains mandatory.
+
+Evaluation transfers its accumulated loss sum and token count together once before constructing host metrics. Batch transfers follow the [shared nonblocking-transfer contract](/design/utils.md); synchronized measurement boundaries are unchanged.
+
+These synchronization reductions apply equally to NVIDIA CUDA and XPU through the resolved Torch device. CUDA uses the same fp32 objective, optimizer, RNG isolation, checkpoint state and packed reporting. The tiny smoke factory accepts an explicit device while retaining CPU as its default, so cloud validation can exercise CUDA without model/data downloads.
+
+Strictly positive token targets use a scalar-read-free weighted-loss path; ordinary targets preserve the zero-active-token skip. Gradient clipping traverses optimizer groups instead of the frozen base. Execution restores `requires_grad` only when a flag changed. Generation uses `torch.inference_mode()` because it returns host text/IDs; differentiable scoring and training keep their existing autograd behavior.
+
+LoRA forward uses native `addmm` to combine the B projection, scale and residual addition. This preserves the equation and gradients within fp32 tolerance, including extra rank. Execution changes module modes only when needed and restores mixed caller modes. Greedy generation preallocates its token buffer, exposes only the written prefix to repetition/guard logic, and selects EOS padding with a boolean device mask; it keeps the same fixed maximum-token loop and first-EOS trimming.
+
 | Operation | Behavior |
 |---|---|
 | `score` kind `example_loss` | Per-example mean target-token NLL |
 | `score` kind `token_loss` | The existing flat per-token NLL, reused for G3's weights and baselines |
 | `score` kind `probe_gradient` | On an isolated **probe** role (a saved checkpoint plus a zero-B LoRA with deterministic `A`), the mean gradient of target loss over the batch with respect to the probe's `B` factors, grouped by `"cell"` or `"block"`. Returned detached on the compute device, with the group layout. No optimizer step. The learner is untouched |
-| `predict` | Greedy decoding up to `max_new_tokens`. `token_ids` end at the first EOS, inclusive. Optional `generation_spec.script_guard`, below |
+| `predict` | Greedy decoding up to `max_new_tokens`. `token_ids` end at the first EOS, inclusive. mT5's pretraining placeholders (`<extra_id_0>`–`<extra_id_99>`, stored as `▁<extra_id_N>` pieces, found once per model) are never generated: the tokenizer doesn't mark them special, so `skip_special_tokens` wouldn't remove them. Optional `generation_spec.no_repeat_ngram_size` forbids any token that would repeat an n-gram already in the summary, computed on the device. Optional `generation_spec.script_guard`, below |
 | `train` | Per-example mean over the batch, or `token_mode="weighted"` with `TokenTargets` (reused from the generation replay additions), including the no-step rule on zero active tokens |
 
 **Forking from a saved checkpoint.** A probe role may start from the saved English checkpoint, because that's an immutable artifact. The existing rule that `fork` never copies the evolving learner still holds.
@@ -101,6 +115,7 @@ The shrunk adapter stores `B_k` and `A_k` with scale 1, so its effective update 
 | Operation | Behavior |
 |---|---|
 | `effective_updates()` | Per projection, the `ΔW` above, in float32 |
+| `effective_update_norms()` | Detached per-projection Frobenius norms on-device, without materializing shared-only updates: `sqrt(clamp(sum((BᵀB) * (AAᵀ)ᵀ), 0)) * abs(alpha/r)`. Uses the dense effective update when extra rank is present to preserve its cross terms. Float32 comparison tolerances apply |
 | `shrink_adapters(k)` | Replace each projection's adapter with the top-`k` factors above. Returns new weights through `set_weights` |
 | `merged_copy()` | An inference-only role whose base weights are `W + ΔW`, with no adapter modules. The learner is unchanged. Merged, extra rank costs nothing per summary. Unmerged, decoder rank runs at every writing step. Used only for serving timing and merged evaluation |
 | Timing | Generation timing synchronizes the device before and after each request, so asynchronous work is counted |
