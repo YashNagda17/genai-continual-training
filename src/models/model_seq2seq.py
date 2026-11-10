@@ -372,7 +372,7 @@ class Seq2SeqLMModel(ModelBase):
         return child
 
     def _assets(self):
-        if not self.pretrained:
+        if not self.pretrained or self._base_path is not None:
             return
         self._base_path = Path(snapshot_download(
             self.model_id, revision=self.revision, cache_dir=self.cache_dir,

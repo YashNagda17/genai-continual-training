@@ -10,6 +10,7 @@ from unittest.mock import patch
 from ..phases.phase0 import summary_word_coverage
 from ..phases.data import build_smoke_dataset, build_smoke_model, choose_ids, with_prefix
 from ..phases.settings import PhaseSettings
+from ..phases.serving import measure
 from ..phases.support import hindi_pipeline, phase, run_hindi
 from ..pipelines.revision import load_pool
 from ..phases.support import choose_winner, gate_decision, script_share_of_forgetting
@@ -20,6 +21,39 @@ def arm(name, english, hindi, seconds=1):
     return {"name": name, "wall_clock_seconds": seconds,
             "metrics": {"english/validation/plain": {"chrf": english},
                         "hindi/validation/plain": {"chrf": hindi}}}
+
+
+class ServingTimingTests(unittest.TestCase):
+    def test_one_model_stays_loaded_for_every_article(self):
+        class Model:
+            def __init__(self):
+                self.module = None
+                self.built = 0
+
+            def activate(self):
+                if self.module is None:
+                    self.built += 1
+                    self.module = True
+
+            def predict(self, batch, spec):
+                if self.module is None:
+                    raise RuntimeError("model was released")
+                return {"token_ids": [[1, 2]], "cost": {}}
+
+        class Data:
+            def collate_sources(self, records):
+                return records
+
+        rows = [SimpleNamespace(sample_id=str(i)) for i in range(3)]
+        model = Model()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "english-unmerged.json"
+            path.write_text(json.dumps({"requests": [{"language": "english", "seconds": 9}], "status": "completed"}), encoding="utf-8")
+            saved = measure(path, Data(), {"english": tuple(rows)}, PhaseSettings(), lambda language: model)
+        self.assertEqual(model.built, 1)
+        self.assertEqual(len(saved["requests"]), 3)
+        self.assertTrue(saved["resident"])
+        self.assertEqual(saved["status"], "completed")
 
 
 class PhaseRuleTests(unittest.TestCase):

@@ -10,6 +10,11 @@ from ..utils.state import read_json, write_json
 from .settings import generation_spec
 
 
+def _finished(path):
+    saved = read_json(path)
+    return saved.get("status") == "completed" and saved.get("resident") is True
+
+
 def load_model(factory, checkpoint, directory, merged=False):
     model = factory()
     try:
@@ -27,20 +32,28 @@ def load_model(factory, checkpoint, directory, merged=False):
 
 
 def measure(path, dataset, rows, settings, choose):
-    saved = read_json(path) if path.is_file() else {"requests": [], "status": "running"}
-    if saved["status"] == "completed":
+    saved = read_json(path) if path.is_file() else {"requests": [], "status": "running", "resident": True}
+    if saved.get("status") == "completed" and saved.get("resident"):
         return saved
+    if not saved.get("resident"):
+        saved = {"requests": [], "status": "running", "resident": True}
     spec = generation_spec(settings)
+    total = sum(len(records) for records in rows.values())
+    print(f"serving {path.stem} {len(saved['requests'])}/{total} articles", flush=True)
     for language, records in rows.items():
         done = sum(row["language"] == language for row in saved["requests"])
         for record in records[done:]:
             started = time.perf_counter()
             model = choose(language)
+            model.activate()
             result = model.predict(dataset.collate_sources((record,)), spec)
             saved["requests"].append({"id": record.sample_id, "language": language,
                 "seconds": time.perf_counter() - started, "length": len(result["token_ids"][0]),
                 "peak_device_bytes": result["cost"].get("peak_device_allocated_bytes", 0)})
             write_json(path, saved)
+            done_now = len(saved["requests"])
+            if total and (done_now == total or done_now * 20 // total != (done_now - 1) * 20 // total):
+                print(f"serving {path.stem} {done_now}/{total} articles", flush=True)
     saved["summary"] = {}
     for language in rows:
         requests = [row for row in saved["requests"] if row["language"] == language]
@@ -71,10 +84,11 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
         for merged in ((True,) if checkpoint is None else (False, True)):
             key = name + ("/merged" if merged else "/unmerged")
             path = directory / (key.replace("/", "-") + ".json")
-            if path.is_file() and read_json(path)["status"] == "completed":
+            if path.is_file() and _finished(path):
                 results[key] = read_json(path)["summary"]
                 continue
             model = load_model(factory, checkpoint, directory, merged)
+            model.activate()
             try:
                 results[key] = measure(path, dataset, rows, settings, lambda language: model)["summary"]
             finally:
@@ -83,7 +97,7 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
         for merged in (False, True):
             key = "two_adapter/" + ("merged" if merged else "swap")
             path = directory / (key.replace("/", "-") + ".json")
-            if path.is_file() and read_json(path)["status"] == "completed":
+            if path.is_file() and _finished(path):
                 results[key] = read_json(path)["summary"]
                 continue
             models = {}
@@ -91,9 +105,11 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
                 if merged:
                     for language, checkpoint in reference.items():
                         models[language] = load_model(factory, checkpoint, directory, True)
+                        models[language].activate()
                     choose = lambda language: models[language]
                 else:
                     models["swap"] = load_model(factory, None, directory)
+                    models["swap"].activate()
                     def choose(language):
                         checkpoint = reference[language]
                         models["swap"].load(checkpoint, read_json(Path(checkpoint) / "metadata.json")["state_kind"])

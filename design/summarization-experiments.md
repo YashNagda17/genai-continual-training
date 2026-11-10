@@ -267,7 +267,7 @@ Computed for every Hindi-stage arm and seed, on the 500 test articles per langua
 
 **Forward-pass units:** a forward pass over one row is 1 unit, and a training row (forward plus backward) is 3. An epoch's size is `rows x 3`.
 
-**The `serving` job** times greedy generation on the same 200 test articles per language, at batch size 1, with no warm-up and one pass (user override, 2026-11-08). It reports the median and 95th percentile across article requests, plus mean summary length. These timing passes are separate from the three Hindi training seeds. It covers:
+**The `serving` job** times greedy generation on the same 200 test articles per language, at batch size 1, with no warm-up and one pass (user override, 2026-11-08). The model stays loaded for every article in one timing file. A request's time is that summary, with the device synchronized before and after it. A file from a run that loaded the model once per article is measured again. It reports the median and 95th percentile across article requests, plus mean summary length. These timing passes are separate from the three Hindi training seeds. It covers:
 
 | Model | Merged | Unmerged |
 |---|---|---|

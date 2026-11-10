@@ -10,7 +10,6 @@ hf_token.txt
 /results/csrel-replay/
 /results/learning-sanity/
 /results/sample/
-/results/code/
 
 *.pt
 *.safetensors
