@@ -1,6 +1,6 @@
 # Models and ModelBase
 
-Only `Seq2SeqLMModel` and `MT5SmallModel` are active. Native Torch owns numerical execution; Transformers supplies model definitions and tokenizers. Constructors are lazy. [Model weights](/design/model-weights.md) owns mandatory numerical resume, bounded retention and residency.
+`Seq2SeqLMModel` owns shared execution; `MT5SmallModel` and `MBart25Summarizer` provide model-specific adapters. Native Torch owns numerical execution; Transformers supplies model definitions and tokenizers. Constructors are lazy. [Model weights](/design/model-weights.md) owns mandatory numerical resume, bounded retention and residency.
 
 The current runner also selects `MBart25Summarizer` from [model_mbart.py](/src/models/model_mbart.py). Its `gradient_checkpointing` constructor option defaults to false, preserving existing runs; true keeps the shared executor's non-reentrant checkpointing enabled to reduce training activation memory. This is a memory/compute tradeoff, not a T4 speed guarantee. The choice propagates to forked roles. Activation configures it only when building a module, so repeated `activate()` calls do not traverse all blocks or override a later explicit Torch checkpointing choice.
 

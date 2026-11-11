@@ -41,7 +41,9 @@ def parse_args(argv):
     parser.add_argument("--protocol", choices=("smoke", "pilot", "scientific"), default="scientific")
     parser.add_argument("--output", default=".")
     parser.add_argument("--phase", type=int, choices=range(8))
-    parser.add_argument("--device", default="xpu")
+    parser.add_argument("--device", default=None, help="CUDA/XPU auto-detection; smoke defaults to CPU")
+    parser.add_argument("--gradient-checkpointing", action="store_true",
+                        help="Reduce mBART training activation memory at the cost of recomputation")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Training passes per language (default: 4; nondefault values require --pilot or smoke)")
     args = parser.parse_args(argv)
@@ -67,7 +69,7 @@ def selected_phases(root, phase):
     return RUN_ORDER[start:]
 
 
-def prepare(protocol, device, settings=None, *, epochs=None):
+def prepare(protocol, device, settings=None, *, epochs=None, gradient_checkpointing=False):
     if protocol == "smoke":
         factory = partial(build_smoke_model, device=device or "cpu")
         # The tiny smoke model takes at most four rows per update and runs every conditional arm.
@@ -81,7 +83,8 @@ def prepare(protocol, device, settings=None, *, epochs=None):
             # The custom backward uses one gradient buffer; the chunk floor bounds vocabulary scratch memory.
             return MBart25Summarizer(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=32,
                                                     learning_rate=settings.learning_rate,
-                                                    seed=settings.seed), device=device or "auto")
+                                                    seed=settings.seed), device=device or "auto",
+                                      gradient_checkpointing=gradient_checkpointing)
     if epochs is not None:
         settings = replace(settings, english_passes=epochs, hindi_passes=epochs)
     model = factory()
@@ -136,7 +139,8 @@ def main(argv=None):
     args = parse_args(argv)
     protocol = "pilot" if args.pilot else args.protocol
     output = Path(args.output).resolve()
-    dataset, factory, settings = prepare(protocol, args.device, epochs=args.epochs)
+    dataset, factory, settings = prepare(protocol, args.device, epochs=args.epochs,
+                                         gradient_checkpointing=args.gradient_checkpointing)
     if protocol != "smoke" and not (output / "prepared" / "manifest.json").is_file():
         dataset.save(output / "prepared")
     run_phases(output, dataset, factory, settings, args.phase)

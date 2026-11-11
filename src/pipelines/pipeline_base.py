@@ -201,6 +201,8 @@ class SummarizationPipeline(PipelineBase):
                              model_settings=asdict(self.model.settings) if hasattr(self.model, 'settings') else None,
                              model_revision=getattr(self.model, 'revision', None),
                              model_config=self.model.config.to_dict() if getattr(self.model, 'config', None) is not None else None)
+        if getattr(self.model, 'gradient_checkpointing', False):
+            self.resolved['gradient_checkpointing'] = True
         # Once per bind; numerical forwards never hash tokens or parameters.
         self.artifacts.identity = fingerprint(self.resolved)
 

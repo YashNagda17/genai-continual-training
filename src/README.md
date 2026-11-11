@@ -4,6 +4,10 @@ The active code implements [Idea_Refined_2.md](/Idea_Refined_2.md): mT5-small le
 
 Use Python 3.11+ with the dependencies in [requirements.txt](/requirements.txt). Torch owns training, gradients and inference. Models detect CUDA/ROCm, then XPU, then CPU; explicit device requests are supported. Every role is capped at 700M total parameters.
 
+The current non-smoke runner selects `MBart25Summarizer`. Its default device is automatic, so a CUDA cloud host no longer inherits an XPU-only request. Use `--device cuda:0` explicitly on the T4 setup. `--gradient-checkpointing` enables mBART's activation-memory tradeoff; it can reduce memory use but adds recomputation, so benchmark it on the remote host. Enabling it changes the live run identity: use a separate attempt from a run started without it.
+
+Non-smoke runs publish recovery checkpoints every 100 recorded events, with forced lifecycle phase-boundary saves. Smoke keeps a cadence of one. A restart can replay batches since the last complete checkpoint. CUDA hosts skip the local 180-second between-arm cooldown. Phase 0 and serving retain resident models, and analysis jobs leave the idle learner offloaded while switching auxiliary roles. Legacy serving swap timings without the checkpoint-reuse marker are remeasured.
+
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
