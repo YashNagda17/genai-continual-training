@@ -80,23 +80,20 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy = {'ranking': [], 'scores': {}, 'retired': [], 'active': [], 'ever_active': [],
                        'rank_cursor': 0, 'warmup_done': False, 'pending': None, 'work': {},
                        'pass_rows': 0, 'completed_passes': 0, 'validated_passes': 0,
-                       'best': None, 'extra': 0, 'full_cursor': 0,
+                       'extra': 0, 'full_cursor': 0,
                        'refresh_at': 0, 'filtered': [], 'eligible': None, 'english_ready': False}
 
     def input_identity(self):
         status = 'project' if self.config.repair_stop or self.config.replay_text == 'past' or self.config.selector == 'drift' else (
             'adaptation' if self.config.selector == 'loss' else 'ablation')
-        return {'method_status': status, 'english_checkpoint': self.english_checkpoint, 'pool': [asdict(r) for r in self.pool],
+        return {'method_status': status, 'evaluation_schedule': 'after_training',
+                'english_checkpoint': self.english_checkpoint, 'pool': [asdict(r) for r in self.pool],
                 'adapter_plan': None if self.adapter_plan is None else _plain(asdict(self.adapter_plan))}
 
     def required_capabilities(self):
         return ({'example_loss', 'token_loss', 'generation'}
                 | ({'token_weight_hook'} if self.config.repair_stop else set())
                 | ({'adapter_plans'} if self.adapter_plan is not None else set()))
-
-    def dependencies(self):
-        best = self.policy['best']
-        return (best['path'],) if best and not self.policy['english_ready'] else ()
 
     def validate_runtime(self):
         super().validate_runtime()
@@ -307,8 +304,10 @@ class RevisionPipeline(SummarizationPipeline):
         return TokenTargets(torch.zeros_like(weights), weights.detach(), all_positive=True)
 
     def _validation_pass(self):
-        if self.policy['completed_passes'] <= self.policy['validated_passes']:
-            return
+        if self.policy['completed_passes'] < self.spec.passes:
+            raise ValueError('English validation requires every training epoch to finish')
+        if 'final_validation' in self.policy:
+            return self.policy['final_validation']['scores']
         work = self.policy['work'].setdefault('validation', {'cursor': 0, 'predictions': []})
         rows = self.held_out('english', 'validation')
         label = f"validation english epoch {self.policy['completed_passes']}/{self.spec.passes}"
@@ -320,21 +319,16 @@ class RevisionPipeline(SummarizationPipeline):
             self.log_sample_progress(label, work['cursor'], len(rows))
             self._commit()
         scores = summary_metrics(work['predictions'], [r.target['text'] for r in rows], 'english')
-        self._save_scores(self.policy['completed_passes'], 'english/validation/plain', scores)
-        best = self.policy['best']
-        if best is None or scores['chrf'] > best['scores']['chrf']:
-            self.policy['best'] = {'path': self.artifacts.blob(self.model), 'scores': scores,
-                                   'pass': self.policy['completed_passes']}
+        self.policy['final_validation'] = {'scores': scores, 'texts': work['predictions']}
         self.policy['validated_passes'] = self.policy['completed_passes']
         self.policy['work'].pop('validation', None)
         self._commit()
+        return scores
 
     def next_update(self):
         if self.policy['pending'] is not None:
             return self._pending_update()
-        if self.config.stage == 'english':
-            self._validation_pass()
-        else:
+        if self.config.stage == 'hindi':
             total = math.ceil(len(self.current) / self.config.hindi_batch) * self.config.hindi_passes
             if not self.policy['warmup_done'] and self.progress['attempts'] >= math.ceil(total * self.config.warmup_fraction):
                 self.rank_pool()
@@ -390,12 +384,11 @@ class RevisionPipeline(SummarizationPipeline):
             self.artifacts.pin_artifact(Path(self.context.output) / 'hindi', self.model.info.checkpoint_bytes,
                                         self.model.save_hindi_checkpoint)
             return self.pool
-        self._validation_pass()
+        scores = self._validation_pass()
         if not self.policy['english_ready']:
-            best = self.policy['best']
-            self.model.load(self.artifacts.root / best['path'], 'frozen')
             reference = self.artifacts.pin(self.model, {'kind': 'english', 'writer': 'english_checkpoint',
-                'prefix': self.config.prefix, 'passes': best['pass'], 'validation': best['scores']})
+                'prefix': self.config.prefix, 'passes': self.policy['completed_passes'],
+                'selection': 'final_epoch', 'validation': scores})
             self.policy.update(english_ready=True, english_checkpoint=reference)
             self._commit()
         written = self.write_past(self.pool)
@@ -421,6 +414,10 @@ class RevisionPipeline(SummarizationPipeline):
                         continue
                     rows = self.held_out(language, split)
                     work = self.policy['work'].setdefault('evaluation', {'cursor': 0, 'texts': []})
+                    cached = (self.policy.get('final_validation') if self.config.stage == 'english'
+                              and key == 'english/validation/plain' else None)
+                    if cached is not None:
+                        work.update(cursor=len(rows), texts=cached['texts'])
                     print(f"generate {key} {work['cursor']}/{len(rows)} samples", flush=True)
                     guard = ({'block': 'devanagari'} if language == 'english' else {'penalize': 'latin', 'penalty': 2.0}) if guarded else None
                     while work['cursor'] < len(rows):
@@ -429,7 +426,8 @@ class RevisionPipeline(SummarizationPipeline):
                         work['cursor'] += len(part)
                         self.log_sample_progress(f"generate {key}", work['cursor'], len(rows))
                         self._commit()
-                    scores = summary_metrics(work['texts'], [r.target['text'] for r in rows], language)
+                    scores = cached['scores'] if cached is not None else summary_metrics(
+                        work['texts'], [r.target['text'] for r in rows], language)
                     self._save_scores('final', key, scores)
                     self.metrics.append({'checkpoint_task': self.config.stage, 'task': key, 'metrics': scores})
                     folder = Path(self.context.output) / 'predictions'
@@ -437,6 +435,8 @@ class RevisionPipeline(SummarizationPipeline):
                     write_json(folder / (key.replace('/', '-') + '.json'), [
                         {'id': r.sample_id, 'target': r.target['text'], 'prediction': text} for r, text in zip(rows, work['texts'])])
                     self.policy['work'].pop('evaluation', None)
+                    if cached is not None:
+                        self.policy.pop('final_validation', None)
                     self._commit()
 
     def _save_scores(self, pass_number, task, scores):

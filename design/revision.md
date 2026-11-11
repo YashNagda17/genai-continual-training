@@ -29,7 +29,7 @@ Experiments: X, A, B, G1, G2, G3, the compute-matched control, and the full-Engl
 
 ## English stage
 
-1. Train the adapter on all blocks with 2,000 English training rows for the configured passes. Each article is prefixed with `summarize: `. After each pass, evaluate English validation and save that pass's chrF, ROUGE-L, and right-language share. Keep the best pass by chrF. That's the **English checkpoint**. The same three scores are saved for every final validation and test sweep.
+1. Train the adapter on all blocks with 2,000 English training rows for all configured passes. Each article is prefixed with `summarize: `. Only after every training pass is complete, evaluate English validation and pin the final-epoch weights as the **English checkpoint**. There is no per-epoch validation or earlier-best checkpoint selection (user override, 2026-11-12). Reuse that validation's predictions/scores in the final report, then run the remaining validation/test sweeps. Hindi arms likewise evaluate only after their configured training passes finish.
 2. Save it as an immutable artifact ([model-weights.md](/design/model-weights.md)). Every Hindi run of the same prefix variant loads it.
 3. For each of the 500 pool rows (a seeded subset of the 2,000 English training rows), compute and store in `Record.practice`:
    - `answer_text`, `answer_ids`: the English checkpoint's greedy summary, up to 64 tokens. This is the **past summary**.

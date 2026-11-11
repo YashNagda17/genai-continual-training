@@ -122,7 +122,7 @@ Their executable code and dedicated tests are removed. Original paper sources, r
 
 ```text
 English stage (once per prefix variant):
-  train on 2,000 English rows, choose the checkpoint on English validation
+  train on 2,000 English rows for all epochs, then validate and keep final-epoch weights
   save the English checkpoint as an immutable artifact
   write past summaries and per-token baselines for the 500 pool rows
   score both languages on validation and test, and time one summary

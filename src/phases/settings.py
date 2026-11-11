@@ -13,7 +13,7 @@ class PhaseSettings:
     english_passes: int = 4
     hindi_passes: int = 4
     task_prefix: str = "summarize: "
-    analysis_batch: int = 8
+    analysis_batch: int = 4
     max_new_tokens: int = 256
     encoder_blocks: int = 2
     decoder_blocks: int = 2

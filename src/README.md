@@ -8,6 +8,8 @@ The current non-smoke runner selects `MBart25Summarizer`. Its default device is 
 
 Non-smoke runs publish recovery checkpoints every 100 recorded events, with forced lifecycle phase-boundary saves. Smoke keeps a cadence of one. A restart can replay batches since the last complete checkpoint. CUDA hosts skip the local 180-second between-arm cooldown. Phase 0 and serving retain resident models, and analysis jobs leave the idle learner offloaded while switching auxiliary roles. Legacy serving swap timings without the checkpoint-reuse marker are remeasured.
 
+Validation and test generation run after all configured epochs in each training stage. English transfers the final-epoch checkpoint; it no longer runs per-epoch validation or reloads an earlier validation winner. The new evaluation schedule enters the arm identity, so use a new attempt directory for English runs previously started with best-pass selection. Historical imported checkpoints remain unchanged.
+
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5

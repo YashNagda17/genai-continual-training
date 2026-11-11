@@ -94,7 +94,7 @@ The runner uses the values below. It does not read `preregistration.json`.
 | Task prompt | `summarize: ` is prepended to every English and Hindi article before tokenization |
 | Limits | 256 input tokens, 64 output tokens |
 | Optimizer | AdamW, learning rate `1e-3`, weight decay 0.01, gradient clip 1. Linear learning-rate warm-up over the first 1% of each stage's updates, then constant. Every stage starts a fresh optimizer |
-| Passes | `english_passes = 4`, `hindi_passes = 4`, matching the current settings and imported checkpoints. The English stage validates after each pass, saves every pass's chrF, ROUGE-L, and right-language share, and keeps the best pass by validation chrF. Pilot epoch overrides are explicit comparisons |
+| Passes | `english_passes = 4`, `hindi_passes = 4`. Validation and test generation run only after all training passes in their stage finish. English pins final-epoch weights; it does not choose an earlier pass by validation (user override, 2026-11-12). Pilot epoch overrides are explicit comparisons; older best-pass checkpoints retain their historical provenance |
 | Batches | 16 Hindi rows per update (plus replay). Generation, scoring, and evaluation use 16 rows per batch (`analysis_batch = 16`). The model accepts up to 32 rows |
 | Loss chunk | 32 target positions per full-vocabulary cross-entropy call (`logit_chunk_size`), with a custom first-order backward that fills one logits-gradient buffer in chunks. This bounds scratch memory and avoids repeated full-logits gradient additions. Previous Intel Arc measurements using the old 512-position loss are historical timings, not measurements of this backward implementation |
 | Replay | 2 pool rows per 16 Hindi rows |
