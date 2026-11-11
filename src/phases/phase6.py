@@ -17,8 +17,10 @@ PREFIX = "summarize in {language}: "
 def run(directory, dataset, model_factory, settings, context, clock):
     share = context["phase1"].get("script_share_validation")
     if not settings.force_conditional and (share is None or share < settings.g4_min_share):
-        winner = context["overall_winner"]
-        final = publish_final(directory, winner["name"], winner["checkpoint"]) or winner.get("final_model")
+        # Phase 6 runs before Phase 4, so there is usually no overall winner to publish yet.
+        winner = context.get("overall_winner")
+        final = None if winner is None else (
+            publish_final(directory, winner["name"], winner["checkpoint"]) or winner.get("final_model"))
         details = annotate({"status": "skipped", "prefix": PREFIX, "script_share_validation": share,
                             "reason": f"G5 recovered {share} of the English drop; G4 needs {settings.g4_min_share}"},
                            clock, [], final)

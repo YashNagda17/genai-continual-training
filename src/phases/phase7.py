@@ -1,9 +1,12 @@
-"""Phase 7: the combinations the current pipelines can run, and the ones they cannot."""
+"""Phase 7: drift ranking with past-summary replay together (G1 + G2), and the combinations the pipelines cannot run.
+
+It runs right after Phase 2 and needs only Phase 1's English checkpoint and pool. ``room_placed_frozen``
+needs Phase 4's room plans, so Phase 4 runs it."""
 
 from .support import hindi_pipeline, run_hindi
 from ..pipelines.revision import load_pool
 from .artifacts import annotate, save_report
-from .support import phase, room_plans
+from .support import phase
 
 UNSUPPORTED = (
     {"name": "reverse_order", "reason": "Hindi training starts from the English checkpoint"},
@@ -19,27 +22,8 @@ def run(directory, dataset, model_factory, settings, context, clock):
     together = run_hindi(directory / "drift_past", "drift_past",
                         hindi_pipeline(settings, pool, checkpoint, selector="drift", replay_text="past"),
                         dataset, model_factory, settings, selector="drift", replay_text="past")
-    skipped = list(UNSUPPORTED)
-    frozen = None
-    if context.get("room_status") != "completed":
-        skipped.append({"name": "room_placed_frozen",
-                        "reason": context.get("room_reason") or context.get("room_status")})
-    else:
-        plans, reason = room_plans(settings, context, names=("room_placed_frozen",))
-        chosen = next((plan for plan in plans if plan.identity["arm"] == "room_placed_frozen"), None)
-        if chosen is None and not any(item["name"] == "room_placed_frozen" for item in skipped):
-            skipped.append({"name": "room_placed_frozen", "reason": reason})
-        if chosen is not None:
-            revision = context["best_revision"]
-            pipeline = hindi_pipeline(settings, pool, checkpoint, selector=revision["selector"],
-                                      replay_text=revision["replay_text"], repair_stop=revision["repair_stop"])
-            pipeline.adapter_plan = chosen
-            frozen = run_hindi(directory / "room_placed_frozen", "room_placed_frozen", pipeline, dataset,
-                              model_factory, settings, selector=revision["selector"],
-                              replay_text=revision["replay_text"], repair_stop=revision["repair_stop"])
-    runs = [together] if frozen is None else [together, frozen]
     details = annotate(
-        {"drift_past": together["attempt"], "skipped": skipped,
-         "room_placed_frozen": None if frozen is None else frozen["attempt"]},
-        clock, runs, together.get("final_model"))
+        {"drift_past": together["attempt"], "skipped": list(UNSUPPORTED),
+         "room_placed_frozen": "runs in Phase 4, after the room plans"},
+        clock, [together], together.get("final_model"))
     return save_report(directory, 7, details, {"drift_past": together, "phase7": details})

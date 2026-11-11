@@ -43,6 +43,22 @@ def _confirm(directory, dataset, model_factory, settings, context, pool, checkpo
     return run_room(plans[winner["name"]], seeds=settings.hindi_seeds)
 
 
+def _frozen(directory, dataset, model_factory, settings, context, pool, checkpoint):
+    """Placed extra room with the shared adapters frozen in the chosen blocks (moved here from Phase 7)."""
+    plans, reason = room_plans(settings, context, names=("room_placed_frozen",))
+    chosen = next((plan for plan in plans if plan.identity["arm"] == "room_placed_frozen"), None)
+    if chosen is None:
+        return None, reason
+    revision = context["best_revision"]
+    pipeline = hindi_pipeline(settings, pool, checkpoint, selector=revision["selector"],
+                              replay_text=revision["replay_text"], repair_stop=revision["repair_stop"])
+    pipeline.adapter_plan = chosen
+    arm = run_hindi(directory / "room_placed_frozen", "room_placed_frozen", pipeline, dataset, model_factory,
+                    settings, selector=revision["selector"], replay_text=revision["replay_text"],
+                    repair_stop=revision["repair_stop"])
+    return arm, None
+
+
 @phase(4)
 def run(directory, dataset, model_factory, settings, context, clock):
     pool = load_pool(context["pool"])
@@ -77,6 +93,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
     winner = _confirm(directory, dataset, model_factory, settings, context, pool, checkpoint, winner, by_name, run_room)
     if winner["name"] in trained:
         trained[winner["name"]] = winner
+    frozen, frozen_reason = _frozen(directory, dataset, model_factory, settings, context, pool, checkpoint)
     comparisons = [compare_arms(trained["room_placed"], trained[other]) for other in ("room_random", "room_spread")]
     if winner["name"] != "random":
         comparisons.append(compare_arms(winner, context["arms"]["random"]))
@@ -84,9 +101,12 @@ def run(directory, dataset, model_factory, settings, context, clock):
                "confirmed_seeds": [run.get("seed") for run in winner.get("seed_runs", [winner])],
                "placement_wins": placement_wins, "room_placed_slow": e4_reason or "ran",
                "comparisons": comparisons, "placement_counts": any(
-                   result["counts"] for result in comparisons[1]["metrics"].values())}
+                   result["counts"] for result in comparisons[1]["metrics"].values()),
+               "room_placed_frozen": None if frozen is None else frozen["attempt"],
+               "room_placed_frozen_reason": frozen_reason}
     final = publish_final(directory, winner["name"], winner["checkpoint"]) or winner.get("final_model")
-    details = annotate(details, clock, list(trained.values()) + ([winner] if winner["name"] not in trained else []),
-                       final)
+    details = annotate(details, clock, list(trained.values()) + ([winner] if winner["name"] not in trained else [])
+                       + ([frozen] if frozen is not None else []), final)
     return save_report(directory, 4, details, {"room_status": "completed", "room_reason": "",
-                                               "room_arms": trained, "overall_winner": winner, "phase4": details})
+                                               "room_arms": trained, "overall_winner": winner,
+                                               "room_placed_frozen": frozen, "phase4": details})

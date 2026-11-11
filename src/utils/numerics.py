@@ -47,8 +47,11 @@ def resolve_device(preferred="auto"):
 def move_to_device(value, device):
     """Move nested batch/optimizer tensors without casting token IDs or detaching gradients."""
     if isinstance(value, torch.Tensor):
-        # return value.to(device)
+        # A copy from ordinary (pageable) host memory waits for every queued kernel first.
+        # Pinned memory lets the copy queue behind them while the host moves on.
         non_blocking = value.device.type == "cpu" and torch.device(device).type in {"cuda", "xpu"}
+        if non_blocking and not value.is_pinned():
+            value = value.pin_memory()
         return value.to(device, non_blocking=non_blocking)
     if isinstance(value, dict):
         return {key: move_to_device(item, device) for key, item in value.items()}

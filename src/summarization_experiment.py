@@ -10,7 +10,7 @@ import argparse
 from functools import partial
 from dataclasses import replace
 
-from .models.model_mt5 import MT5SmallModel
+from .models.model_mbart import MBart25Summarizer
 from .models.model_seq2seq import Seq2SeqSettings
 from .phases.phase0 import run as run_phase0
 from .phases.phase1 import run as run_phase1
@@ -28,6 +28,11 @@ from .datasets.dataset_instruction import Seq2SeqPreprocessing, SummarizationDat
 from .datasets.dataset_sources import load_source
 
 PHASES = (run_phase0, run_phase1, run_phase2, run_phase3, run_phase4, run_phase5, run_phase6, run_phase7)
+# Phase numbers keep their names; this is the order they run in. Setup (0), then the data every later
+# phase needs: X and G5 (1), then A, B, G1, G2 and G3 (2). Then the project's own and GenAI arms:
+# the language prompt G4 (6) and drift plus past summaries (7). Then which blocks (3), extra room (4),
+# and shrinking (5). Phase 5 shrinks Phase 4's overall winner, so it stays after Phase 4.
+RUN_ORDER = (0, 1, 2, 6, 7, 3, 4, 5)
 
 
 def parse_args(argv):
@@ -36,7 +41,7 @@ def parse_args(argv):
     parser.add_argument("--protocol", choices=("smoke", "pilot", "scientific"), default="scientific")
     parser.add_argument("--output", default=".")
     parser.add_argument("--phase", type=int, choices=range(8))
-    parser.add_argument("--device", default=None)
+    parser.add_argument("--device", default="xpu")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Training passes per language (default: 4; nondefault values require --pilot or smoke)")
     args = parser.parse_args(argv)
@@ -48,17 +53,18 @@ def parse_args(argv):
 
 
 def selected_phases(root, phase):
-    """Continue from the last phase, or run Phase 0 through Phase 7 when nothing has started."""
+    """Continue after the last phase in RUN_ORDER, or run every phase in RUN_ORDER when nothing has started."""
     if phase is not None:
         return (phase,)
     path = Path(root) / "progress.json"
     if not path.is_file():
-        return tuple(range(8))
+        return RUN_ORDER
     last = read_json(path).get("last_phase")
-    if not isinstance(last, int) or not 0 <= last <= 7:
-        return tuple(range(8))
-    start = last if not (Path(root) / f"phase{last}" / "report.json").is_file() else last + 1
-    return tuple(range(start, 8))
+    if last not in RUN_ORDER:
+        return RUN_ORDER
+    position = RUN_ORDER.index(last)
+    start = position if not (Path(root) / f"phase{last}" / "report.json").is_file() else position + 1
+    return RUN_ORDER[start:]
 
 
 def prepare(protocol, device, settings=None, *, epochs=None):
@@ -69,12 +75,13 @@ def prepare(protocol, device, settings=None, *, epochs=None):
                                  max_new_tokens=8, shrink_tolerance=100.0, force_conditional=True)
     else:
         settings = settings or PhaseSettings(protocol=protocol, batch_size=16, analysis_batch=16,
-                        max_new_tokens=64, stability_threshold=0.5, sample_size=64)
+                        max_new_tokens=256, stability_threshold=0.5, sample_size=64)
         def factory():
-            # The custom backward uses one gradient buffer; small chunks bound vocabulary scratch memory.
-            return MT5SmallModel(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=32,
-                                                learning_rate=settings.learning_rate,
-                                                seed=settings.seed), device=device or "auto")
+            # mBART-large summarizer; English and Hindi share en_XX (see model_mbart).
+            # The custom backward uses one gradient buffer; the chunk floor bounds vocabulary scratch memory.
+            return MBart25Summarizer(Seq2SeqSettings(rank=16, alpha=32.0, max_batch_size=32, logit_chunk_size=32,
+                                                    learning_rate=settings.learning_rate,
+                                                    seed=settings.seed), device=device or "auto")
     if epochs is not None:
         settings = replace(settings, english_passes=epochs, hindi_passes=epochs)
     model = factory()
@@ -108,13 +115,15 @@ def run_phases(root, dataset, model_factory, settings, phase=None):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     selected = selected_phases(root, phase)
-    context = read_context(root, dataset, settings, before=selected[0]) if selected else {}
+    earlier = RUN_ORDER[:RUN_ORDER.index(selected[0])] if selected else ()
+    context = read_context(root, dataset, settings, earlier) if selected else {}
     with Checkpoints(root, "phase-driver").lock():
         for index in selected:
             if settings.protocol == "scientific" and index >= 2 and context.get("phase1", {}).get("gate") != "continue":
                 completed = [i for i in range(8) if (root / f"phase{i}" / "report.json").is_file()]
+                previous = RUN_ORDER[max(0, RUN_ORDER.index(index) - 1)] if index in RUN_ORDER else index - 1
                 write_json(root / "progress.json", {"status": "stopped_gate", "gate": context.get("phase1", {}).get("gate"),
-                                                   "completed_phases": completed, "last_phase": index - 1})
+                                                   "completed_phases": completed, "last_phase": previous})
                 break
             context.update(PHASES[index](root, dataset, model_factory, settings, context))
             completed = [i for i in range(8) if (root / f"phase{i}" / "report.json").is_file()]

@@ -111,7 +111,7 @@ class PhaseRuleTests(unittest.TestCase):
         self.assertIsNone(script_share_of_forgetting(22, 22, 27))
 
     def test_default_command_resumes_scientific_from_the_last_phase(self):
-        from ..summarization_experiment import parse_args, selected_phases
+        from ..summarization_experiment import RUN_ORDER, parse_args, selected_phases
         args = parse_args([])
         self.assertEqual(args.protocol, "scientific")
         self.assertFalse(args.pilot)
@@ -120,13 +120,16 @@ class PhaseRuleTests(unittest.TestCase):
         self.assertTrue(parse_args(["--pilot"]).pilot)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            self.assertEqual(selected_phases(root, None), tuple(range(8)))
+            self.assertEqual(RUN_ORDER, (0, 1, 2, 6, 7, 3, 4, 5))
+            self.assertEqual(selected_phases(root, None), RUN_ORDER)
             (root / "phase2").mkdir()
             (root / "progress.json").write_text(json.dumps({"last_phase": 2}))
             (root / "phase2" / "report.json").write_text("{}")
-            self.assertEqual(selected_phases(root, None), tuple(range(3, 8)))
+            self.assertEqual(selected_phases(root, None), (6, 7, 3, 4, 5))
             (root / "phase2" / "report.json").unlink()
-            self.assertEqual(selected_phases(root, None), tuple(range(2, 8)))
+            self.assertEqual(selected_phases(root, None), (2, 6, 7, 3, 4, 5))
+            (root / "progress.json").write_text(json.dumps({"last_phase": 7}))
+            self.assertEqual(selected_phases(root, None), (7, 3, 4, 5))
             self.assertEqual(selected_phases(root, 4), (4,))
 
     def test_interruption_keeps_progress_without_a_completed_report(self):

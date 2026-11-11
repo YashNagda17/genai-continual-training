@@ -13,4 +13,7 @@ hf_token.txt
 
 **/.offload/
 .writer.lock
+/src/models/model_weights/
+/results/
+
 

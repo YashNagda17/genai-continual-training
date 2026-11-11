@@ -59,7 +59,12 @@ class Seq2SeqSettings:
 _PROJECTIONS = {"q", "k", "v", "o", "wi_0", "wi_1", "wo"}
 _PARTS = {"SelfAttention": "self_attention", "EncDecAttention": "cross_attention",
           "DenseReluDense": "feed_forward"}
-_BANDS = ("1-2", "3-4", "5-6", "7-8")
+
+
+def _band(block_index):
+    """Two-block band of a zero-based block index: 0 and 1 give "1-2". Works for any depth."""
+    first = block_index // 2 * 2 + 1
+    return f"{first}-{first + 1}"
 
 
 class _ChunkedPositionNLL(torch.autograd.Function):
@@ -228,6 +233,8 @@ class Seq2SeqLMModel(ModelBase):
     model_type = ""
     untie_head = False
     expected_parameters = None
+    stack_paths = {"encoder": "encoder", "decoder": "decoder"}  # Where each stack lives in the module
+    blocks_attribute = "block"                                  # The stack's list of blocks
 
     def __init__(self, settings=None, *, device="auto", revision="main", cache_dir=None,
                  collate=None, collate_sources=None, role="learner", initialization="base",
@@ -409,6 +416,23 @@ class Seq2SeqLMModel(ModelBase):
     def info(self):
         return self.describe_role(self.role, self.initialization)
 
+    def rank_costs(self):
+        """Adapter parameters per unit of rank in one encoder block and one decoder block.
+
+        Counted on a meta-device build, so nothing is loaded. mT5-small gives 8,192 and 11,776."""
+        self._prepare()
+        # Building a module can draw from the global random generator; keep that state unchanged,
+        # so measuring sizes never changes how a later randomly initialized model starts.
+        with torch.random.fork_rng(devices=[]), torch.device("meta"):
+            module = self._build(self.config)
+            self._attach_lora(module, deterministic=True)
+        costs = {}
+        for child in module.modules():
+            if isinstance(child, Seq2SeqLoRA) and child.block_index == 0:
+                stack = child.block_key.split(".")[0]
+                costs[stack] = costs.get(stack, 0) + child.A.shape[1] + child.B.shape[0]
+        return costs["encoder"], costs["decoder"]
+
     def fork(self, role, initialization):
         """Unloaded isolated role. A probe does not copy the evolving learner."""
         self._prepare()
@@ -455,8 +479,10 @@ class Seq2SeqLMModel(ModelBase):
     def _reset_optimizer(self):
         groups = self._optimizer_parameters()
         self.module.zero_grad(set_to_none=True)
+        # Fused AdamW on CUDA/XPU: fewer kernel launches from the host per step.
         self.optimizer = torch.optim.AdamW(groups, lr=self.settings.learning_rate,
-                                           weight_decay=self.settings.weight_decay) if groups else None
+                                           weight_decay=self.settings.weight_decay,
+                                           fused=self.device.type in {"cuda", "xpu"}) if groups else None
         if self.optimizer is None:
             self.scheduler = self.scaler = None
             return
@@ -550,10 +576,11 @@ class Seq2SeqLMModel(ModelBase):
             lowest = self._lowest_trainable(stack)
             if lowest == 0:
                 continue
+            path = self.stack_paths[stack]
             if lowest is None:
-                module = self.module.get_submodule(stack)
+                module = self.module.get_submodule(path)
             else:
-                module = self.module.get_submodule(f"{stack}.block")[lowest - 1]
+                module = self.module.get_submodule(f"{path}.{self.blocks_attribute}")[lowest - 1]
             self._cut_hooks.append(module.register_forward_hook(_detach_value))
 
     def apply_plan(self, plan):
@@ -668,15 +695,29 @@ class Seq2SeqLMModel(ModelBase):
     def _forward(self, payload):
         """One eager call into the built-in seq2seq model. Labels are shifted here so the library does not allocate a second full-vocabulary loss."""
         labels = payload.get("labels")
-        decoder_input_ids = None if labels is None else self.module._shift_right(labels)
+        if labels is None:
+            decoder_input_ids = None
+        elif hasattr(self.module, "_shift_right"):
+            decoder_input_ids = self.module._shift_right(labels)
+        else:
+            # mBART moves the trailing language id to the front. It has no _shift_right.
+            decoder_input_ids = self.module.prepare_decoder_input_ids_from_labels(labels)
         return self.module(input_ids=payload["input_ids"], attention_mask=payload.get("attention_mask"),
                            decoder_input_ids=decoder_input_ids, use_cache=False, return_dict=True)
 
     def _position_nll(self, logits, labels):
-        """Per-position NLL with bounded scratch space and one backward gradient buffer."""
+        """Per-position NLL with bounded scratch space and one backward gradient buffer.
+
+        The configured chunk is a floor. A 250k vocabulary at 32 rows leaves the device
+        launching many short reductions, so the chunk grows until the fp32 scratch is 256 MiB.
+        """
         if self.settings.logit_chunk_size < 1:
             raise ValueError("logit_chunk_size must be positive")
-        return _ChunkedPositionNLL.apply(logits, labels, self.settings.logit_chunk_size)
+        vocab = logits.shape[-1]
+        rows = labels.numel()
+        scratch_rows = max(1, (256 * 1024 ** 2) // max(vocab * logits.element_size(), 1))
+        chunk = max(self.settings.logit_chunk_size, min(rows or 1, scratch_rows))
+        return _ChunkedPositionNLL.apply(logits, labels, chunk)
         """Per-position NLL. Padding is zero. The slice count comes from the tensor shape, so the host does not read the device."""
         flat_labels = labels.reshape(-1)
         flat_logits = logits.reshape(-1, logits.shape[-1])
@@ -743,28 +784,30 @@ class Seq2SeqLMModel(ModelBase):
         for (name, _), gradient in zip(selected, gradients):
             module = self.module.get_submodule(name.rsplit(".", 1)[0])
             key = module.block_key if score_spec.parameter_view == "block" else (
-                f"{module.block_key.rsplit('.', 1)[0]}.{module.part}.{_BANDS[module.block_index // 2]}")
+                f"{module.block_key.rsplit('.', 1)[0]}.{module.part}.{_band(module.block_index)}")
             grouped.setdefault(key, []).append(gradient.detach().flatten())
         keys = tuple(sorted(grouped))
         return {"groups": keys, "gradients": tuple(torch.cat(grouped[key]) for key in keys)}
 
     def _optimizer_update(self, loss):
-        self.scaler.scale(loss).backward()
-        self.scaler.unscale_(self.optimizer)
+        """Backward, clip, and AdamW step, all on the device. The host never reads a value here.
+
+        There is no finite-loss or finite-norm check: reading either would make the host wait for
+        the device every step, and fp32 LoRA training on this protocol does not overflow. A NaN
+        loss would still stop the run when the step's loss is written to JSON (allow_nan=False).
+        The gradient scaler is disabled in fp32, so it is not called."""
+        loss.backward()
         parameters = [parameter for group in self.optimizer.param_groups for parameter in group['params']
                       if parameter.grad is not None]
-        norm = torch.nn.utils.clip_grad_norm_(parameters, self.settings.max_grad_norm) if parameters else loss.new_zeros(())
-        # success = bool(torch.isfinite(loss.detach()) and torch.isfinite(norm))
-        success = True  # Temporary: skip host finite checks; clipping still runs on-device.
-        if success:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
-            self.steps += 1
-            self.weight_revision += 1
-            self._weights_identity = str(self.steps)
+        if parameters:
+            torch.nn.utils.clip_grad_norm_(parameters, self.settings.max_grad_norm)
+        self.optimizer.step()
+        self.scheduler.step()
+        self.steps += 1
+        self.weight_revision += 1
+        self._weights_identity = str(self.steps)
         self.optimizer.zero_grad(set_to_none=True)
-        return success
+        return True
 
     def _weighted_loss(self, flat, targets, counts=None):
         weight = targets.weight.detach().to(device=flat.device, dtype=flat.dtype)
@@ -794,18 +837,29 @@ class Seq2SeqLMModel(ModelBase):
 
     @staticmethod
     def _finish_reports(reports):
-        """Transfer detached scalar metrics together at the train-call boundary."""
-        pending = []
-        for report in reports:
-            for field in ("loss_sums", "loss_counts"):
-                for key, value in getattr(report, field).items():
-                    if torch.is_tensor(value):
-                        pending.append((report, field, key, value))
-        if pending:
-            values = torch.stack([value for _, _, _, value in pending]).detach().cpu().tolist()
-            for (report, field, key, _), value in zip(pending, values):
-                getattr(report, field)[key] = int(value) if field == "loss_counts" else value
+        """Step losses stay as detached device scalars. Reading them here would make the host wait
+        for the device after every step; the runtime copies them all at once when it saves."""
         return reports
+
+    def _step_cost(self, start, **fields):
+        """Host time and peak device memory for one update, without waiting for the device.
+
+        The host queues kernels ahead of the device, so one step's time is approximate; summed over
+        a run it matches device time, because the host blocks once the queue is full. Peak memory is
+        the allocator's record and needs no wait."""
+        cost = {"device": str(self.device), "wall_seconds": time.perf_counter() - start,
+                "synchronized": False,
+                "process_peak_cpu_bytes": None if resource is None else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                **fields}
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "max_memory_allocated"):
+            cost["peak_device_allocated_bytes"] = backend.max_memory_allocated(self.device)
+        return cost
+
+    def _reset_peak_memory(self):
+        backend = getattr(torch, self.device.type, None)
+        if self.device.type != "cpu" and hasattr(backend, "reset_peak_memory_stats"):
+            backend.reset_peak_memory_stats(self.device)
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
         """Run caller-ordered updates; zero active weights skip AdamW entirely."""
@@ -817,7 +871,8 @@ class Seq2SeqLMModel(ModelBase):
                 for training in batch_factory():
                     if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + training.batch.valid_tokens > limits.max_tokens:
                         return self._finish_reports(reports)
-                    start = self._begin_timed_block()
+                    self._reset_peak_memory()
+                    start = time.perf_counter()
                     payload = self._payload(training.batch)
                     means, sums, counts, position = self._losses(payload)
                     diagnostics = {"plan": self._plan_fingerprint}
@@ -830,7 +885,7 @@ class Seq2SeqLMModel(ModelBase):
                         model_boundary(targets is not None, "Weighted training requires token targets")
                         row_counts = counts if hooks and hooks.token_targets and objective.reduction == 'per_example_mean' else None
                         loss, numer, denom = self._weighted_loss(flat, targets, row_counts)
-                        diagnostics["token_surprise"] = flat.float().tolist()
+                        diagnostics["token_surprise"] = flat.detach()  # Device tensor; not saved
                     else:
                         model_boundary(training.token_targets is None, "Unweighted training takes no token targets")
                         loss = self._reduce(means, sums, counts, objective.reduction)
@@ -847,7 +902,7 @@ class Seq2SeqLMModel(ModelBase):
                     attempts, updates, tokens = attempts + 1, updates + int(success), tokens + training.batch.valid_tokens
                     reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
                                               {"supervised": numer}, {"supervised": denom}, diagnostics,
-                                              self._timing_cost(start), reason))
+                                              self._step_cost(start), reason))
                     del means, sums, counts, position, loss
         return self._finish_reports(reports)
 
@@ -945,9 +1000,11 @@ class Seq2SeqLMModel(ModelBase):
         return scores.scatter_add_(1, windows[:, :, -1], penalty)
 
     def _greedy_ids(self, input_ids, attention_mask, max_new, guard, no_repeat=0, *, stop_on_eos=True):
-        """Cached greedy tokens; check all-row completion once every four steps."""
+        """Cached greedy tokens; check all-row completion once every eight steps."""
         sentinels = self._sentinels()
-        encoder_outputs = self.module.encoder(
+        # T5 exposes .encoder. mBART keeps it on the inner model; get_encoder() covers both.
+        encoder = self.module.get_encoder() if hasattr(self.module, "get_encoder") else self.module.encoder
+        encoder_outputs = encoder(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         start_id = int(getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id))
         device = input_ids.device
@@ -979,7 +1036,8 @@ class Seq2SeqLMModel(ModelBase):
             chosen = torch.where(unfinished, chosen, pad_id)
             generated[:, step + 1].copy_(chosen)
             unfinished.logical_and_(chosen.ne(eos_id))
-            if stop_on_eos and (step + 1) % 4 == 0 and not bool(unfinished.any()):
+            # Reading `unfinished` waits for the device, so it is checked only every 8 steps.
+            if stop_on_eos and (step + 1) % 8 == 0 and not bool(unfinished.any()):
                 return generated[:, :step + 2]
         return generated
 

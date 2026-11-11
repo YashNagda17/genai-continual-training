@@ -25,6 +25,8 @@ class AdapterRoomConfig:
     floor: float = 0.25
     match_tolerance: float = 0.03
     generation: dict = field(default_factory=lambda: {'max_new_tokens': 64, 'do_sample': False})
+    encoder_block_cost: int = 8192    # Adapter parameters per rank in one encoder block (mT5-small)
+    decoder_block_cost: int = 11776   # ... and in one decoder block
 
     def __post_init__(self):
         if not -1 <= self.stability_threshold <= 1 or not 0 < self.floor <= 1 or self.gamma < 0:
@@ -38,6 +40,13 @@ class AdapterRoomConfig:
 
 def cell_of(name):
     pieces = name.split('.')
+    if pieces[0] == 'model' and len(pieces) > 4 and pieces[2] == 'layers':
+        # mBART: model.encoder.layers.3.self_attn.q_proj, or .fc1 / .fc2 for the feed-forward
+        stack, block = pieces[1], int(pieces[3])
+        part = 'feed_forward' if pieces[-1] in ('fc1', 'fc2') else {
+            'self_attn': 'self_attention', 'encoder_attn': 'cross_attention'}[pieces[-2]]
+        band = block // 2 * 2 + 1
+        return f'{stack}.{part}.{band}-{band + 1}'
     stack, block = pieces[0], int(pieces[2])
     part = {'SelfAttention': 'self_attention', 'EncDecAttention': 'cross_attention',
             'DenseReluDense': 'feed_forward'}[pieces[-2]]
@@ -216,7 +225,7 @@ class AdapterRoomPipeline(SummarizationPipeline):
                           self.rng.sample(ids, sum(key.startswith(stack + '.') for key in clashing))]
             elif arm == 'room_spread':
                 chosen = all_blocks
-            cost = lambda key: 8192 if key.startswith('encoder.') else 11776
+            cost = lambda key: self.config.encoder_block_cost if key.startswith('encoder.') else self.config.decoder_block_cost
             rank = max(1, round(self.config.new_room_budget / sum(map(cost, chosen))))
             trainable = list(shared.trainable) if shared is not None else all_blocks
             if arm == 'room_placed_frozen':
@@ -230,7 +239,7 @@ class AdapterRoomPipeline(SummarizationPipeline):
             return AdapterPlan(tuple(trainable), new, scales, identity)
         else:
             raise ValueError('Unknown block-placement arm')
-        count = self.config.shared_rank * sum(8192 if key.startswith('encoder.') else 11776 for key in trainable)
+        count = self.config.shared_rank * sum(self.config.encoder_block_cost if key.startswith('encoder.') else self.config.decoder_block_cost for key in trainable)
         return AdapterPlan(tuple(trainable), identity={'arm': arm, 'trainable_parameters': count})
 
     def validate_room_plans(self, plans):

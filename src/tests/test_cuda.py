@@ -45,7 +45,9 @@ class CUDAExecutionTests(unittest.TestCase):
 
         report = self.train_once(self.role, UpdateHooks(token_targets=targets))
         self.assertTrue(report.success)
-        self.assertIsInstance(report.loss_sums["supervised"], float)
+        # Step losses stay on the device until the runtime saves them.
+        self.assertTrue(torch.is_tensor(report.loss_sums["supervised"]) and report.loss_sums["supervised"].is_cuda)
+        self.assertFalse(report.cost["synchronized"])
         self.assertEqual(report.loss_counts["supervised"], len(self.batch.records))
         self.assertTrue(report.diagnostics["token_surprise"].is_cuda)
         score = self.role.score(self.batch, ScoreSpec("token_loss", "none"))

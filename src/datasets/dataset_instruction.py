@@ -38,19 +38,28 @@ class Seq2SeqPreprocessing:
     max_source: int = 256
     max_target: int = 64
     prefix: str | None = None
+    suffix: tuple = ()  # Ids after EOS on both sides, such as mBART's language id
 
     def describe(self):
-        return {"identity": self.identity, "eos_id": self.eos_id, "pad_id": self.pad_id,
-                "max_source": self.max_source, "max_target": self.max_target, "prefix": self.prefix}
+        described = {"identity": self.identity, "eos_id": self.eos_id, "pad_id": self.pad_id,
+                     "max_source": self.max_source, "max_target": self.max_target, "prefix": self.prefix}
+        if self.suffix:
+            described["suffix"] = list(self.suffix)
+        return described
 
 
-def fit_tokens(ids, limit, eos_id):
-    """Keep the first tokens and end with EOS. The flag is true when any token was cut."""
-    body = list(ids[:-1] if ids and ids[-1] == eos_id else ids)
-    over = len(body) + 1 > limit
+def fit_tokens(ids, limit, eos_id, suffix=()):
+    """Keep the first tokens and end with EOS, then the suffix. The flag is true when any token was cut."""
+    suffix = list(suffix)
+    body = list(ids)
+    if suffix and body[-len(suffix):] == suffix:
+        body = body[:-len(suffix)]
+    if body and body[-1] == eos_id:
+        body = body[:-1]
+    over = len(body) + 1 + len(suffix) > limit
     if over:
-        body = body[:max(limit - 1, 0)]
-    return body + [eos_id], over
+        body = body[:max(limit - 1 - len(suffix), 0)]
+    return body + [eos_id] + suffix, over
 
 
 class SummarizationDataset(DatasetBase):
@@ -176,10 +185,10 @@ class SummarizationDataset(DatasetBase):
                     continue
                 source_text = article if not spec.prefix else spec.prefix.format(language=language) + article
                 full_source = list(spec.encode(source_text))
-                source_ids, source_over = fit_tokens(full_source, spec.max_source, spec.eos_id)
+                source_ids, source_over = fit_tokens(full_source, spec.max_source, spec.eos_id, spec.suffix)
                 summary_ids = list(spec.encode(summary))
                 summary_body = summary_ids[:-1] if summary_ids and summary_ids[-1] == spec.eos_id else summary_ids
-                target_ids, target_over = fit_tokens(summary_ids, spec.max_target, spec.eos_id)
+                target_ids, target_over = fit_tokens(summary_ids, spec.max_target, spec.eos_id, spec.suffix)
                 bucket = pilot.setdefault(language, {"source_tokens": 0, "characters": 0, "rows": 0,
                                                      "source_over": 0, "target_over": 0,
                                                      "source_truncated": 0, "target_truncated": 0})
@@ -187,7 +196,7 @@ class SummarizationDataset(DatasetBase):
                 bucket["characters"] += len(source_text)
                 bucket["rows"] += 1
                 bucket["source_over"] += int(len(full_source) > spec.max_source)
-                bucket["target_over"] += int(len(summary_body) + 1 > spec.max_target)
+                bucket["target_over"] += int(len(summary_body) + 1 + len(spec.suffix) > spec.max_target)
                 bucket["source_truncated"] += int(source_over)
                 bucket["target_truncated"] += int(target_over)
                 updated = replace(record,

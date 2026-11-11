@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, replace
 from pathlib import Path
+import torch
 import copy
 import csv
 import random
@@ -92,6 +93,41 @@ class PipelineRuntime:
         self.event += 1
         self.events.append({"event": self.event, "task": self.task_id, "kind": kind, **details})
 
+    def _materialize_events(self):
+        """Replace device scalars in unsaved events (step losses) with numbers, in one transfer per dtype.
+
+        Executors leave step losses on the device so the host does not wait after every update."""
+        start = getattr(self, "_materialized", 0)
+        if start > len(self.events):
+            start = 0
+        found = []
+
+        def collect(container, key, value):
+            if isinstance(value, torch.Tensor):
+                found.append((container, key, value))
+            elif isinstance(value, dict):
+                for inner_key, inner in value.items():
+                    collect(value, inner_key, inner)
+            elif isinstance(value, list):
+                for index, inner in enumerate(value):
+                    collect(value, index, inner)
+
+        for event in self.events[start:]:
+            for key, value in event.items():
+                collect(event, key, value)
+        for integral in (False, True):
+            group = [(c, k, t) for c, k, t in found
+                     if t.numel() == 1 and (t.dtype.is_floating_point is not integral)]
+            if group:
+                dtype = torch.int64 if integral else torch.float32
+                values = torch.stack([t.detach().reshape(()).to(dtype) for _, _, t in group]).cpu().tolist()
+                for (container, key, _), number in zip(group, values):
+                    container[key] = number
+        for container, key, tensor in found:
+            if isinstance(container[key], torch.Tensor):
+                container[key] = tensor.detach().cpu().tolist()
+        self._materialized = len(self.events)
+
     def boundary(self, *, force=False):
         """Checkpoint at the event cadence, or immediately for a forced phase transition."""
         if force or self.event - self.saved_event >= self.spec.checkpoint_every:
@@ -106,6 +142,7 @@ class PipelineRuntime:
         """Collect replay, cursors, counters, metrics and component policies as plain checkpoint data.
         Model numerical state is saved separately in the same checkpoint transaction.
         """
+        self._materialize_events()
         return {
             "schema": 1, "event": self.event, "task_index": self.task_index, "phase": self.phase,
             "progress": self.progress, "counters": self.counters, "metrics": self.metrics,
@@ -440,6 +477,7 @@ class PipelineRuntime:
             for row in self.metrics:
                 for name, value in row["metrics"].items():
                     writer.writerow((row["checkpoint_task"], row["task"], name, value))
+        self._materialize_events()
         write_json(Path(self.context.output) / "events.json", self.events)
 
     def predict(self, inputs, generation_spec):

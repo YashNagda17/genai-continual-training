@@ -44,6 +44,15 @@ class SmokeModel(Seq2SeqLMModel):
     untie_head = True
 
 
+def _seeded_smoke_module(config):
+    """The tiny model's random weights come from a fixed seed, not the process-wide generator,
+    so a smoke run starts from the same weights whatever ran before it."""
+    import torch
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        return MT5ForConditionalGeneration(config)
+
+
 def build_smoke_model(device="cpu"):
     settings = Seq2SeqSettings(rank=4, alpha=8.0, learning_rate=0.05, max_source_length=16,
                                max_target_length=8, max_batch_size=4, seed=3)
@@ -52,7 +61,7 @@ def build_smoke_model(device="cpu"):
                        tie_word_embeddings=False, decoder_start_token_id=0, eos_token_id=1,
                        pad_token_id=0, initializer_factor=0.5)
     role = SmokeModel(settings, device=device, pretrained=False, config=config,
-                      tokenizer=SmokeTokenizer(), model_factory=MT5ForConditionalGeneration)
+                      tokenizer=SmokeTokenizer(), model_factory=_seeded_smoke_module)
     role.runtime_root = Path(tempfile.mkdtemp())
     return role
 

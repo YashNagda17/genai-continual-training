@@ -9,6 +9,7 @@ import math
 import random
 import re
 import statistics
+import time
 
 from ..pipelines.revision import RevisionConfig, RevisionPipeline
 from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
@@ -17,6 +18,10 @@ from ..utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec,
 from ..utils.state import read_json, write_json
 from .artifacts import PhaseClock, accuracies_of, arm_record, ensure_final, finish_arm, finished_arm, remember_arm, save_report
 from .settings import generation_spec
+
+# Pause after every trained arm (English or Hindi) so the machine cools before the next one.
+# Smoke runs and tiny test models skip it. Cached arms are reused without training, so they do not pause.
+COOLDOWN_SECONDS = 180
 
 
 def run_spec(stage, settings, passes, arm, dataset, model, extra_steps=0):
@@ -79,6 +84,7 @@ def single_run(pipeline, model_factory, dataset, directory, stage, settings, pas
     if saved is not None:
         return ensure_final(directory.parent, saved)
     model = model_factory()
+    pretrained = bool(getattr(model, "pretrained", False))
     try:
         result, manifest = execute(pipeline, model, dataset, directory, stage, settings, passes, name)
         checkpoint = (directory / pipeline.policy["english_checkpoint"] if stage == "english" else
@@ -91,7 +97,18 @@ def single_run(pipeline, model_factory, dataset, directory, stage, settings, pas
             raise ValueError(f"{name} did not complete")
     finally:
         model.release()
-    return finish_arm(directory.parent, directory, record)
+    finished = finish_arm(directory.parent, directory, record)
+    cool_down(settings, stage, pretrained)
+    return finished
+
+
+def cool_down(settings, stage, pretrained=True):
+    """Sleep after a training run of a real model, once its weights and report are saved.
+    Tiny test models and smoke runs do not pause."""
+    if (stage in ("english", "hindi") and pretrained and settings.protocol != "smoke"
+            and COOLDOWN_SECONDS > 0):
+        print(f"Cooling down for {COOLDOWN_SECONDS} s after the {stage} run", flush=True)
+        time.sleep(COOLDOWN_SECONDS)
 
 
 def aggregate_runs(name, directory, runs):
@@ -204,9 +221,10 @@ def gate_decision(forget, hindi_gain, english_score=None, lead_score=None):
     return "continue"
 
 
-def read_context(root, dataset, settings, before):
+def read_context(root, dataset, settings, phases):
+    """Context saved by the given phases, applied in the order given (the run order)."""
     context = {}
-    for index in range(before):
+    for index in phases:
         path = Path(root) / f"phase{index}" / "report.json"
         if path.is_file():
             report = read_json(path)
@@ -308,7 +326,8 @@ def matched_extra_steps(random_arm, drift_arm):
 def room_config(settings):
     return AdapterRoomConfig(settings.stability_threshold, seed=settings.seed, sample_size=settings.sample_size,
         analysis_batch=settings.analysis_batch, encoder_blocks=settings.encoder_blocks,
-        decoder_blocks=settings.decoder_blocks, new_room_budget=settings.new_room_budget)
+        decoder_blocks=settings.decoder_blocks, new_room_budget=settings.new_room_budget,
+        encoder_block_cost=settings.encoder_block_cost, decoder_block_cost=settings.decoder_block_cost)
 
 
 ROOM_ARMS = ("room_placed", "room_random", "room_spread")
