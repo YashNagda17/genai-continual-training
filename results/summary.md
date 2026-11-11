@@ -262,6 +262,8 @@ Saved portable one-seed pilot metrics and audit under results/experiments/. Veri
 
 ---
 
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
 ## [2026-11-11] Imported Phase 1 results and exploratory Phase 2 handoff
 
 **Results:** [Phase 1 training report](/results/code/summarization-passes5/phase1/training-report.md),
@@ -308,3 +310,17 @@ inference exports; exact-resume checkpoints and verbose logs stay local.
 
 **Validation:** 13 CPU handoff/rule tests passed; all five final adapter checksum
 manifests and chrF across all 14,000 saved prediction rows were verified.
+=======
+=======
+>>>>>>> Stashed changes
+## [2026-11-11] Project Report - Multilingual Summarization (Idea_Refined_2)
+
+**Stage**: paper writing (user-specified report format, not the high-level-paper-flow template)
+**Report**: [paper/report-multilingual-summarization-2026-11-11.md](/results/paper/report-multilingual-summarization-2026-11-11.md)
+**Inputs used**: [Idea_Refined_2.md](/Idea_Refined_2.md), [CSReL summary](/Papers/CSReL-summary.md), [TSR summary](/Papers/TSR-summary.md), [revision contract](/design/revision.md), [experiment contract](/design/summarization-experiments.md)
+
+**Contents**: Abstract, Introduction, Literature Review (CSReL and TSR only), Idea (Phases 0-6 with motivation, first-order theory, and changes from each paper), Experiment Setup (blank), Results (blank), Conclusion and Future Work. No citations, by request. Every number in a worked example is labelled illustrative.
+
+**Current paper state**: method and pre-registered predictions are written; no scientific run exists, so no result is claimed.
+**Main framing**: the model's own writing decides what to revise (G1), with what (G2), when to stop (G3), and how small to shrink (F); G5/G4 split wrong-language from lost-content forgetting.
+**Next action**: fill Sections 4 and 5 after the pilot and the scientific runs.
