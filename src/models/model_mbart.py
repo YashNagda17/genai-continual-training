@@ -67,9 +67,15 @@ class MBart25Summarizer(Seq2SeqLMModel):
     stack_paths = {"encoder": "model.encoder", "decoder": "model.decoder"}
     blocks_attribute = "layers"
 
-    def __init__(self, settings=None, **kwargs):
+    def __init__(self, settings=None, *, gradient_checkpointing=False, **kwargs):
+        self.gradient_checkpointing = gradient_checkpointing
         kwargs.setdefault("model_factory", _sdpa_factory)
         super().__init__(settings, **kwargs)
+
+    def fork(self, role, initialization):
+        child = super().fork(role, initialization)
+        child.gradient_checkpointing = self.gradient_checkpointing
+        return child
 
     def _prepare(self):
         super()._prepare()
@@ -101,9 +107,9 @@ class MBart25Summarizer(Seq2SeqLMModel):
                 "suffix": (self.language_id(),)}
 
     def activate(self):
+        fresh = self.module is None
         super().activate()
-        # The Arc has 30 GB. Recomputing all 24 blocks each step is slower than storing them.
-        if self.role != "serving" and self.module is not None and getattr(self.module, "is_gradient_checkpointing", False):
+        if fresh and not self.gradient_checkpointing and self.role != "serving":
             self.module.gradient_checkpointing_disable()
 
     def _attach_lora(self, module, *, deterministic):

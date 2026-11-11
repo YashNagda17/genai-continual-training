@@ -2,6 +2,8 @@
 
 Only `Seq2SeqLMModel` and `MT5SmallModel` are active. Native Torch owns numerical execution; Transformers supplies model definitions and tokenizers. Constructors are lazy. [Model weights](/design/model-weights.md) owns mandatory numerical resume, bounded retention and residency.
 
+The current runner also selects `MBart25Summarizer` from [model_mbart.py](/src/models/model_mbart.py). Its `gradient_checkpointing` constructor option defaults to false, preserving existing runs; true keeps the shared executor's non-reentrant checkpointing enabled to reduce training activation memory. This is a memory/compute tradeoff, not a T4 speed guarantee. The choice propagates to forked roles. Activation configures it only when building a module, so repeated `activate()` calls do not traverse all blocks or override a later explicit Torch checkpointing choice.
+
 `ModelBase` resolves CUDA/ROCm, then XPU, then CPU, and transfers nested batches without changing dtypes or autograd. Metadata and loaded unique parameter counts must enforce the 700M ceiling for every learner, probe and serving role. Each role owns isolated optimizer, scheduler, scaler, counters and Torch RNG.
 
 `train(k, *, batch_factory, objective, hooks, limits)` consumes the caller's finite update stream. It never chooses replay or shuffles independently. Skipped updates consume inputs and measured work but do not advance the optimizer/scheduler success clock. `UpdateHooks` supplies only detached token weights; freeze-prefix, KD, Fisher and SAR hooks are removed.

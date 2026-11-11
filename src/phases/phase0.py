@@ -30,6 +30,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
     model = model_factory()
     try:
         model.bind_runtime(directory, None)
+        model.activate()
         english = tuple(dataset.training_view('english'))
         rows = english[:settings.batch_size]
         trained = model.train(1, batch_factory=lambda: [TrainingBatch(dataset.collate(rows), ('current',) * len(rows))],

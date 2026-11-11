@@ -206,7 +206,7 @@ class SummarizationPipeline(PipelineBase):
 
     def _commit(self):
         if self.context is not None:
-            self.boundary(force=True)
+            self.boundary()
 
     def _cost(self, category, records, measured, generated=()):
         details = {"category": category, "rows": len(records),

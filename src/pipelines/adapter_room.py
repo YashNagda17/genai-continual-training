@@ -97,7 +97,7 @@ class AdapterRoomPipeline(SummarizationPipeline):
         if result:
             totals = torch.stack(list(result.values())).detach().cpu().tolist()
             result = dict(zip(result, totals))
-        self.release_auxiliary()
+        self.release_auxiliary(restore_learner=False)
         return result
 
     def _mean_gradient(self, rows, view, key, probe):
@@ -189,7 +189,7 @@ class AdapterRoomPipeline(SummarizationPipeline):
                                [self.policy['maps'][1]['cell'][key]['agreement'] for key in cells])
         blocks = {key: sum(row['block'][key]['agreement'] for row in self.policy['maps']) / 2
                   for key in self.policy['maps'][0]['block']}
-        self.release_auxiliary()
+        self.release_auxiliary(restore_learner=False)
         self.policy['result'] = {'change': self.policy['change'], 'samples': self.policy['maps'],
                                   'correlation': correlation,
                                   'stable': correlation is not None and correlation >= self.config.stability_threshold,

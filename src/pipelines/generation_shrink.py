@@ -109,7 +109,6 @@ class GenerationShrinkPipeline(SummarizationPipeline):
             scores = self._evaluate_rank(candidate)
             passed = self.passes(scores, self.policy['baseline'])
             size = sum(min(rank, *shape) * sum(shape) * 4 for shape in self.policy['shapes'].values())
-            self.release_auxiliary()
             self.policy['table'].append({'rank': rank, 'scores': scores, 'passed': passed, 'adapter_tensor_bytes': size})
             self.policy['work'] = {}
             if self.policy['direction'] is None:
@@ -123,6 +122,8 @@ class GenerationShrinkPipeline(SummarizationPipeline):
             else:
                 remaining = sorted(k for k in set((*self.config.grid, self.config.full_rank)) if rank < k <= self.config.full_rank and k not in tested)
                 self.policy['next_rank'] = remaining[0] if not passed and remaining else None
+            if self.policy['next_rank'] is not None or not passed:
+                self.release_auxiliary(restore_learner=False)
             self._commit()
         chosen = self.policy['k_generation']
         if chosen is None:
@@ -132,7 +133,7 @@ class GenerationShrinkPipeline(SummarizationPipeline):
         self.artifacts.pin_artifact(output, candidate.info.checkpoint_bytes,
             lambda path: candidate.save_shrunk_adapter(path, k_energy=self.policy['k_energy'], k_generation=chosen,
                                                        test_table=self.policy['table']))
-        self.release_auxiliary()
+        self.release_auxiliary(restore_learner=False)
         self.policy['result'] = {'k_E': self.policy['k_energy'], 'k_G': chosen, 'baseline': self.policy['baseline'],
                                   'table': self.policy['table'], 'adapter': 'shrunk-adapter'}
         self._commit()

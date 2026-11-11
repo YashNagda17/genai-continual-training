@@ -79,13 +79,14 @@ class PipelineRuntime:
             raise ValueError("Release the previous auxiliary before switching roles")
         return self.auxiliary
 
-    def release_auxiliary(self):
-        """Release the active auxiliary and reactivate the preserved learner state."""
+    def release_auxiliary(self, *, restore_learner=True):
+        """Release the auxiliary; analysis callers may defer restoring the idle learner."""
         if self.auxiliary is not None:
             self.auxiliary.release()
             self.auxiliary = None
             self.auxiliary_key = None
-            self._activate(self.model)
+            if restore_learner:
+                self._activate(self.model)
 
 
     def record_event(self, kind, **details):

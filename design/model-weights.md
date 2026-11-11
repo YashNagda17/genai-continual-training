@@ -67,3 +67,9 @@ Used by the [summarization plan](/design/summarization-plan.md).
 - **No era teachers.** The English checkpoint is read by probes and as the two-adapter reference, but no teacher is loaded per batch.
 - Rolling latest-plus-one retention applies inside each Hindi run as usual. Adapter-only snapshots are enough, because the base stays frozen.
 - **Residency:** the learner plus at most one more role (the probe, a merged copy, or the English checkpoint for the reference) is resident at a time.
+
+Performance controls: non-smoke phase runs checkpoint every 100 recorded events; smoke retains a cadence of one. Policy loops use that cadence, while lifecycle phase transitions still force a complete checkpoint. Unsaved batches can be replayed from the last coherent numerical/policy snapshot. Cadence remains operational and is excluded from `RunSpec.scientific()`.
+
+Phase 0 retains its activated model through training, generation batches and export. Analysis callers can use `release_auxiliary(restore_learner=False)` to leave the idle learner's resume snapshot offloaded between auxiliary roles. A final passing shrink candidate stays resident through export. This does not increase the number of resident models or retain weights across independent learner runs.
+
+The unmerged serving reference reuses its current checkpoint until the requested checkpoint changes. Older swap timing files without the `checkpoint_reuse` marker are remeasured; ordinary resident serving files remain reusable. Switch costs are still included in the request that changes checkpoints.

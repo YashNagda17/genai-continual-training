@@ -141,7 +141,7 @@ Proposals never mutate the pool. The lifecycle owner, this pipeline in its stand
 
 ## State and resume
 
-Policy state holds the ranking, the active set, retired IDs, the warm-up and refresh cursors, and the component RNG, all as plain JSON. Each long loop (writing past summaries, rescoring, regeneration) checkpoints after every batch. A resumed run never redraws a pending slot.
+Policy state holds the ranking, the active set, retired IDs, the warm-up and refresh cursors, and the component RNG, all as plain JSON. Each long loop (writing past summaries, rescoring, regeneration) and each update advances its cursor after every batch and calls the cadence `boundary()`, which publishes a checkpoint every `checkpoint_every` events; only phase changes force one. A full publish copies the adapters and AdamW moments off the device, writes, flushes and hashes them, so publishing per batch left the GPU idle most of the time. A checkpoint holds policy, RNG and weights from one moment, so resume replays from there; a slot pending in that checkpoint is never redrawn.
 
 ## Method identity
 

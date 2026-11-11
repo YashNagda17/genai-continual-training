@@ -22,6 +22,7 @@ from .settings import generation_spec
 # Pause after every trained arm (English or Hindi) so the machine cools before the next one.
 # Smoke runs and tiny test models skip it. Cached arms are reused without training, so they do not pause.
 COOLDOWN_SECONDS = 180
+CHECKPOINT_EVERY = 100
 
 
 def run_spec(stage, settings, passes, arm, dataset, model, extra_steps=0):
@@ -31,7 +32,7 @@ def run_spec(stage, settings, passes, arm, dataset, model, extra_steps=0):
         model.settings.max_source_length + model.settings.max_target_length)
     return RunSpec((stage,), settings.seed, settings.batch_size, max(1, updates), max(1, updates), bound, passes,
                    "repeat_admitted", "per_example_mean", ReplayBudget(len(dataset.pool_view()), 50_000_000, 50_000_000),
-                   ResourceBudget(64_000_000, 0), 1,
+                   ResourceBudget(64_000_000, 0), 1 if settings.protocol == "smoke" else CHECKPOINT_EVERY,
                    {"protocol": settings.protocol, "arm": arm, "training_rows": len(rows)}, {})
 
 

@@ -344,7 +344,7 @@ Computed for every Hindi-stage arm and seed, on the 500 test articles per langua
 | English checkpoint | Yes | Yes |
 | Best blocks, E1, E3, overall winner | Yes | Yes |
 | The shrunk winner from F | Yes | Yes |
-| Two-adapter reference (English checkpoint for English, X for Hindi) | Two merged copies: report memory | Unmerged swap per request: report time |
+| Two-adapter reference (English checkpoint for English, X for Hindi) | Two merged copies: report memory | Load only when the requested checkpoint changes; include the switch in that request's time |
 
 Batch size 32 is optional.
 
