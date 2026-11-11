@@ -22,10 +22,39 @@ python -u -m src.summarization_experiment --pilot --phase 1 --epochs 5 --device 
 
 This trains English for five passes, then Hindi for five passes. Each stage has
 625 updates at batch size 16 on its 2,000 examples. Default real-data runs use four
-pass per language. Changing epochs requires a new output folder, and later
+passes per language. Changing epochs requires a new output folder, and later
 phases using this pilot must also receive `--epochs 5` to match its saved settings.
 
 Locked settings are in [the experiment contract](/design/summarization-experiments.md). English uses seed 0; Hindi arms use seeds 1, 2, and 3. Validation decides gates, winners and shrink ranks. Test scores are report-only. A failed scientific X gate stops later phases.
+
+For the imported `summarization-passes5` checkpoints, prepare a report and portable
+handoff without model execution:
+
+```sh
+python -u -m src.phase2_from_checkpoint --exploratory
+```
+
+The source ran **four** epochs. Its English validation chrF (20.7666) is below
+lead-1 (22.0174), so the scientific gate remains `fix_english`. The user explicitly
+authorized an exploratory Phase 2. The preparation writes
+[Phase 1 training results](/results/code/summarization-passes5/phase1/training-report.md)
+and matching JSON/CSV, verifies artifacts/prediction IDs and chrF, rebases Linux
+paths in memory, and checks that past-summary replay has eligible examples.
+Original weights, source progress and source arm records remain unchanged.
+Serving benchmarks remain incomplete and no completed Phase 1 report is invented.
+
+To start only the exploratory Phase 2, run:
+
+```sh
+python -u -m src.phase2_from_checkpoint --exploratory --run --device cuda:0
+```
+
+This reuses prepared subsets and the English checkpoint. All five arms run four
+Hindi epochs on seed 1; there is no English retraining or Phase 1 serving.
+Results go to `results/code/phase2-exploratory/phase2/report.md` (also JSON/CSV).
+Repeat the exact command to resume interrupted work. Different source hashes or
+settings require a new `--output` root. These results are exploratory, not a passed
+scientific experiment.
 
 For local checks without downloads:
 
@@ -50,7 +79,9 @@ articles. It checks identical output token IDs and records decoder steps and
 timings. The checkpoint and prepared-data prefixes must match. This is an
 inference-only check; the CPU tests do not establish its GPU speedup.
 Generation requires actual adapter weights, not metadata alone. The checkpoint
-weights referenced by the pulled `summarization-passes5` reports are not yet present.
+weights for the imported English checkpoint are under
+`results/code/summarization-passes5/phase1/final/english`; use the matching prepared
+data under that run's `prepared` directory.
 
 For an NVIDIA cloud host, use a CUDA-enabled PyTorch image or select a matching wheel from the [official installer](https://pytorch.org/get-started/locally/), then install [requirements.txt](/requirements.txt). The same native-Torch gather, weighted-loss, nonblocking-copy and packed-reporting optimizations apply on CUDA; no inference backend or precision change is needed.
 

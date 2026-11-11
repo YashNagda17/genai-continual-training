@@ -259,3 +259,52 @@ Saved portable one-seed pilot metrics and audit under results/experiments/. Veri
 
 **Remaining:** scientific matrix CLI, pre-registration and C1-prediction gates, D/E winner composition, serving benchmark, seed aggregation, manual-check sheets, and publication reports. Interrupted probe/shrink analysis jobs and CUDA/XPU execution remain unverified. E's illustrative 659,456 versus 638,976 parameter counts exceed the required 3% match and are rejected.
 **Next action:** implement the experiment runner against these tested pipeline APIs, then run the real pilot before any scientific arm.
+
+---
+
+## [2026-11-11] Imported Phase 1 results and exploratory Phase 2 handoff
+
+**Results:** [Phase 1 training report](/results/code/summarization-passes5/phase1/training-report.md),
+[CSV](/results/code/summarization-passes5/phase1/training-report.csv), and
+[JSON](/results/code/summarization-passes5/phase1/training-report.json).
+The imported run completed four English epochs and four Hindi epochs on each
+of seeds 1, 2 and 3. Validation English chrF fell from 20.7666 to 14.2607 after
+Hindi training; Hindi rose from 13.5387 to 22.0398. English lead-1 scores 22.0174,
+so the scientific gate remains `fix_english`. Serving was interrupted; the
+source Phase 1 is not declared fully completed.
+
+The user explicitly authorized exploratory Phase 2 with this checkpoint.
+[The handoff entry point](/src/phase2_from_checkpoint.py) verifies artifacts,
+prepared subsets, prediction IDs/references and chrF, rebases source paths in
+memory, and prepares a separate pilot output root. Every Phase 2 arm uses Hindi
+seed 1 and four epochs; English training and Phase 1 serving are not repeated.
+The failed source gate remains in the handoff and Phase 2 reports. Past-summary
+replay has 400 eligible pool examples. The local base configuration matches all
+four imported adapters' tensor names/shapes; values are finite. Source base
+revision is only `main`, not an immutable commit.
+
+**Validation:** 13 CPU handoff/rule tests passed. CUDA availability was checked
+on the RTX 3050 Ti; no GPU model, generation or training was launched. The
+preparation-only command succeeded. Run instructions and resume behavior are in
+[src/README.md](/src/README.md).
+
+---
+
+## [2026-11-11] Exploratory Phase 2 completed
+
+All five seed-1 arms completed four Hindi epochs (500 updates each), reusing the
+imported English checkpoint. [Readable results](/results/code/phase2-exploratory/phase2/summary.md)
+and full Markdown/JSON/CSV reports, predictions and five final adapter exports
+are saved under `results/code/phase2-exploratory`. Random replay has the highest
+English/Hindi validation chrF (21.2132/22.4333); loss (20.3709/22.0211), drift
+(19.4991/21.6819), past-summary (19.1196/21.7659), and repair-stop
+(20.8830/21.7392) do not improve both validation scores over random. Repair-stop
+used the loss selector and retired zero examples. Summed arm wall time was
+149.0824 minutes; this is not GPU busy time.
+
+The source scientific gate remains `fix_english`; these are single-seed
+exploratory results. Test scores are report-only. The final adapters are
+inference exports; exact-resume checkpoints and verbose logs stay local.
+
+**Validation:** 13 CPU handoff/rule tests passed; all five final adapter checksum
+manifests and chrF across all 14,000 saved prediction rows were verified.

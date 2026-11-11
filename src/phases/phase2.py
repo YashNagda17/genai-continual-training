@@ -37,6 +37,7 @@ def run(directory, dataset, model_factory, settings, context, clock):
     details = annotate(
         {"g3_parent": parent["name"], "top_overlap": overlaps,
          "filter_drops": len(arms["past"]["filtered"]), "retired": len(arms["repair_stop"]["retired"]),
+         **({"phase1_handoff": context["phase1_handoff"]} if "phase1_handoff" in context else {}),
          "arms": list(arms), "comparisons": [compare_arms(arms[a], arms[b]) for a, b in (
              ("loss", "random"), ("drift", "loss"), ("past", "random"), ("repair_stop", parent["name"]))]},
         clock, list(arms.values()), arms[parent["name"]].get("final_model"))

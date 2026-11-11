@@ -46,6 +46,26 @@ are reported as "single seed, screening".
 
 ## Protocols
 
+### Exploratory Phase 2 handoff from completed training
+
+`python -m src.phase2_from_checkpoint --exploratory` verifies a pulled Phase 1
+English adapter, all three completed X arms, saved predictions, prepared subsets
+and the fixed pool without model execution. It writes `phase1/training-report`
+in Markdown/CSV/JSON and a portable handoff in a separate output root. This
+report marks training/evaluation complete and serving incomplete; it does not
+create a completed Phase 1 `report.json` or change the original progress record.
+Linux paths in source arm records are rebased in memory to the source root.
+
+The entry point recomputes the lead-1 gate and keeps its original result.
+`--exploratory --run` explicitly permits a pilot Phase 2 beyond a failed gate;
+all five Hindi arms use the source's screening seed and pass count, with the
+existing English adapter and prepared data. No English training, full-source
+preprocessing, Phase 1 serving, or later phase is launched. The Phase 2 report
+records this provenance and failed gate. These are exploratory results, not a
+passed scientific protocol. The handoff and normal arm identities prevent
+silently mixing different sources/settings on resume. Source weights, scores
+and source progress are never rewritten.
+
 | Protocol | Data | Purpose |
 |---|---|---|
 | `smoke` | A tiny local JSONL of a few English and Hindi rows | One batch trains and one summary generates. CPU is fine |
@@ -73,8 +93,8 @@ The runner uses the values below. It does not read `preregistration.json`.
 | LoRA | Rank 16, alpha 32, all projections of all blocks |
 | Task prompt | `summarize: ` is prepended to every English and Hindi article before tokenization |
 | Limits | 256 input tokens, 64 output tokens |
-| Optimizer | AdamW, learning rate `1e-3`, weight decay 0.01, gradient clip 1. Linear learning-rate warm-up over the first 5% of each stage's updates, then constant. Every stage starts a fresh optimizer |
-| Passes | `english_passes = 5`, `hindi_passes = 5`. The English stage validates after each pass, saves every pass's chrF, ROUGE-L, and right-language share, and keeps the best pass by validation chrF |
+| Optimizer | AdamW, learning rate `1e-3`, weight decay 0.01, gradient clip 1. Linear learning-rate warm-up over the first 1% of each stage's updates, then constant. Every stage starts a fresh optimizer |
+| Passes | `english_passes = 4`, `hindi_passes = 4`, matching the current settings and imported checkpoints. The English stage validates after each pass, saves every pass's chrF, ROUGE-L, and right-language share, and keeps the best pass by validation chrF. Pilot epoch overrides are explicit comparisons |
 | Batches | 16 Hindi rows per update (plus replay). Generation, scoring, and evaluation use 16 rows per batch (`analysis_batch = 16`). The model accepts up to 32 rows |
 | Loss chunk | 32 target positions per full-vocabulary cross-entropy call (`logit_chunk_size`), with a custom first-order backward that fills one logits-gradient buffer in chunks. This bounds scratch memory and avoids repeated full-logits gradient additions. Previous Intel Arc measurements using the old 512-position loss are historical timings, not measurements of this backward implementation |
 | Replay | 2 pool rows per 16 Hindi rows |

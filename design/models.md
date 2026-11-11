@@ -32,7 +32,7 @@ Used by the [summarization plan](/design/summarization-plan.md). No branch here 
 | Inputs | Encoder input IDs and mask, plus labels with padding masked out. The decoder input is shifted from the labels inside the model. Per-example loss is the mean NLL over the summary's tokens |
 | Batches | One microbatch per update. Support `hindi_batch + replay_per_batch`, or `2 x hindi_batch` for the full-English reference. The scientific runner sets `max_batch_size = 32` |
 | Loss chunk | `_position_nll` computes cross-entropy over `logit_chunk_size` target positions per call (32 in the executor and runner). The custom first-order backward fills one gradient buffer in chunks, avoiding repeated full-logits gradient additions. Chunk size bounds temporary vocabulary memory |
-| Optimization | AdamW at `learning_rate`, with a linear warm-up over `warmup_steps`, then constant (`total_steps = None`). The runner sets the rate (`1e-3`) and the warm-up (5% of the stage's updates) per [summarization-experiments.md](/design/summarization-experiments.md) |
+| Optimization | AdamW at `learning_rate`, with a linear warm-up over `warmup_steps`, then constant (`total_steps = None`). The runner sets the rate (`1e-3`) and the warm-up (1% of the stage's updates) per [summarization-experiments.md](/design/summarization-experiments.md) |
 
 Per-position cross-entropy uses `logit_chunk_size` token positions per native
 Torch chunk, with FP32 arithmetic and zero loss/gradient for label `-100`.
