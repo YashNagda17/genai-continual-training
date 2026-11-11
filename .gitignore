@@ -11,9 +11,6 @@ hf_token.txt
 /results/learning-sanity/
 /results/sample/
 
-*.pt
-*.safetensors
-*.parquet
 **/.offload/
 .writer.lock
 
