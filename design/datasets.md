@@ -22,4 +22,6 @@ The runner draws 2,000 training, 200 validation, and 500 test articles per langu
 
 Labeled payloads also include `supervised_indices`: a flat int64 tensor computed on CPU, indexing non-padding positions in the row-major flattened labels. Scoring and weighted training transfer these indices with the batch and use fixed-size device gathers instead of GPU boolean compaction.
 
+Collation explicitly allocates on CPU even when an ambient Torch device context selects an accelerator. Dataset views are never migrated to GPU. Device batch copies are owned by the model executor and must not be retained by completed evaluation sweeps.
+
 Hindi training and policy collation may access only Hindi training rows and the fixed English pool; the declared full-English reference is the exception. Validation reaches declared decisions, and test reaches evaluation/serving/reports. Access guards belong to the pipeline. Class/group annotations, chat templates and causal prefix collation are not used.

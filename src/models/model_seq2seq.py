@@ -529,10 +529,13 @@ class Seq2SeqLMModel(ModelBase):
                 self._add_new_rank(module, self._new_rank)
                 self._mark_adapters(module)
                 self._apply_mask(module)
-            elif self._merge_deltas:
+            elif self._merge_state is not None:
                 with torch.no_grad():
                     for name, value in self._merge_state.items():
-                        parameter = module.get_parameter(name)
+                        try:
+                            parameter = module.get_parameter(name)
+                        except AttributeError:
+                            parameter = module.get_buffer(name)
                         parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
                     for name, delta in self._merge_deltas.items():
                         weight = module.get_parameter(name + ".weight")
@@ -634,6 +637,12 @@ class Seq2SeqLMModel(ModelBase):
     def _synchronize(self):
         if self.device.type != "cpu":
             getattr(torch, self.device.type).synchronize(self.device)
+
+    def release_evaluation_memory(self):
+        """Release unused evaluation allocations; retain the live model and optimizer."""
+        if self.device.type != "cpu":
+            gc.collect()
+            getattr(torch, self.device.type).empty_cache()
 
     def _begin_timed_block(self):
         self._synchronize()
@@ -929,6 +938,12 @@ class Seq2SeqLMModel(ModelBase):
         return self._finish_reports(reports)
 
     def evaluate(self, view, evaluation_spec, progress=None):
+        try:
+            return self._evaluate_view(view, evaluation_spec, progress)
+        finally:
+            self.release_evaluation_memory()
+
+    def _evaluate_view(self, view, evaluation_spec, progress=None):
         size = evaluation_spec.get("batch_size", self.settings.max_batch_size)
         predictions = []
         total_sum = torch.zeros((), device=self.device)
@@ -942,6 +957,7 @@ class Seq2SeqLMModel(ModelBase):
                     _means, sums, counts, _position = self._losses(payload)
                 total_sum = total_sum + sums.sum()
                 total_count = total_count + counts.sum()
+                del payload, _means, sums, counts, _position
                 if "generation" in evaluation_spec:
                     generated = self.predict(self.collate_sources(records), evaluation_spec["generation"])
                     if evaluation_spec.get("return_predictions"):
@@ -1174,12 +1190,17 @@ class Seq2SeqLMModel(ModelBase):
             if name.endswith((".A", ".B", ".extra_A", ".extra_B")):
                 continue
             target = name.replace(".base.", ".")
-            state[target] = parameter.detach().clone()
-        deltas = {name: value.detach().clone() for name, value in self.effective_updates().items()}
+            state[target] = parameter.detach().to(device="cpu", copy=True)
+        for name, buffer in self.module.named_buffers():
+            state[name] = buffer.detach().to(device="cpu", copy=True)
+        with torch.no_grad():
+            for name, module in self.module.named_modules():
+                if isinstance(module, Seq2SeqLoRA):
+                    state[name + ".weight"].add_(module.delta().detach().cpu())
         child = self.fork("serving", "merged")
         child.pretrained = False
         child._merge_state = state
-        child._merge_deltas = deltas
+        child._merge_deltas = {}
         return child
 
     def _weights(self, *, changed_only=False):
@@ -1399,6 +1420,7 @@ class Seq2SeqLMModel(ModelBase):
     def release(self):
         self._clear_cuts()
         self.module = self.optimizer = self.scheduler = self.scaler = None
+        self._script_ids = self._sentinel_ids = None
         if self._offload is not None:
             self._offload.cleanup()
             self._offload = None

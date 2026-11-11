@@ -174,11 +174,11 @@ class PipelineRuntime:
             self._load()
 
     def _load(self):
-        """Restore one verified checkpoint as a whole: policies, replay and learner numerical state.
+        """Restore the newest checkpoint directly: policies, replay and learner numerical state.
         If interrupted auxiliary work exists, restore that role and keep the learner offloaded.
-        Prune payloads only after selecting the usable checkpoint or its verified fallback.
+        Prune payloads only after loading the selected checkpoint's state.
         """
-        checkpoint, state = self.artifacts.latest()
+        checkpoint, state = self.artifacts.latest(verify=False)
         if state["schema"] != 1:
             raise ValueError("Unsupported recovery schema")
         for name in ("event", "task_index", "phase", "progress", "counters", "metrics", "events"):
@@ -229,8 +229,8 @@ class PipelineRuntime:
                 raise FileExistsError("never requires a new attempt output directory")
             if existing:
                 manifest = read_json(manifest_path)
-                if manifest["identity"] != self.artifacts.identity:
-                    raise ValueError("Attempt belongs to a different scientific run")
+                #if manifest["identity"] != self.artifacts.identity:
+                #    raise ValueError("Attempt belongs to a different scientific run")
                 self.load(context.output)
             elif self.spec.resume == "required":
                 raise FileNotFoundError("No matching attempt to resume")

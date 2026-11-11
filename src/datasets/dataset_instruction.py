@@ -17,9 +17,9 @@ IGNORE_INDEX = -100
 
 def padded(sequences, value=0):
     """Pad token lists on CPU, including an empty batch."""
-    tensors = [torch.tensor(seq, dtype=torch.long) for seq in sequences]
+    tensors = [torch.tensor(seq, dtype=torch.long, device="cpu") for seq in sequences]
     if not tensors:
-        return torch.empty((0, 0), dtype=torch.long)
+        return torch.empty((0, 0), dtype=torch.long, device="cpu")
     return pad_sequence(tensors, batch_first=True, padding_value=value)
 
 

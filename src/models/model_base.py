@@ -28,6 +28,9 @@ class ModelBase(ABC):
         """Move nested batch tensors to this model while preserving dtypes and autograd state."""
         return move_to_device(payload, self.device)
 
+    def release_evaluation_memory(self):
+        """Optional held-out sweep cleanup; keep resident model and training state."""
+
     @property
     @abstractmethod
     def info(self):

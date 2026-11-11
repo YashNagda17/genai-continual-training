@@ -17,6 +17,8 @@ Manifest paths are relative to the attempt root or resolve through content IDs/e
 
 ## Mandatory resume contract
 
+Temporary user override (2026-11-12): pipeline resume loads the first checkpoint listed in `latest.json` directly. It skips attempt-identity rejection and checkpoint identity/checksum scanning, and does not select a fallback if that checkpoint fails to load. Standalone `Checkpoints.latest()` remains verified by default; the runtime explicitly requests direct loading. Deserialization and tensor-layout requirements still apply. This override does not establish scientific compatibility between differing runs.
+
 A checkpoint binds numerical state to the resolved run specification, code/design version, task/phase, cursor/sampler/RNG, replay manifest/payload, policy state, teacher references, counters, and evaluation history. Include pending admissions, consumed-versus-prefetched positions, and committed event ID. The model serializes numerical state; the lifecycle owner coordinates the manifest.
 
 - Require periodic saves in steps or elapsed time, checked at safe boundaries, plus completed task/phase transitions. Include long CSReL reference/subset training.
@@ -67,6 +69,8 @@ Used by the [summarization plan](/design/summarization-plan.md).
 - **No era teachers.** The English checkpoint is read by probes and as the two-adapter reference, but no teacher is loaded per batch.
 - Rolling latest-plus-one retention applies inside each Hindi run as usual. Adapter-only snapshots are enough, because the base stays frozen.
 - **Residency:** the learner plus at most one more role (the probe, a merged copy, or the English checkpoint for the reference) is resident at a time.
+
+Evaluation keeps all dataset views and collated source batches on CPU and transfers only the current batch. Completed English/Hindi validation/test sweeps release transient device tensors and unused allocator blocks while keeping the learner resident. Loss-evaluation tensors must be released before generation starts for the same batch. Merged serving construction stages independent merged parameters/buffers on CPU and materializes at most one dense projection update on the accelerator at a time; it retains no extra full-model/delta copies on GPU.
 
 Performance controls: non-smoke phase runs checkpoint every 100 recorded events; smoke retains a cadence of one. Policy loops use that cadence, while lifecycle phase transitions still force a complete checkpoint. Unsaved batches can be replayed from the last coherent numerical/policy snapshot. Cadence remains operational and is excluded from `RunSpec.scientific()`.
 

@@ -57,6 +57,8 @@ def measure(path, dataset, rows, settings, choose, *, checkpoint_reuse=False):
             done_now = len(saved["requests"])
             if total and (done_now == total or done_now * 20 // total != (done_now - 1) * 20 // total):
                 print(f"serving {path.stem} {done_now}/{total} articles", flush=True)
+        if done < len(records) and hasattr(model, "release_evaluation_memory"):
+            model.release_evaluation_memory()
     saved["summary"] = {}
     for language in rows:
         requests = [row for row in saved["requests"] if row["language"] == language]

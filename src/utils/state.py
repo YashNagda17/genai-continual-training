@@ -367,14 +367,21 @@ class Checkpoints:
                 if path.relative_to(self.root).as_posix() not in live_blobs:
                     self._remove_owned(path)
 
-    def latest(self):
+    def latest(self, *, verify=True):
         """Try the latest checkpoint, then its retained fallback, as complete recovery units.
-        Require matching run identity and file checksums.
+        By default require matching run identity and file checksums; verify=False loads the newest directly.
         Record a fallback in recovery.json so discarded progress is visible to the caller.
         """
         pointer = self.root / "latest.json"
         if not pointer.exists():
             raise FileNotFoundError("This attempt has no complete recovery checkpoint")
+        if not verify:
+            checkpoints = read_json(pointer)["checkpoints"]
+            if not checkpoints:
+                raise FileNotFoundError("This attempt has no recovery checkpoint")
+            path = self.root / "checkpoints" / checkpoints[0]
+            self.recovery = None
+            return path, read_json(path / "state.json")
         failures = []
         for name in read_json(pointer)["checkpoints"]:
             try:

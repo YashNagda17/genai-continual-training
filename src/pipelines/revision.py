@@ -323,6 +323,7 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy['validated_passes'] = self.policy['completed_passes']
         self.policy['work'].pop('validation', None)
         self._commit()
+        self.model.release_evaluation_memory()
         return scores
 
     def next_update(self):
@@ -438,6 +439,7 @@ class RevisionPipeline(SummarizationPipeline):
                     if cached is not None:
                         self.policy.pop('final_validation', None)
                     self._commit()
+                self.model.release_evaluation_memory()
 
     def _save_scores(self, pass_number, task, scores):
         """Keep every chrF, ROUGE-L, and right-language score for the run report."""

@@ -186,6 +186,69 @@ class PositionLossTests(unittest.TestCase):
 
 
 class SummarizationModelTests(unittest.TestCase):
+    def test_evaluation_drops_batch_tensors_before_generation_and_cleanup(self):
+        import weakref
+        from ..phases.data import build_smoke_dataset, build_smoke_model
+        role = build_smoke_model()
+        dataset = build_smoke_dataset(role)
+        role.bind_dataset(dataset)
+        role.activate()
+        tensors = []
+        losses, predict = role._losses, role.predict
+        def track(payload):
+            result = losses(payload)
+            tensors.extend(weakref.ref(value) for value in (*payload.values(), *result))
+            return result
+        def generate(*args, **kwargs):
+            self.assertTrue(all(reference() is None for reference in tensors))
+            return predict(*args, **kwargs)
+        def cleanup():
+            self.assertTrue(all(reference() is None for reference in tensors))
+        try:
+            with patch.object(role, '_losses', side_effect=track), \
+                    patch.object(role, 'predict', side_effect=generate) as generated, \
+                    patch.object(role, 'release_evaluation_memory', side_effect=cleanup) as cleared:
+                result = role.evaluate(dataset.views['english/validation'],
+                    {'batch_size': 1, 'generation': {'max_new_tokens': 2}})
+            self.assertIsInstance(result['negative_nll'], float)
+            self.assertEqual(generated.call_count, 2)
+            cleared.assert_called_once()
+        finally:
+            role.release()
+
+    def test_merged_mbart_stages_on_cpu_and_preserves_buffers(self):
+        from transformers import MBartConfig, MBartForConditionalGeneration
+        from ..models.model_mbart import MBart25Summarizer
+        class Tokenizer(TinyTokenizer):
+            def convert_tokens_to_ids(self, token):
+                return 4 if token == 'en_XX' else self.unk_token_id
+        config = MBartConfig(vocab_size=32, d_model=16, encoder_layers=1, decoder_layers=1,
+            encoder_attention_heads=2, decoder_attention_heads=2, encoder_ffn_dim=32, decoder_ffn_dim=32,
+            dropout=0., attention_dropout=0., activation_dropout=0., pad_token_id=0, eos_token_id=1)
+        with tempfile.TemporaryDirectory() as directory:
+            role = MBart25Summarizer(Seq2SeqSettings(rank=2), device='cpu', pretrained=False,
+                config=config, tokenizer=Tokenizer(), model_factory=MBartForConditionalGeneration)
+            role.bind_runtime(Path(directory), None)
+            serving = None
+            try:
+                role.activate()
+                role.module.eval()
+                role.module.final_logits_bias.copy_(torch.arange(32).float()[None] / 10)
+                with torch.no_grad():
+                    expected = role._forward(batch(labels()).payload).logits
+                serving = role.merged_copy()
+                self.assertTrue(all(value.device.type == 'cpu' for value in serving._merge_state.values()))
+                self.assertEqual(serving._merge_deltas, {})
+                serving.activate()
+                serving.module.eval()
+                with torch.no_grad():
+                    torch.testing.assert_close(serving._forward(batch(labels()).payload).logits, expected)
+                torch.testing.assert_close(serving.module.final_logits_bias, role.module.final_logits_bias)
+            finally:
+                if serving is not None:
+                    serving.release()
+                role.release()
+
     def test_fused_lora_matches_equation_gradients_and_dense_norm(self):
         for extra in (False, True):
             adapter = Seq2SeqLoRA(torch.nn.Linear(7, 5), 3, 4.5, block_key="encoder.1",
@@ -544,6 +607,15 @@ def _write_rows(directory):
 
 
 class SummarizationDatasetTests(unittest.TestCase):
+    def test_collation_stays_on_cpu_under_an_ambient_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset, _, _ = self._prepared(_write_rows(Path(directory) / 'source'))
+            with torch.device('meta'):
+                batch_ = dataset.collate(dataset.training_view('english'))
+                empty = dataset.collate(())
+            self.assertTrue(all(value.device.type == 'cpu' for value in batch_.payload.values()))
+            self.assertTrue(all(value.device.type == 'cpu' for value in empty.payload.values()))
+
     def _prepared(self, directory, prefix=None):
         dataset, raw = load_source(directory, SummarizationDataset)
         dataset.split(raw, {})

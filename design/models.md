@@ -94,6 +94,10 @@ Token-loss scoring and weighted training gather with the payload's `supervised_i
 
 Evaluation transfers its accumulated loss sum and token count together once before constructing host metrics. Batch transfers follow the [shared nonblocking-transfer contract](/design/utils.md); synchronized measurement boundaries are unchanged.
 
+`release_evaluation_memory()` releases unused accelerator cache blocks at held-out sweep boundaries, without offloading model weights or optimizer state. The base adapter supplies a no-op for compatibility. `evaluate()` drops each batch's payload and loss tensors before allocating generation caches and releases remaining scratch memory after its internal evaluation frame exits. Prediction outputs retained by pipelines are host strings, IDs and costs. Full model release also drops device vocabulary-mask caches.
+
+Merged serving copies retain their independent reconstruction parameters and buffers on CPU. Each LoRA update is merged into that CPU state one projection at a time; activating the serving copy installs it into one live accelerator module. No persistent full-model or dense-update staging tensors remain on GPU.
+
 These synchronization reductions apply equally to NVIDIA CUDA and XPU through the resolved Torch device. CUDA uses the same fp32 objective, optimizer, RNG isolation, checkpoint state and packed reporting. The tiny smoke factory accepts an explicit device while retaining CPU as its default, so cloud validation can exercise CUDA without model/data downloads.
 
 Strictly positive token targets use a scalar-read-free weighted-loss path; ordinary targets preserve the zero-active-token skip. Gradient clipping traverses optimizer groups instead of the frozen base. Execution restores `requires_grad` only when a flag changed. Generation uses `torch.inference_mode()` because it returns host text/IDs; differentiable scoring and training keep their existing autograd behavior.

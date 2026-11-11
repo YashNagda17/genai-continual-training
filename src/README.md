@@ -10,6 +10,10 @@ Non-smoke runs publish recovery checkpoints every 100 recorded events, with forc
 
 Validation and test generation run after all configured epochs in each training stage. English transfers the final-epoch checkpoint; it no longer runs per-epoch validation or reloads an earlier validation winner. The new evaluation schedule enters the arm identity, so use a new attempt directory for English runs previously started with best-pass selection. Historical imported checkpoints remain unchanged.
 
+Temporary resume override: the pipeline loads the newest checkpoint named in `latest.json` directly, without rejecting a changed attempt identity or scanning checkpoint checksums/fallbacks. Unreadable checkpoint files fail directly. This override does not establish equivalent scientific settings across runs.
+
+English/Hindi validation and test views stay on CPU. Only the active batch moves to the accelerator; loss batches are released before generation, and completed held-out sweeps release unused device cache while keeping the model resident. Merged serving reconstruction weights/buffers are staged on CPU instead of retaining duplicate full weights and dense updates on GPU.
+
 ```sh
 ./download_datasets.sh xlsum
 ./download_model_weights.sh mt5
