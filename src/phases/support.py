@@ -21,7 +21,7 @@ from .settings import generation_spec
 
 # Pause after every trained arm (English or Hindi) so the machine cools before the next one.
 # Smoke runs and tiny test models skip it. Cached arms are reused without training, so they do not pause.
-COOLDOWN_SECONDS = 180
+COOLDOWN_SECONDS = 0
 CHECKPOINT_EVERY = 100
 
 
@@ -99,13 +99,15 @@ def single_run(pipeline, model_factory, dataset, directory, stage, settings, pas
     finally:
         model.release()
     finished = finish_arm(directory.parent, directory, record)
-    cool_down(settings, stage, pretrained)
+    cool_down(settings, stage, pretrained, device=model.device)
     return finished
 
 
-def cool_down(settings, stage, pretrained=True):
+def cool_down(settings, stage, pretrained=True, *, device=None):
     """Sleep after a training run of a real model, once its weights and report are saved.
-    Tiny test models and smoke runs do not pause."""
+    Tiny test models, smoke runs and CUDA hosts do not apply the local cooldown."""
+    if device is not None and device.type == "cuda":
+        return
     if (stage in ("english", "hindi") and pretrained and settings.protocol != "smoke"
             and COOLDOWN_SECONDS > 0):
         print(f"Cooling down for {COOLDOWN_SECONDS} s after the {stage} run", flush=True)

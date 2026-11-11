@@ -10,9 +10,10 @@ from ..utils.state import read_json, write_json
 from .settings import generation_spec
 
 
-def _finished(path):
+def _finished(path, *, checkpoint_reuse=False):
     saved = read_json(path)
-    return saved.get("status") == "completed" and saved.get("resident") is True
+    return (saved.get("status") == "completed" and saved.get("resident") is True
+            and (not checkpoint_reuse or saved.get("checkpoint_reuse") is True))
 
 
 def load_model(factory, checkpoint, directory, merged=False):
@@ -31,12 +32,14 @@ def load_model(factory, checkpoint, directory, merged=False):
     return copy
 
 
-def measure(path, dataset, rows, settings, choose):
+def measure(path, dataset, rows, settings, choose, *, checkpoint_reuse=False):
     saved = read_json(path) if path.is_file() else {"requests": [], "status": "running", "resident": True}
-    if saved.get("status") == "completed" and saved.get("resident"):
+    reusable = not checkpoint_reuse or saved.get("checkpoint_reuse") is True
+    if saved.get("status") == "completed" and saved.get("resident") and reusable:
         return saved
-    if not saved.get("resident"):
+    if not saved.get("resident") or not reusable:
         saved = {"requests": [], "status": "running", "resident": True}
+    saved["checkpoint_reuse"] = checkpoint_reuse
     spec = generation_spec(settings)
     total = sum(len(records) for records in rows.values())
     print(f"serving {path.stem} {len(saved['requests'])}/{total} articles", flush=True)
@@ -97,7 +100,7 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
         for merged in (False, True):
             key = "two_adapter/" + ("merged" if merged else "swap")
             path = directory / (key.replace("/", "-") + ".json")
-            if path.is_file() and _finished(path):
+            if path.is_file() and _finished(path, checkpoint_reuse=not merged):
                 results[key] = read_json(path)["summary"]
                 continue
             models = {}
@@ -110,11 +113,20 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
                 else:
                     models["swap"] = load_model(factory, None, directory)
                     models["swap"].activate()
+                    active_checkpoint = None
+                    checkpoints_by_language = {language: Path(checkpoint).resolve()
+                                               for language, checkpoint in reference.items()}
+                    kinds = {checkpoint: read_json(checkpoint / "metadata.json")["state_kind"]
+                             for checkpoint in set(checkpoints_by_language.values())}
                     def choose(language):
-                        checkpoint = reference[language]
-                        models["swap"].load(checkpoint, read_json(Path(checkpoint) / "metadata.json")["state_kind"])
+                        nonlocal active_checkpoint
+                        checkpoint = checkpoints_by_language[language]
+                        if checkpoint != active_checkpoint:
+                            models["swap"].load(checkpoint, kinds[checkpoint])
+                            active_checkpoint = checkpoint
                         return models["swap"]
-                results[key] = measure(path, dataset, rows, settings, choose)["summary"]
+                results[key] = measure(path, dataset, rows, settings, choose,
+                                       checkpoint_reuse=not merged)["summary"]
             finally:
                 for model in models.values():
                     model.release()

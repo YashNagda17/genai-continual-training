@@ -73,3 +73,5 @@ Performance controls: non-smoke phase runs checkpoint every 100 recorded events;
 Phase 0 retains its activated model through training, generation batches and export. Analysis callers can use `release_auxiliary(restore_learner=False)` to leave the idle learner's resume snapshot offloaded between auxiliary roles. A final passing shrink candidate stays resident through export. This does not increase the number of resident models or retain weights across independent learner runs.
 
 The unmerged serving reference reuses its current checkpoint until the requested checkpoint changes. Older swap timing files without the `checkpoint_reuse` marker are remeasured; ordinary resident serving files remain reusable. Switch costs are still included in the request that changes checkpoints.
+
+CUDA runs skip the local 180-second cooldown between completed training arms. The existing cooldown remains available for local non-CUDA runs; it is not part of the training algorithm or checkpoint identity.
