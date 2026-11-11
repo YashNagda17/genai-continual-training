@@ -692,6 +692,25 @@ class Seq2SeqLMModel(ModelBase):
             payload["supervised_indices"] = (payload["labels"].reshape(-1) != -100).nonzero().flatten()
         return self.to_device(payload)
 
+    def _sdpa_masks(self):
+        return getattr(self.module.config, "_attn_implementation", None) == "sdpa"
+
+    def _source_mask(self, attention_mask):
+        """SDPA source mask as a prebuilt 4D boolean (batch, 1, 1, source), True where a token is read.
+
+        Transformers returns a 4D mask unchanged. From a 2D mask it reads ``mask.all()`` on the host to
+        decide whether the mask can be skipped, which makes the host wait for the device in the encoder
+        and in every decoder call's cross-attention. Eager attention never reads it, so mT5 keeps 2D."""
+        if attention_mask is None or not self._sdpa_masks():
+            return attention_mask
+        return attention_mask.bool()[:, None, None, :]
+
+    def _causal_mask(self, length, device):
+        """Decoder self-attention mask for SDPA. Passing none makes the library build all-ones and read it back."""
+        if not self._sdpa_masks():
+            return None
+        return torch.ones((length, length), dtype=torch.bool, device=device).tril_()[None, None]
+
     def _forward(self, payload):
         """One eager call into the built-in seq2seq model. Labels are shifted here so the library does not allocate a second full-vocabulary loss."""
         labels = payload.get("labels")
@@ -702,8 +721,11 @@ class Seq2SeqLMModel(ModelBase):
         else:
             # mBART moves the trailing language id to the front. It has no _shift_right.
             decoder_input_ids = self.module.prepare_decoder_input_ids_from_labels(labels)
-        return self.module(input_ids=payload["input_ids"], attention_mask=payload.get("attention_mask"),
-                           decoder_input_ids=decoder_input_ids, use_cache=False, return_dict=True)
+        causal = None if decoder_input_ids is None else self._causal_mask(
+            decoder_input_ids.shape[1], decoder_input_ids.device)
+        return self.module(input_ids=payload["input_ids"], attention_mask=self._source_mask(payload.get("attention_mask")),
+                           decoder_input_ids=decoder_input_ids, decoder_attention_mask=causal,
+                           use_cache=False, return_dict=True)
 
     def _position_nll(self, logits, labels):
         """Per-position NLL with bounded scratch space and one backward gradient buffer.
@@ -1004,10 +1026,14 @@ class Seq2SeqLMModel(ModelBase):
         sentinels = self._sentinels()
         # T5 exposes .encoder. mBART keeps it on the inner model; get_encoder() covers both.
         encoder = self.module.get_encoder() if hasattr(self.module, "get_encoder") else self.module.encoder
+        attention_mask = self._source_mask(attention_mask)
         encoder_outputs = encoder(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         start_id = int(getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id))
         device = input_ids.device
+        # One query per step reads every earlier token, so the cached self-attention mask is all True.
+        seen = (torch.ones((1, 1, 1, max(0, max_new) + 1), dtype=torch.bool, device=device)
+                if self._sdpa_masks() else None)
         generated = torch.empty((input_ids.shape[0], max(0, max_new) + 1), dtype=torch.long, device=device)
         generated[:, 0].fill_(start_id)
         eos_id = int(self.tokenizer.eos_token_id)
@@ -1020,6 +1046,7 @@ class Seq2SeqLMModel(ModelBase):
             outputs = self.module(
                 attention_mask=attention_mask,
                 decoder_input_ids=prefix if past is None else generated[:, step:step + 1],
+                decoder_attention_mask=None if seen is None else seen[..., :step + 1],
                 encoder_outputs=encoder_outputs,
                 past_key_values=past,
                 use_cache=True,

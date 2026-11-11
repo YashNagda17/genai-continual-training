@@ -9,7 +9,7 @@ import torch
 
 from .pipeline_base import PipelineBase, SummarizationPipeline
 from ..utils.contracts import Objective, Record, ScoreSpec, TokenTargets, UpdateHooks, practice_record
-from ..utils.numerics import chrf, script_share, summary_metrics
+from ..utils.numerics import chrf, move_to_device, script_share, summary_metrics
 from ..utils.state import ReplayStore, read_json, write_json
 
 
@@ -298,7 +298,8 @@ class RevisionPipeline(SummarizationPipeline):
             raise ValueError('Token targets and training batch disagree')
         weights = torch.ones_like(surprise, dtype=torch.float32)
         if spans:
-            before = torch.tensor(baselines, dtype=surprise.dtype).to(surprise.device, non_blocking=True)
+            # Pinned, so the copy queues behind the forward instead of waiting for it.
+            before = move_to_device(torch.tensor(baselines, dtype=surprise.dtype), surprise.device)
             for offset, count, start in spans:
                 now = surprise[offset:offset + count]
                 weight = 1 + self.config.repair_beta * (now - before[start:start + count]).clamp_min(0)
