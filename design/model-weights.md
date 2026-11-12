@@ -1,5 +1,10 @@
 # Weight artifacts and checkpoint identity
 
+The isolated [distillation pilot](/design/distillation-pilot.md) reads the English
+checkpoint once to cache training-pool probabilities before student runs. It keeps
+one model resident and uses `Checkpoints.publish` for per-update student recovery.
+Its cache is bound to source-weight hashes, prepared data, selected IDs and settings.
+
 Owns `src/models/model_weights/`. Keep immutable base-model assets here, namespaced by model ID and revision. Run-specific learner checkpoints, auxiliary models, and teachers belong under `results/code/runs/<run_id>/<attempt_id>/checkpoints/`; a configured external weight cache must preserve the same manifest contract.
 
 ## Artifact kinds

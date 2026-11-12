@@ -1,5 +1,11 @@
 # Models and ModelBase
 
+The isolated [distillation pilot](/design/distillation-pilot.md) adds
+`DistillationMT5` in `src/models/model_distillation.py`. It caches English teacher
+top-k probabilities plus a residual bucket and adds coarse-grained KL to replay
+rows through an opt-in subclass. This exception is limited to the pilot; the
+standard executor and phase objectives remain as described below.
+
 `Seq2SeqLMModel` owns shared execution; `MT5SmallModel` and `MBart25Summarizer` provide model-specific adapters. Native Torch owns numerical execution; Transformers supplies model definitions and tokenizers. Constructors are lazy. [Model weights](/design/model-weights.md) owns mandatory numerical resume, bounded retention and residency.
 
 The current runner also selects `MBart25Summarizer` from [model_mbart.py](/src/models/model_mbart.py). Its `gradient_checkpointing` constructor option defaults to false, preserving existing runs; true keeps the shared executor's non-reentrant checkpointing enabled to reduce training activation memory. This is a memory/compute tradeoff, not a T4 speed guarantee. The choice propagates to forked roles. Activation configures it only when building a module, so repeated `activate()` calls do not traverse all blocks or override a later explicit Torch checkpointing choice.

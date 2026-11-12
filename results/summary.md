@@ -324,3 +324,25 @@ manifests and chrF across all 14,000 saved prediction rows were verified.
 **Current paper state**: method and pre-registered predictions are written; no scientific run exists, so no result is claimed.
 **Main framing**: the model's own writing decides what to revise (G1), with what (G2), when to stop (G3), and how small to shrink (F); G5/G4 split wrong-language from lost-content forgetting.
 **Next action**: fill Sections 4 and 5 after the pilot and the scientific runs.
+
+---
+
+## [2026-11-12] Small cached-distillation comparison
+
+User requested a small implementation and will execute the real run on GPU.
+Added [pilot runner](/src/distillation_pilot.py), [isolated model extension](/src/models/model_distillation.py), and [protocol](/design/distillation-pilot.md).
+Replay and replay-plus-KL use identical starting mT5 English weights, examples and seeds. Outputs include validation predictions, scores, cache costs and resumable state.
+CPU numerical and tiny-model integration checks exercise the implementation; real-weight quality results remain pending. [Run command and scope](/results/code/Codegen-distillation-pilot-2026-11-12.md).
+
+---
+
+## [2026-11-12] Weaker distillation GPU comparison completed
+
+Ran strength 0.25 versus identical ordinary replay on RTX 3050 Ti: seeds 1/2/3,
+20 updates each, 32 validation articles per language. [Report](/results/code/distillation-strength025-gpu/report.md).
+Mean KD-minus-replay chrF: English -0.9374, Hindi +0.5046. All three seeds fail the
+predeclared English-retention success rule. Mean training times 6.86s replay,
+7.69s KD plus 1.50s cache. Verified IDs and recomputed metrics for 384 predictions.
+Keep ordinary replay as default; distillation stays experimental. Small tuning
+run with overlapping validation data; no independent confirmation or scientific
+improvement claim. Baseline English chrF does not consistently forget at 20 updates.

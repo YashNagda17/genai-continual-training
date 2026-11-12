@@ -227,3 +227,10 @@ Mechanism: with the probe on mT5-small, compute `agreement(block) = cos(g_en, g_
 Example: at a budget of 638,976 parameters (rank 16 on two encoder and two decoder blocks), compare the four most-agreeing blocks, the four most-clashing blocks, late-only, and early plus late.
 Test: three seeds from one English checkpoint, same random replay and Hindi exposure. Reject if the most-clashing and most-agreeing arms forget English equally on generated held-out summaries, or if randomly chosen blocks at the same budget match the agreement choice.
 Risk / novelty: probe gradients from few rows may not predict forgetting under replay, and encoder and decoder blocks differ in size, so matching must be by parameters; novelty unverified; LayRA and TreeLoRA are the closest relatives.
+
+Idea: cached English top-k-plus-tail distillation for Hindi adaptation; status: implemented pilot, real-data result pending.
+Observation: past-summary replay stores hard tokens but omits alternative next-token probability mass.
+Mechanism: cache English-checkpoint top-k probabilities and residual mass on pool reference prefixes, then add coarse-grained KL on replay rows.
+Example: compare identical two-Hindi/one-English batches with CE alone versus CE plus KL, using one resident model.
+Test: paired seeds, identical checkpoints and data, English/Hindi validation chrF, cache bytes/time and training cost; tiny runs are exploratory.
+Risk / novelty: distillation is established, novelty is not claimed; compressed tails lose information and teacher errors may be preserved.
