@@ -136,8 +136,6 @@ class TrainLimits:
     max_tokens: int
 
 
-
-
 @dataclass
 class UpdateHooks:
     token_targets: Callable | None = None
@@ -154,10 +152,6 @@ class StepReport:
     diagnostics: dict = field(default_factory=dict)
     cost: dict = field(default_factory=dict)
     skip_reason: str | None = None
-
-
-
-
 
 
 @dataclass(frozen=True)
@@ -193,8 +187,7 @@ class ModelInfo:
             raise ValueError("Layer cost layout mismatch")
         if self.forward_cost < 0 or any(v < 0 for v in self.backward_costs):
             raise ValueError("Layer costs must be nonnegative")
-        if 0 not in self.legal_prefixes or any(
-                p < 0 or p >= len(self.layer_names) for p in self.legal_prefixes if p):
+        if 0 not in self.legal_prefixes or any( p < 0 or p >= len(self.layer_names) for p in self.legal_prefixes if p):
             raise ValueError("Legal prefixes must include zero and leave a trainable path")
 
 

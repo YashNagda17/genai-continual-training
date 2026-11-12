@@ -131,7 +131,7 @@
 **Lifecycle position:** Active
 **Field orientation:** Problem-first
 
-**Files:** [Paper index](/Papers/README.md), [CSReL](/Papers/CSReL-summary.md), [aL-SAR](/Papers/aL-SAR-summary.md), [OASIS](/Papers/OASIS-summary.md), and [TSR](/Papers/TSR-summary.md).
+**Files:** [Paper index](/Papers/README.md), [CSReL](/Papers/CSReL-summary.md), [aL-SAR published paper](https://proceedings.iclr.cc/paper_files/paper/2025/hash/760564ebba4797d0dcf1678e96e8cbcb-Abstract-Conference.html), [OASIS published paper](https://aclanthology.org/2026.acl-long.158/), and [TSR](/Papers/TSR-summary.md).
 
 **Coverage:** One detailed reference per distinct local paper, with duplicate PDFs mapped in the index. Each reference explains the problem, core formulas, execution sequence, published evidence, native and engineering optimizations, limitations, pipeline ownership, and resume/resource implications. Related-work tables link the existing reviews and primary sources, distinguishing a shared mechanism family from direct algorithmic lineage. Original settings are evidence only; model and dataset choices remain open under the 700M ceiling.
 

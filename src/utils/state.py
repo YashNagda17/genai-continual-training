@@ -186,25 +186,6 @@ class Checkpoints:
         if shutil.disk_usage(self.root).free < additional:
             raise OSError("Insufficient free disk space for checkpoint staging")
 
-    def blob(self, model):
-        """Save a frozen teacher separately from mutable recovery checkpoints.
-        Publish its completion manifest only after the adapter output is flushed.
-        Remove an incomplete snapshot on failure; return the run-relative reference on success.
-        """
-        self.reserve(model.info.checkpoint_bytes + 65536)
-        relative = f"teachers/{uuid.uuid4().hex}"
-        path = self.root / relative
-        path.mkdir(parents=True)
-        try:
-            model.save(path, "frozen")
-            synchronize(path)
-            write_json(path / "complete.json", {"files": checksums(path)})
-            self.reserve(0)
-        except BaseException:
-            shutil.rmtree(path)
-            raise
-        return relative
-
     def pin(self, model, record):
         """Publish a complete immutable English checkpoint for one prefix variant."""
         if record.get("kind") != "english" or record.get("writer") != "english_checkpoint":
@@ -449,15 +430,4 @@ class ReplayStore:
 def tuple_tree(value):
     """Undo JSON list conversion for the nested tuple structure required by Random.setstate."""
     return tuple(tuple_tree(v) for v in value) if isinstance(value, list) else value
-
-
-def save_weights(model, path):
-    """Delegate a standalone frozen-weight snapshot to the model adapter.
-    This helper does not save pipeline cursors, replay membership or optimizer state.
-    """
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    model.save(path, "frozen")
-    return path
-
 

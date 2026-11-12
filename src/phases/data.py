@@ -70,8 +70,7 @@ def build_smoke_dataset(model):
     """A few English and Hindi rows, prepared with the smoke tokenizer. No download."""
     articles = {"english": "The ruling party won the state vote today in the capital",
                 "hindi": "भारत में बड़ी खबर आई आज सुबह शहर में"}
-    summaries = {"english": "The ruling party won the state vote",
-                 "hindi": "भारत में बड़ी खबर आई आज"}
+    summaries = {"english": "The ruling party won the state vote", "hindi": "भारत में बड़ी खबर आई आज"}
     rows = []
     for split, count in (("train", 4), ("validation", 2), ("test", 2)):
         for language in ("english", "hindi"):

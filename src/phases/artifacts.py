@@ -93,8 +93,7 @@ def publish_final(phase_dir, name, source):
         raise ValueError(f"Final model {name} does not match its source")
     manager = Checkpoints(phase_dir, "phase-exports")
     size = sum(file.stat().st_size for file in source.rglob("*") if file.is_file())
-    manager.pin_artifact(destination, size + 65536,
-                         lambda stage: shutil.copytree(source, stage, dirs_exist_ok=True))
+    manager.pin_artifact(destination, size + 65536, lambda stage: shutil.copytree(source, stage, dirs_exist_ok=True))
     return str(destination)
 
 
@@ -145,8 +144,7 @@ def run_summary(record):
 def annotate(details, clock, runs, final_model):
     """Add the phase clock, per-arm epochs and scores, and the comparison model."""
     details = dict(details)
-    details["time"] = {"phase_seconds": clock.seconds(),
-                       "arms": {run["name"]: run.get("time") for run in runs}}
+    details["time"] = {"phase_seconds": clock.seconds(), "arms": {run["name"]: run.get("time") for run in runs}}
     details["runs"] = [run_summary(run) for run in runs]
     details["final_model"] = final_model
     return details

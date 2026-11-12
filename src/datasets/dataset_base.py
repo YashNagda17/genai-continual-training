@@ -1,4 +1,4 @@
-"""Implement source-specific processing here, independently of paper policies."""
+b"""Implement source-specific processing here, independently of paper policies."""
 
 from abc import ABC, abstractmethod
 
@@ -8,11 +8,6 @@ class DatasetBase(ABC):
     @abstractmethod
     def fingerprint(self) -> str:
         """Preprocessing settings as plain JSON."""
-
-    @property
-    @abstractmethod
-    def has_classes(self) -> bool:
-        """True only for genuine labels or a declared training-only grouping."""
 
     @abstractmethod
     def load(self, source_spec):
@@ -26,12 +21,6 @@ class DatasetBase(ABC):
     def preprocess(self, view, preprocessing_spec):
         """Apply source formatting/tokenization while preserving observation IDs and targets.
         Report dropped or truncated records so membership and token accounting remain reviewable.
-        """
-
-    @abstractmethod
-    def fetch(self, view, batch_spec, cursor):
-        """Return (Batch or None, next_cursor) from the supplied view and batch specification.
-        Use None to signal exhaustion; persistable cursors let callers resume the same order.
         """
 
     @abstractmethod

@@ -1,5 +1,9 @@
 # Models and ModelBase
 
+English checkpoints are published through `Checkpoints.pin` calling model `save`.
+The unused `save_english_checkpoint` convenience wrapper has been removed; saved
+artifact formats and the active English checkpoint path are unchanged.
+
 The isolated [distillation pilot](/design/distillation-pilot.md) adds
 `DistillationMT5` in `src/models/model_distillation.py`. It caches English teacher
 top-k probabilities plus a residual bucket and adds coarse-grained KL to replay

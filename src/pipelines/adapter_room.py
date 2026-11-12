@@ -92,7 +92,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
         result = {}
         for name, value in role.effective_update_norms().items():
             cell = cell_of(name)
-            # result[cell] = result.get(cell, 0.0) + float(torch.linalg.vector_norm(value))
             result[cell] = result.get(cell, 0.0) + value
         if result:
             totals = torch.stack(list(result.values())).detach().cpu().tolist()
@@ -125,7 +124,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
                     offset += size
             work['cursor'] += len(part)
             self._commit()
-        # return {group: torch.tensor(value, device=probe.device) / len(rows) for group, value in work['sum'].items()}
         groups = list(work['sum'])
         sizes = [len(work['sum'][group]) for group in groups]
         packed = torch.tensor([item for group in groups for item in work['sum'][group]], dtype=torch.float32)
@@ -170,9 +168,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
                     ids = self.policy['samples'][language][index * n:(index + 1) * n]
                     rows = tuple(lookup[i] for i in ids)
                     means[language] = self._mean_gradient(rows, view, f'{view}/{language}', probe)
-                # result[view] = {group: {'pull': float(means['hindi'][group].norm()),
-                #                         'agreement': cosine(means['english'][group], means['hindi'][group])}
-                #                 for group in sorted(means['english'])}
                 groups = sorted(means['english'])
                 metrics = [torch.stack((means['hindi'][group].norm(),
                                        cosine_tensor(means['english'][group], means['hindi'][group])))

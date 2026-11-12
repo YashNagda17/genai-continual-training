@@ -35,7 +35,7 @@ Expose task phase, event watermark, pending admissions, samplers/RNG, auxiliary 
 - CSReL's global-budget reselection changes TSR's immutable per-task data records. Preserve the task signature and era teacher, but version the hybrid's memory membership and label this as a bounded-memory TSR adaptation.
 - Exclude tasks only for declared empty replay membership, renormalize, and log coverage loss. A nonempty task with a missing/corrupt teacher or invalid signature is an error, never an exclusion. With no retained tasks, use current-only updates without KD. Teacher reclamation follows checkpoint dependency rules.
 - CSReL selection loss is not TSR's training objective by default. Use the selected CSReL variant's objective. Combining CSReL-KD with TSR-KD needs a separate specification, including logit storage and loss weights.
-- Hybrid SAR exposure updates use the active-population rule in [al-sar.md](/design/al-sar.md), not standalone Algorithm 1's selection-time clock.
+- Hybrid SAR exposure updates use the active-population rule in [aL-SAR published paper](https://proceedings.iclr.cc/paper_files/paper/2025/hash/760564ebba4797d0dcf1678e96e8cbcb-Abstract-Conference.html), not standalone Algorithm 1's selection-time clock.
 - LoRA, frozen backbone layers, and adaptive freezing must agree on actual trainable paths. Reject a freeze plan that prevents the required gradients or claims savings while performing the same backward pass.
 
 ## Required controls for later experiments

@@ -15,7 +15,7 @@ Status: the active model/data adapters, three pipelines, and Phase 0–7 driver 
 
 - These contracts resolve implementation details under [Idea.md](/Idea.md), [code-structure.md](/code-structure.md), and [ARCHITECTURE.md](/ARCHITECTURE.md). Change a contract before implementing incompatible behavior.
 - **Current plan:** the [multilingual summarization plan](/design/summarization-plan.md). It uses its own revision, adapter-placement, and shrink pipelines, borrows CSReL's reducible-loss idea and TSR's fixed probe, and doesn't call OASIS, aL-SAR, the four-paper hybrid, or the generation replay recipe. Placement and shrink rules are in [summarization-experiments.md](/design/summarization-experiments.md); the model operations they call are in [models.md](/design/models.md).
-- Earlier CSReL, aL-SAR, OASIS, TSR and generation-replay designs are historical research references. Their executable code is removed. [Paper references](/Papers/README.md) retain derivations, source identities, evidence and related work.
+- CSReL, TSR and generation-replay designs remain historical research references; CSReL and TSR also have baseline adaptations under `src/new/`. OASIS and aL-SAR local paper material and dedicated designs have been removed. [Paper references](/Papers/README.md) lists the retained sources.
 - Record mechanism/access changes as distinct adaptations or ablations. Reproduction claims require resolving source ambiguities against pinned code and validating the stated protocol.
 - All executable code, including tests/plotting, belongs in `src/`; reports and run outputs belong in `results/`. This overrides the generic skill code layout. Existing `src/litreview/` and `src/researchflow/` remain workflow support.
 - [SKILLS.md](/SKILLS.md) routes research work; [general guidelines](/skills/general_guidelines.md) define shared workflow conventions.
@@ -84,6 +84,6 @@ The entry point is `summarization_experiment.py`: `phases -> pipelines -> {model
 
 Validation requirements live in [tests.md](/design/tests.md); experiment controls live in [combined-pipeline.md](/design/combined-pipeline.md).
 
-For the current plan, scope is one process and device, `google/mt5-small` (Qwen3-0.6B as the fallback), and XL-Sum English and Hindi, with the experiment runner as its entry point. Initial implementation scope for the earlier work is one process/device, the four standalone methods, and the specified hybrid. Distributed training, automatic task discovery, alternative recipes, and optional paper variants need separate contracts. Model/data choices and unresolved paper-code discrepancies remain explicit inputs, not inferred defaults.
+For the current plan, scope is one process and device, `google/mt5-small`, and XL-Sum English and Hindi, with the experiment runner as its entry point. Initial implementation scope for the earlier work is one process/device, the four standalone methods, and the specified hybrid. Distributed training, automatic task discovery, alternative recipes, and optional paper variants need separate contracts. Model/data choices and unresolved paper-code discrepancies remain explicit inputs, not inferred defaults.
 
 use source ~/venv/bin/activate to activate virtual environment

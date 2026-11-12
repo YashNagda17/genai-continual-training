@@ -1,6 +1,7 @@
 """Seq2seq executor and summarization weight artifacts. No downloads."""
 
 from pathlib import Path
+from types import SimpleNamespace
 import io
 import json
 import tarfile
@@ -16,6 +17,9 @@ from ..datasets.dataset_sources import (
     XLSumSource, load_source,
 )
 from ..models.model_seq2seq import Seq2SeqLMModel, Seq2SeqLoRA, Seq2SeqSettings
+from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+from ..pipelines.generation_shrink import ShrinkConfig, GenerationShrinkPipeline
+from ..pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
 from ..utils.contracts import (
     AdapterPlan, Objective, ScoreSpec, TokenTargets, TrainLimits, TrainingBatch,
 )
@@ -191,6 +195,7 @@ class SummarizationModelTests(unittest.TestCase):
         from ..phases.data import build_smoke_dataset, build_smoke_model
         role = build_smoke_model()
         dataset = build_smoke_dataset(role)
+        dataset.expose('english/validation', [r.sample_id for r in dataset.views['validation'] if r.task_id == 'english'])
         role.bind_dataset(dataset)
         role.activate()
         tensors = []
@@ -205,7 +210,7 @@ class SummarizationModelTests(unittest.TestCase):
         def cleanup():
             self.assertTrue(all(reference() is None for reference in tensors))
         try:
-            with patch.object(role, '_losses', side_effect=track), \
+            with patch.object(role, '_losses', new=track), \
                     patch.object(role, 'predict', side_effect=generate) as generated, \
                     patch.object(role, 'release_evaluation_memory', side_effect=cleanup) as cleared:
                 result = role.evaluate(dataset.views['english/validation'],
@@ -275,7 +280,6 @@ class SummarizationModelTests(unittest.TestCase):
             torch.testing.assert_close(adapter.delta_norm(), torch.linalg.vector_norm(adapter.delta()))
 
     def test_preallocated_generation_handles_mixed_eos_and_cacheless_prefixes(self):
-        from types import SimpleNamespace
         role = model()
         role.activate()
         source = batch().payload
@@ -295,7 +299,6 @@ class SummarizationModelTests(unittest.TestCase):
         role.release()
 
     def test_generation_stops_only_when_all_rows_finish_and_preserves_tokens(self):
-        from types import SimpleNamespace
         role = model()
         role.activate()
         source = batch().payload
@@ -661,8 +664,6 @@ class SummarizationDatasetTests(unittest.TestCase):
 
 class SummarizationPipelineTests(unittest.TestCase):
     def test_probe_means_resume_with_unequal_groups_and_partial_batches(self):
-        from types import SimpleNamespace
-        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
         config = AdapterRoomConfig(.5, analysis_batch=2)
         probe = SimpleNamespace(device=torch.device("cpu"))
         calls, saved = [], []
@@ -718,7 +719,6 @@ class SummarizationPipelineTests(unittest.TestCase):
         return RunContext(model(), dataset, self.run_spec(stage, passes), output)
 
     def english(self, directory, dataset):
-        from ..pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
         config = RevisionConfig("english", hindi_batch=2, analysis_batch=2,
                                 generation={"max_new_tokens": 3})
         pipeline = RevisionPipeline(config, pool=dataset.pool_view())
@@ -728,7 +728,6 @@ class SummarizationPipelineTests(unittest.TestCase):
 
     def test_metrics_and_plan_arithmetic(self):
         from ..utils.numerics import chrf, script_share, energy_rank, paired_bootstrap, cohen_kappa, interaction, top_overlap
-        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
         self.assertEqual(chrf("a b", "ab"), 100)
         self.assertAlmostEqual(chrf("ab", "ac", n=1), 50)
         self.assertEqual(script_share("aअ!"), 0.5)
@@ -755,7 +754,6 @@ class SummarizationPipelineTests(unittest.TestCase):
 
     def test_revision_rank_slots_filter_and_same_forward_weights(self):
         from dataclasses import replace
-        from ..pipelines.revision import RevisionConfig, RevisionPipeline
         dataset = self.fixture()
         rows = tuple(replace(r, practice={"answer_text": "a short English news summary", "answer_ids": r.target["ids"],
                             "baseline": [.6] * len(r.target["ids"]), "past_baseline": [.6] * len(r.target["ids"]),
@@ -803,9 +801,6 @@ class SummarizationPipelineTests(unittest.TestCase):
         weighted.release()
 
     def test_english_hindi_maps_and_shrink_smoke(self):
-        from ..pipelines.revision import RevisionConfig, RevisionPipeline
-        from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
-        from ..pipelines.generation_shrink import ShrinkConfig, GenerationShrinkPipeline
         with tempfile.TemporaryDirectory() as directory:
             root, dataset = Path(directory), self.fixture()
             english, pool = self.english(root / "english", dataset)
@@ -831,8 +826,6 @@ class SummarizationPipelineTests(unittest.TestCase):
                     "english": dataset.evaluation_view("english"), "hindi": dataset.evaluation_view("hindi")})._views()
 
     def test_resume_rank_and_pending_replay_match_uninterrupted(self):
-        from dataclasses import replace
-        from ..pipelines.revision import RevisionConfig, RevisionPipeline
         with tempfile.TemporaryDirectory() as directory:
             root, dataset = Path(directory), self.fixture()
             english, pool = self.english(root / "english", dataset)
@@ -864,7 +857,6 @@ class SummarizationPipelineTests(unittest.TestCase):
 
 
     def test_writing_and_stop_regeneration_resume_at_batch_boundaries(self):
-        from ..pipelines.revision import RevisionConfig, RevisionPipeline, load_pool
         with tempfile.TemporaryDirectory() as directory:
             root, dataset = Path(directory), self.fixture()
             english, pool = self.english(root / "english", dataset)
@@ -905,7 +897,6 @@ class SummarizationPipelineTests(unittest.TestCase):
                 baseline.model.release()
 
     def test_shrink_search_stops_downward_and_recovers_upward(self):
-        from ..pipelines.generation_shrink import ShrinkConfig, GenerationShrinkPipeline
         with tempfile.TemporaryDirectory() as directory:
             root, dataset = Path(directory), self.fixture()
             source = model()

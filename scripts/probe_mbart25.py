@@ -240,6 +240,5 @@ def main():
     })
     print(f"\nWrote {args.output / 'report.md'}")
 
-
 if __name__ == "__main__":
     main()

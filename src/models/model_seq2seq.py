@@ -29,9 +29,7 @@ from torch.autograd.function import once_differentiable
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer, LogitsProcessor
 
 from .model_base import ModelBase
-from ..utils.contracts import (
-    AdapterPlan, ModelInfo, ScoreResult, StepReport, model_boundary,
-)
+from ..utils.contracts import ( AdapterPlan, ModelInfo, ScoreResult, StepReport, model_boundary, )
 from ..utils.state import Checkpoints, read_json, write_json
 
 
@@ -57,8 +55,7 @@ class Seq2SeqSettings:
 
 
 _PROJECTIONS = {"q", "k", "v", "o", "wi_0", "wi_1", "wo"}
-_PARTS = {"SelfAttention": "self_attention", "EncDecAttention": "cross_attention",
-          "DenseReluDense": "feed_forward"}
+_PARTS = {"SelfAttention": "self_attention", "EncDecAttention": "cross_attention", "DenseReluDense": "feed_forward"}
 
 
 def _band(block_index):
@@ -285,9 +282,7 @@ class Seq2SeqLMModel(ModelBase):
                     self._tokenizer = AutoTokenizer.from_pretrained(
                         self.model_id, revision=self.revision, cache_dir=self.cache_dir)
                 except ImportError as error:
-                    raise ImportError(
-                        "mT5's SentencePiece tokenizer requires the sentencepiece package"
-                    ) from error
+                    raise ImportError( "mT5's SentencePiece tokenizer requires the sentencepiece package" ) from error
             self.model_factory = self.model_factory or (
                 lambda config: AutoModelForSeq2SeqLM.from_config(config, attn_implementation="eager"))
         self._vocabulary = self.model_id
@@ -749,17 +744,6 @@ class Seq2SeqLMModel(ModelBase):
         scratch_rows = max(1, (256 * 1024 ** 2) // max(vocab * logits.element_size(), 1))
         chunk = max(self.settings.logit_chunk_size, min(rows or 1, scratch_rows))
         return _ChunkedPositionNLL.apply(logits, labels, chunk)
-        """Per-position NLL. Padding is zero. The slice count comes from the tensor shape, so the host does not read the device."""
-        flat_labels = labels.reshape(-1)
-        flat_logits = logits.reshape(-1, logits.shape[-1])
-        pieces = []
-        chunk = max(1, self.settings.logit_chunk_size)
-        for start in range(0, flat_labels.shape[0], chunk):
-            pieces.append(F.cross_entropy(flat_logits[start:start + chunk].float(), flat_labels[start:start + chunk],
-                                          ignore_index=-100, reduction="none"))
-        if not pieces:
-            return flat_logits.new_zeros(labels.shape, dtype=torch.float32)
-        return torch.cat(pieces).view_as(labels)
 
     def _losses(self, payload):
         """Per-example mean NLL from the model's own logits. Padding labels are ignored."""
@@ -784,8 +768,6 @@ class Seq2SeqLMModel(ModelBase):
                 with torch.no_grad():
                     means, _sums, _counts, position = self._losses(payload)
                     if score_spec.kind == "token_loss":
-                        # valid = payload["labels"].reshape(-1) != -100
-                        # values = position.detach().reshape(-1)[valid].float()
                         values = position.detach().reshape(-1).index_select(0, payload["supervised_indices"]).float()
                     else:
                         values = means.detach().float()
@@ -848,7 +830,6 @@ class Seq2SeqLMModel(ModelBase):
             return None, 0.0, 0
         terms = weight * flat
         if counts is not None:
-            # owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts)
             owners = torch.repeat_interleave(torch.arange(len(counts), device=flat.device), counts,
                                             output_size=flat.numel())
             sums = flat.new_zeros(len(counts)).scatter_add(0, owners, terms)
@@ -856,13 +837,10 @@ class Seq2SeqLMModel(ModelBase):
                 means = sums / counts
                 return means.mean(), means.detach().sum(), len(means)
             row_counts = flat.new_zeros(len(counts)).scatter_add(0, owners, active.to(flat.dtype))
-            # means = sums[row_counts > 0] / row_counts[row_counts > 0]
             included = row_counts > 0
             means = torch.where(included, sums / row_counts.clamp_min(1), 0.0)
             denominator = included.sum()
-            # return means.mean(), float(means.detach().sum()), len(means)
             return means.sum() / denominator, means.detach().sum(), denominator
-        # return terms.sum() / active.sum(), float(terms.detach().sum().item()), int(active.sum().item())
         denominator = flat.numel() if targets.all_positive else active.sum()
         return terms.sum() / denominator, terms.detach().sum(), denominator
 
@@ -894,8 +872,7 @@ class Seq2SeqLMModel(ModelBase):
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
         """Run caller-ordered updates; zero active weights skip AdamW entirely."""
-        model_boundary(objective.token_mode in {"all", "weighted"},
-                       "Seq2seq supports supervised or weighted training")
+        model_boundary(objective.token_mode in {"all", "weighted"}, "Seq2seq supports supervised or weighted training")
         reports, attempts, updates, tokens = [], 0, 0, 0
         with self._execution(mode="training", advance=True):
             for _ in range(k):
@@ -909,7 +886,6 @@ class Seq2SeqLMModel(ModelBase):
                     diagnostics = {"plan": self._plan_fingerprint}
                     if objective.token_mode == "weighted":
                         # Backward needs the loss graph; only the policy hook sees detached NLL.
-                        # flat = position.reshape(-1)[payload["labels"].reshape(-1) != -100]
                         flat = position.reshape(-1).index_select(0, payload["supervised_indices"])
                         targets = (hooks.token_targets(training.batch, flat.detach())
                                    if hooks and hooks.token_targets else training.token_targets)
@@ -923,8 +899,6 @@ class Seq2SeqLMModel(ModelBase):
                         numer = denom = None
                     success = loss is not None and self._optimizer_update(loss)
                     if numer is None:
-                        # numer = float(sums.detach().sum())
-                        # denom = int(counts.detach().sum())
                         numer = sums.detach().sum()
                         denom = getattr(training.batch, "supervised_tokens", None)
                         if denom is None:
@@ -966,8 +940,6 @@ class Seq2SeqLMModel(ModelBase):
                                            for text, record in zip(generated["texts"], records))
                 if progress is not None:
                     progress(offset + len(records), len(view))
-        # total = float(total_sum)
-        # count = int(total_count)
         total, count = torch.stack((total_sum, total_count)).detach().cpu().tolist()
         count = int(count)
         result = {"negative_nll": -total / count, "perplexity": math.exp(min(80.0, total / count))}
@@ -1043,8 +1015,7 @@ class Seq2SeqLMModel(ModelBase):
         # T5 exposes .encoder. mBART keeps it on the inner model; get_encoder() covers both.
         encoder = self.module.get_encoder() if hasattr(self.module, "get_encoder") else self.module.encoder
         attention_mask = self._source_mask(attention_mask)
-        encoder_outputs = encoder(
-            input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        encoder_outputs = encoder( input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         start_id = int(getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id))
         device = input_ids.device
         # One query per step reads every earlier token, so the cached self-attention mask is all True.
@@ -1314,11 +1285,6 @@ class Seq2SeqLMModel(ModelBase):
         if state_kind == "resume":
             torch.save(self._training_state(), path / "training.pt")
         write_json(path / "metadata.json", self._metadata(state_kind, record))
-
-    def save_english_checkpoint(self, path, *, passes, validation, prefix):
-        """Base reference plus the English adapter. The directory is written once."""
-        self.save(path, "english", record={"prefix": prefix, "passes": passes, "validation": validation,
-                                           "writer": "english_checkpoint"})
 
     def save_hindi_checkpoint(self, path):
         """Final Hindi adapter and the plan that produced it."""

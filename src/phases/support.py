@@ -108,8 +108,7 @@ def cool_down(settings, stage, pretrained=True, *, device=None):
     Tiny test models, smoke runs and CUDA hosts do not apply the local cooldown."""
     if device is not None and device.type == "cuda":
         return
-    if (stage in ("english", "hindi") and pretrained and settings.protocol != "smoke"
-            and COOLDOWN_SECONDS > 0):
+    if (stage in ("english", "hindi") and pretrained and settings.protocol != "smoke" and COOLDOWN_SECONDS > 0):
         print(f"Cooling down for {COOLDOWN_SECONDS} s after the {stage} run", flush=True)
         time.sleep(COOLDOWN_SECONDS)
 
@@ -120,9 +119,8 @@ def aggregate_runs(name, directory, runs):
     metrics = {task: {metric: statistics.mean(run["metrics"][task][metric] for run in runs)
                       for metric in scores} for task, scores in runs[0]["metrics"].items()}
     record = {**runs[0], "name": name, "attempt": str(directory), "metrics": metrics, "seed_runs": runs,
-              "steps": sum(run["steps"] for run in runs),
-              "wall_clock_seconds": sum(run["wall_clock_seconds"] for run in runs),
-              "update_seconds": sum(run["update_seconds"] for run in runs)}
+              **{key: sum(run[key] for run in runs)
+                 for key in ("steps", "wall_clock_seconds", "update_seconds")}}
     record["accuracies"] = accuracies_of(metrics)
     record["epochs"] = {"requested": runs[0]["epochs"]["requested"],
                         "completed": statistics.mean(run["epochs"]["completed"] for run in runs), "steps": record["steps"]}
@@ -155,10 +153,6 @@ def screening(arm):
     return runs[0] if runs else arm
 
 
-def confirmed(arm):
-    return len(arm.get("seed_runs", ())) > 1
-
-
 def forgetting(before, arm):
     return score(before, "english/validation/plain") - score(arm["metrics"], "english/validation/plain")
 
@@ -173,8 +167,7 @@ def choose_winner(before, candidates, baseline):
         raise ValueError("Winner selection needs at least one arm")
     floor = gain(before, screening(baseline)) - 1
     eligible = [arm for arm in candidates if gain(before, screening(arm)) >= floor]
-    pool = eligible or [baseline]
-    return lower_forgetting(before, pool)
+    return lower_forgetting(before, eligible or [baseline])
 
 
 def lower_forgetting(before, arms):

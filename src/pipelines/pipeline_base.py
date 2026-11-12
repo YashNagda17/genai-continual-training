@@ -56,9 +56,6 @@ class PipelineBase(PipelineRuntime, ABC):
         return self
 
 
-
-
-
     def get_policy_state(self):
         """Copy every registered component's policy and RNG without copying model tensors.
         Deep copies prevent later policy mutations from changing the saved snapshot.
@@ -227,9 +224,6 @@ class SummarizationPipeline(PipelineBase):
         batch = self.dataset.collate(records)
         result = (model or self.model).score(batch, spec).validate(batch, spec)
         values = result.values
-        # tensors = [values] if torch.is_tensor(values) else values["gradients"]
-        # if any(not torch.isfinite(value).all() for value in tensors):
-        #     raise ValueError("Nonfinite policy scores")
         # Temporary: consume scores on their compute device without a host finite check.
         self._cost(category, records, result.cost)
         return values

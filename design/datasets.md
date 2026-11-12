@@ -9,10 +9,13 @@ The dataset owns source identity, official split membership, immutable finite vi
 | `load` | Read canonical JSONL or saved prepared records/manifest without downloading |
 | `split` | Keep official train/validation/test membership; report overlap |
 | `preprocess` | Tokenize article and summary separately, preserve IDs, report empty/truncated rows |
-| `fetch` | Return the next finite batch and cursor, with explicit exhaustion |
 | `training_view`, `evaluation_view` | Return immutable ordered tuples, respecting exposed protocol subsets |
 | `expose` | Bind the runner's ordered ID list to a named view and persist it in the manifest |
 | `save` | Save prepared records and source/split/preprocessing/subset settings |
+
+The unused dataset `fetch` method and `has_classes` property have been removed
+from the base interface and implementation. Runtime code owns batch cursors and
+uses `collate` directly. Source downloading still uses `DatasetSource.fetch`.
 
 The runner draws 2,000 training, 200 validation, and 500 test articles per language, and a 500-row English pool inside English training. It selects before tokenization so unused official rows are not processed. Every selected article is then prefixed with `summarize: ` so the encoder is told the task. A later language-prefix variant preserves exactly those same selected IDs.
 

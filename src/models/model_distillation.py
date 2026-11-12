@@ -49,8 +49,7 @@ class DistillationMT5(MT5SmallModel):
         return result
 
     def train(self, k, *, batch_factory, objective, hooks, limits):
-        if self.distillation_strength and (objective.reduction != 'per_example_mean'
-                                          or objective.token_mode != 'all'):
+        if self.distillation_strength and (objective.reduction != 'per_example_mean' or objective.token_mode != 'all'):
             raise ValueError('Distillation pilot requires unweighted per-example CE')
 
         def batches():

@@ -43,5 +43,4 @@ def run(directory, dataset, model_factory, settings, context, clock):
         {"status": "completed", "script_share_validation": share, "prefix": PREFIX, "stored_prefix": prefixed.manifest["preprocessing"]["prefix"],
          "english": english_arm["checkpoint"], "hindi": hindi["checkpoint"]},
         clock, [english_arm, hindi], hindi.get("final_model"))
-    return save_report(directory, 6, details, {"prefix_english": english_arm, "prefix_hindi": hindi,
-                                               "phase6": details})
+    return save_report(directory, 6, details, {"prefix_english": english_arm, "prefix_hindi": hindi, "phase6": details})

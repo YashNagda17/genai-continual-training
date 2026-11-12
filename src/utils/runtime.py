@@ -54,8 +54,7 @@ class PipelineRuntime:
         if self.context is not None:
             self.spec.resources.validate_role(model.info)
         model.activate()
-        if tuple(model.parameter_counts()) != (
-                model.info.total_parameters, model.info.trainable_parameters):
+        if tuple(model.parameter_counts()) != ( model.info.total_parameters, model.info.trainable_parameters):
             raise ValueError("Loaded parameter counts disagree with pre-allocation metadata")
 
     def acquire_auxiliary(self, role, initialization, *, checkpoint=None, state_kind="frozen"):
@@ -117,8 +116,7 @@ class PipelineRuntime:
             for key, value in event.items():
                 collect(event, key, value)
         for integral in (False, True):
-            group = [(c, k, t) for c, k, t in found
-                     if t.numel() == 1 and (t.dtype.is_floating_point is not integral)]
+            group = [(c, k, t) for c, k, t in found if t.numel() == 1 and (t.dtype.is_floating_point is not integral)]
             if group:
                 dtype = torch.int64 if integral else torch.float32
                 values = torch.stack([t.detach().reshape(()).to(dtype) for _, _, t in group]).cpu().tolist()
@@ -229,8 +227,6 @@ class PipelineRuntime:
                 raise FileExistsError("never requires a new attempt output directory")
             if existing:
                 manifest = read_json(manifest_path)
-                #if manifest["identity"] != self.artifacts.identity:
-                #    raise ValueError("Attempt belongs to a different scientific run")
                 self.load(context.output)
             elif self.spec.resume == "required":
                 raise FileNotFoundError("No matching attempt to resume")
@@ -278,10 +274,8 @@ class PipelineRuntime:
                             self.record_event("token_limit")
                             self.boundary(force=True)
                             continue
-                        report = self.execute(self.model, TrainingBatch(
-                            batch, tuple(origins)), objective, hooks)
-                        for key, amount in (("attempts", 1), ("steps", int(report.success)),
-                                            ("tokens", report.tokens)):
+                        report = self.execute(self.model, TrainingBatch( batch, tuple(origins)), objective, hooks)
+                        for key, amount in (("attempts", 1), ("steps", int(report.success)), ("tokens", report.tokens)):
                             self.counters[key] += amount
                             self.progress[key] += amount
                         self.observe(report, records)
@@ -395,8 +389,7 @@ class PipelineRuntime:
     def report_summary(report):
         """Copy report fields for persistence while dropping transient per-example gradient arrays."""
         # Exclude transient arrays before asdict can duplicate a large tensor buffer.
-        diagnostics = {k: v for k, v in report.diagnostics.items()
-                       if k not in {"class_gradients", "token_surprise"}}
+        diagnostics = {k: v for k, v in report.diagnostics.items() if k not in {"class_gradients", "token_surprise"}}
         return asdict(replace(report, diagnostics=diagnostics))
 
     def learner_pass_order(self, items, pass_number):

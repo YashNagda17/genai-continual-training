@@ -125,7 +125,7 @@ Each experiment lists its question, formula, example, what to look for, and the 
 | Truncation: reference-summary words in the first 256 tokens, against the full article | Nearly as many |
 | Tokens per character, English and Hindi | Recorded, to report cost per language |
 
-If it fails: train longer, change the limits, or switch to Qwen3-0.6B.
+If it fails: train longer or change the limits.
 
 ### Phase 1: Teach Hindi, and see what is forgotten
 
@@ -462,7 +462,7 @@ Prefix every input with `summarize in English:` or `summarize in Hindi:`. This n
 | **2: method claims** | E1–E4, G3 | **15** |
 | **3: extras** | G4, G1's compute-matched control, E5 | **9** |
 
-Tiers 1 and 2 total **42 runs**, and everything totals **51**. If mT5 support takes too long to build, Qwen3-0.6B can run the same plan, with early and late layers in place of encoder and decoder blocks.
+Tiers 1 and 2 total **42 runs**, and everything totals **51**.
 
 ## One-sentence pitch
 

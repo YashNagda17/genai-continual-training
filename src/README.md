@@ -37,35 +37,6 @@ phases using this pilot must also receive `--epochs 5` to match its saved settin
 
 Locked settings are in [the experiment contract](/design/summarization-experiments.md). English uses seed 0; Hindi arms use seeds 1, 2, and 3. Validation decides gates, winners and shrink ranks. Test scores are report-only. A failed scientific X gate stops later phases.
 
-For the imported `summarization-passes5` checkpoints, prepare a report and portable
-handoff without model execution:
-
-```sh
-python -u -m src.phase2_from_checkpoint --exploratory
-```
-
-The source ran **four** epochs. Its English validation chrF (20.7666) is below
-lead-1 (22.0174), so the scientific gate remains `fix_english`. The user explicitly
-authorized an exploratory Phase 2. The preparation writes
-[Phase 1 training results](/results/code/summarization-passes5/phase1/training-report.md)
-and matching JSON/CSV, verifies artifacts/prediction IDs and chrF, rebases Linux
-paths in memory, and checks that past-summary replay has eligible examples.
-Original weights, source progress and source arm records remain unchanged.
-Serving benchmarks remain incomplete and no completed Phase 1 report is invented.
-
-To start only the exploratory Phase 2, run:
-
-```sh
-python -u -m src.phase2_from_checkpoint --exploratory --run --device cuda:0
-```
-
-This reuses prepared subsets and the English checkpoint. All five arms run four
-Hindi epochs on seed 1; there is no English retraining or Phase 1 serving.
-Results go to `results/code/phase2-exploratory/phase2/report.md` (also JSON/CSV).
-Repeat the exact command to resume interrupted work. Different source hashes or
-settings require a new `--output` root. These results are exploratory, not a passed
-scientific experiment.
-
 For local checks without downloads:
 
 ```sh
@@ -75,24 +46,6 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest src.tests.test_summarizat
 
 Smoke uses a tiny random mT5 on CPU by default; `--device cuda:0` runs it on NVIDIA CUDA. Its metrics and timings are development evidence. Routine CPU tests do not establish real-weight/GPU behavior or scientific results.
 
-For bounded performance checks, `python -u -m src.performance_check` runs three
-English batches with a fresh disposable adapter on CUDA. It defaults to the
-prepared data in `results/code/summarization-passes5/prepared` and uses local
-model assets, without phases, validation or checkpoint
-publication. It prints synchronized update/wall times and peak memory, then
-saves one JSON under `results/performance/`. It never saves trained weights.
-`--batches` is limited to 10; the warm mean excludes the first batch when possible.
-
-`python -u -m src.performance_check --mode generation --examples 2 --checkpoint PATH_TO_ENGLISH_CHECKPOINT --prepared PATH_TO_MATCHING_PREPARED_DATA`
-compares fixed-limit generation with all-row EOS stopping on two validation
-articles. It checks identical output token IDs and records decoder steps and
-timings. The checkpoint and prepared-data prefixes must match. This is an
-inference-only check; the CPU tests do not establish its GPU speedup.
-Generation requires actual adapter weights, not metadata alone. The checkpoint
-weights for the imported English checkpoint are under
-`results/code/summarization-passes5/phase1/final/english`; use the matching prepared
-data under that run's `prepared` directory.
-
 For an NVIDIA cloud host, use a CUDA-enabled PyTorch image or select a matching wheel from the [official installer](https://pytorch.org/get-started/locally/), then install [requirements.txt](/requirements.txt). The same native-Torch gather, weighted-loss, nonblocking-copy and packed-reporting optimizations apply on CUDA; no inference backend or precision change is needed.
 
 Validate the cloud environment before downloading the full model and dataset:
@@ -100,11 +53,10 @@ Validate the cloud environment before downloading the full model and dataset:
 ```sh
 nvidia-smi
 python -c 'import torch; assert torch.version.cuda and torch.cuda.is_available(), "NVIDIA CUDA is required"; print(torch.__version__, torch.cuda.get_device_name(0))'
-python -m unittest src.tests.test_cuda -v
 python -m src.summarization_experiment --protocol smoke --device cuda:0 --phase 0 --output results/code/cuda-smoke
 ```
 
-The CUDA tests exercise weighted training, token scoring, generation and dropout/checkpoint resume with tiny local weights. They explicitly skip without NVIDIA CUDA; a skip is not GPU validation. Existing device fallback remains available, so the availability assertion above matters on a cloud host. CUDA timing and speedup claims still require measurement on that host.
+Existing device fallback remains available, so the availability assertion above matters on a cloud host. CUDA timing and speedup claims still require measurement on that host.
 
 Each phase is a small experiment definition:
 

@@ -2,6 +2,10 @@
 
 Owns `src/utils/`: `contracts.py` for boundaries, `numerics.py` for Torch math/device selection and metrics, `state.py` for replay/checkpoint storage, and `runtime.py` for lifecycle execution. Utilities import no concrete models, datasets or pipelines.
 
+Unused snapshot wrappers `save_weights` and `Checkpoints.blob` have been removed.
+Active exports use model `save` and transactional `Checkpoints.pin_artifact`/`pin`;
+retention of teacher dependencies in existing recovery artifacts is unchanged.
+
 Only the summarization plan is active. Removed mechanisms include legacy selection/routing/freeze records, teacher/KD fields, continual-metric helpers and unused sampling functions. Paper formulas and historical protocols remain in [Papers/](/Papers/) and their original design references.
 
 ## Boundaries
@@ -48,6 +52,10 @@ Phase reports are owned by [phases/artifacts.py](/src/phases/artifacts.py): save
 ## Measurements
 
 Metrics include unofficial whitespace ROUGE-L, character chrF, script/right-language share, paired article bootstrap, overlap, interaction, kappa and energy rank. Higher-is-better scores retain their declared scale. Validation alone decides gates, winners and shrink ranks. Test predictions support report comparisons only.
+
+The main and `src/new` metric modules share the identical chrF arithmetic and
+Unicode script detection. Their existing input checks, ROUGE-L implementations,
+and bootstrap precisions remain separate to preserve numerical behavior.
 
 Record update time, GPU hours, peak memory, optimizer steps, tokens per language, trainable parameters, analysis categories/forward-pass units and storage. Preserve failed and skipped work. Null means unavailable; CPU measurements do not establish accelerator results.
 

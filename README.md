@@ -58,7 +58,6 @@ python -m src.summarization_experiment --protocol smoke --output results/code/su
 | Blind rating sheets, two raters, and Cohen's kappa | Not produced. The kappa function exists. The sheets and the rater loop do not. |
 | One report that marks P1–P10 and principles M, N, K, L, and P | Phase reports store the comparisons they compute. The single prediction and principle table is not assembled. |
 | Reverse order, a third language, and past summaries without references | Recorded as skipped in Phase 7. |
-| Qwen3-0.6B fallback | Not implemented. The plan uses it only if mT5 cannot carry the experiment. |
 
 ## Implemented Markdown Files
 

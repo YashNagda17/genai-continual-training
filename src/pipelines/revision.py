@@ -186,7 +186,6 @@ class RevisionPipeline(SummarizationPipeline):
             written = []
             for row, text, ids in zip(rows, generated['texts'], generated['token_ids']):
                 count = len(row.target['ids'])
-                # old = baseline[offset:offset + count].tolist()
                 old = baseline[offset:offset + count]
                 offset += count
                 written.append(replace(row, practice={'answer_text': text, 'answer_ids': ids,
@@ -197,7 +196,6 @@ class RevisionPipeline(SummarizationPipeline):
             offset = 0
             for row in written:
                 count = len(row.practice['answer_ids'])
-                # row.practice['past_baseline'] = list(past[offset:offset + count].tolist()) if count else []
                 row.practice['past_baseline'] = past[offset:offset + count] if count else []
                 offset += count
                 work['records'].append(asdict(row))
@@ -303,6 +301,16 @@ class RevisionPipeline(SummarizationPipeline):
                 weights[offset:offset + count] = weight / weight.mean()
         return TokenTargets(torch.zeros_like(weights), weights.detach(), all_positive=True)
 
+    def _generate_held_out(self, rows, work, text_key, category, label, **options):
+        """Collect held-out predictions using the existing recovery state and boundaries."""
+        print(f"{label} {work['cursor']}/{len(rows)} samples", flush=True)
+        while work['cursor'] < len(rows):
+            part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
+            work[text_key] += self._generate(part, category, held_out=True, **options)['texts']
+            work['cursor'] += len(part)
+            self.log_sample_progress(label, work['cursor'], len(rows))
+            self._commit()
+
     def _validation_pass(self):
         if self.policy['completed_passes'] < self.spec.passes:
             raise ValueError('English validation requires every training epoch to finish')
@@ -311,13 +319,7 @@ class RevisionPipeline(SummarizationPipeline):
         work = self.policy['work'].setdefault('validation', {'cursor': 0, 'predictions': []})
         rows = self.held_out('english', 'validation')
         label = f"validation english epoch {self.policy['completed_passes']}/{self.spec.passes}"
-        print(f"{label} {work['cursor']}/{len(rows)} samples", flush=True)
-        while work['cursor'] < len(rows):
-            part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
-            work['predictions'] += self._generate(part, 'validation_generation', held_out=True)['texts']
-            work['cursor'] += len(part)
-            self.log_sample_progress(label, work['cursor'], len(rows))
-            self._commit()
+        self._generate_held_out(rows, work, 'predictions', 'validation_generation', label)
         scores = summary_metrics(work['predictions'], [r.target['text'] for r in rows], 'english')
         self.policy['final_validation'] = {'scores': scores, 'texts': work['predictions']}
         self.policy['validated_passes'] = self.policy['completed_passes']
@@ -403,11 +405,9 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy.pop('pool_rows', None)  # Older recovery snapshots may contain this unused field.
 
     def _evaluate_seen(self):
-        announced_test = False
         for split in ('validation', 'test'):
-            if split == 'test' and not announced_test:
+            if split == 'test':
                 print(f"test after {self.spec.passes} training epochs", flush=True)
-                announced_test = True
             for language in ('english', 'hindi'):
                 for guarded in (False, True):
                     key = f'{language}/{split}/{"guarded" if guarded else "plain"}'
@@ -419,14 +419,10 @@ class RevisionPipeline(SummarizationPipeline):
                               and key == 'english/validation/plain' else None)
                     if cached is not None:
                         work.update(cursor=len(rows), texts=cached['texts'])
-                    print(f"generate {key} {work['cursor']}/{len(rows)} samples", flush=True)
                     guard = ({'block': 'devanagari'} if language == 'english' else {'penalize': 'latin', 'penalty': 2.0}) if guarded else None
-                    while work['cursor'] < len(rows):
-                        part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
-                        work['texts'] += self._generate(part, 'guard_generation' if guarded else 'evaluation_generation', held_out=True, guard=guard)['texts']
-                        work['cursor'] += len(part)
-                        self.log_sample_progress(f"generate {key}", work['cursor'], len(rows))
-                        self._commit()
+                    self._generate_held_out(rows, work, 'texts',
+                                            'guard_generation' if guarded else 'evaluation_generation',
+                                            f"generate {key}", guard=guard)
                     scores = cached['scores'] if cached is not None else summary_metrics(
                         work['texts'], [r.target['text'] for r in rows], language)
                     self._save_scores('final', key, scores)
@@ -443,8 +439,8 @@ class RevisionPipeline(SummarizationPipeline):
 
     def _save_scores(self, pass_number, task, scores):
         """Keep every chrF, ROUGE-L, and right-language score for the run report."""
-        row = {'pass': pass_number, 'task': task,
-               'rouge_l': scores['rouge_l'], 'chrf': scores['chrf'], 'right_language': scores['right_language']}
+        fields = ('pass', 'task', 'rouge_l', 'chrf', 'right_language')
+        row = {'pass': pass_number, 'task': task, **{key: scores[key] for key in fields[2:]}}
         saved = [item for item in self.policy.get('score_history') or []
                  if not (item.get('pass') == pass_number and item.get('task') == task)]
         saved.append(row)
@@ -452,6 +448,5 @@ class RevisionPipeline(SummarizationPipeline):
         path = Path(self.context.output) / 'scores.csv'
         with path.open('w', newline='', encoding='utf-8') as handle:
             writer = csv.writer(handle)
-            writer.writerow(('pass', 'task', 'rouge_l', 'chrf', 'right_language'))
-            writer.writerows((item['pass'], item['task'], item['rouge_l'], item['chrf'], item['right_language'])
-                             for item in saved)
+            writer.writerow(fields)
+            writer.writerows(tuple(item[key] for key in fields) for item in saved)

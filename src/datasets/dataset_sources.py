@@ -7,10 +7,7 @@ import tarfile
 
 from huggingface_hub import snapshot_download
 
-from .dataset_instruction import SummarizationDataset
-
-SPLITS = ("train", "validation", "test")
-
+from .dataset_instruction import SPLITS
 
 XLSUM_LANGUAGES = ("english", "hindi")
 XLSUM_SPLIT_FILES = (("train", "train"), ("validation", "val"), ("test", "test"))

@@ -102,8 +102,7 @@ class SummarizationDataset(DatasetBase):
             for line in handle:
                 if line.strip():
                     row = json.loads(line)
-                    record = Record(**row) if saved else self._record(row, len(records))
-                    records.append(record)
+                    records.append(Record(**row) if saved else self._record(row, len(records)))
         self.views = {}
         if not saved:
             return tuple(records), dict(self.manifest)
@@ -112,25 +111,15 @@ class SummarizationDataset(DatasetBase):
             self.expose(name, ids)
         return self.views, dict(self.manifest)
 
-    def fetch(self, view, batch_spec, cursor):
-        """Return (Batch or None, next_cursor) over the caller's view; never wraps around."""
-        if cursor >= len(view):
-            return None, cursor
-        records = tuple(view[cursor:cursor + batch_spec["size"]])
-        return self.collate(records), cursor + len(records)
-
     def training_view(self, task_id):
         named = self.views.get(f"{task_id}/train")
-        if named is not None:
-            return named
-        return tuple(sorted((r for r in self.views.get("train", ()) if r.task_id == task_id),
-                            key=lambda r: (r.arrival, r.sample_id)))
+        return named if named is not None else tuple(sorted(
+            (r for r in self.views.get("train", ()) if r.task_id == task_id), key=lambda r: (r.arrival, r.sample_id)))
 
     def evaluation_view(self, task_id):
         name = f"{task_id}/{self.evaluation_split}"
-        if name in self.views:
-            return self.views[name]
-        return tuple(r for r in self.views.get(self.evaluation_split, ()) if r.task_id == task_id)
+        return self.views[name] if name in self.views else tuple(
+            r for r in self.views.get(self.evaluation_split, ()) if r.task_id == task_id)
 
     def save(self, path):
         """Stream prepared records and their settings to disk."""
@@ -141,10 +130,6 @@ class SummarizationDataset(DatasetBase):
                 for record in self.views.get(name, ()):
                     handle.write(json.dumps(asdict(record), ensure_ascii=False, allow_nan=False) + "\n")
         (path / "manifest.json").write_text(json.dumps(self.manifest, indent=2, sort_keys=True), encoding="utf-8")
-
-    @property
-    def has_classes(self):
-        return False
 
     def _record(self, row, arrival):
         sample_id = str(row["id"])
@@ -171,8 +156,7 @@ class SummarizationDataset(DatasetBase):
     def preprocess(self, view, preprocessing_spec):
         """Tokenize the article and the summary separately. Both keep their first tokens."""
         spec = preprocessing_spec
-        prepared, dropped = {}, []
-        pilot = {}
+        prepared, dropped, pilot = {}, [], {}
         for name in SPLITS:
             kept = []
             for record in view.get(name, ()):

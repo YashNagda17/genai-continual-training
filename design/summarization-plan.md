@@ -11,7 +11,7 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 | | Earlier recipes | This plan |
 |---|---|---|
 | Task stream | TRACE or CLINC topics, many tasks | Two languages: English, then Hindi. A third language is optional |
-| Model | Causal LMs (SmolLM2, LFM2.5, Qwen3) | **mT5-small**, an encoder-decoder. Qwen3-0.6B is the fallback |
+| Model | Causal LMs (SmolLM2, LFM2.5, Qwen3) | **mT5-small**, an encoder-decoder |
 | Fine-tuning | LoRA by default, full fine-tuning allowed | **LoRA only**. Base weights are always frozen |
 | Replay memory | Built at task end by CSReL or OASIS | A **fixed pool of 500 English training examples**, saved at the English stage |
 | Methods | OASIS, aL-SAR, TSR, CSReL, generation replay | Our own plan: revision policies, adapter placement, and generation-tested shrinking. It borrows CSReL's reducible-loss idea and TSR's fixed probe |
@@ -22,7 +22,7 @@ Read with: [revision.md](/design/revision.md) (experiments A, B, G1, G2, G3), [m
 1. **LoRA only, one model under 700M.** mT5-small has 300,176,768 parameters. Every role, including the probe, stays under the [ceiling](/design/README.md).
 2. **mT5-small and XL-Sum are explicitly requested** by the plan. This is the allowed exception to "existing assets first". No other new model, dataset, or inference backend is added.
 3. **Reuse before adding.** Use existing code if it fits, then subclass it, and only then write new code. Every new item appears in the tables below.
-4. **Change the owner first.** Each concern has one [owning contract](/design/README.md). Shared additions go in that contract's "Summarization plan additions" section. Paper contracts (`csrel.md`, `tsr.md`, `oasis.md`, `al-sar.md`) and the earlier recipe contracts don't change, apart from a one-line "Current plan" status note at the top of each.
+4. **Change the owner first.** Each concern has one [owning contract](/design/README.md). Shared additions go in that contract's "Summarization plan additions" section. Retained paper contracts (`csrel.md`, `tsr.md`) and the earlier recipe contracts remain historical references. The OASIS and aL-SAR dedicated contracts have been removed.
 5. **Every arm has a question, a control, and a decision rule.** These are listed in [summarization-experiments.md](/design/summarization-experiments.md).
 6. **Numbers are fixed before the runs.** Settings and predictions are pre-registered, and the runner refuses a scientific Hindi run whose settings differ from the pre-registered file.
 7. **Decisions use validation, never test.** "Best" arms are chosen on validation by a pre-registered rule. Test scores are computed only for reporting.
@@ -90,8 +90,6 @@ Their executable code and dedicated tests are removed. Original paper sources, r
 
 | Feature | Owner | Why it isn't needed |
 |---|---|---|
-| OASIS admission | [oasis.md](/design/oasis.md) | Every Hindi example is trained on. There's no admission decision |
-| aL-SAR retrieval and freezing | [al-sar.md](/design/al-sar.md) | Block choice is a fixed, pre-registered plan, not a Fisher-based prefix |
 | Four-paper hybrid | [combined-pipeline.md](/design/combined-pipeline.md) | Not a comparison arm in this plan |
 | TSR routing, era teachers, KD | [tsr.md](/design/tsr.md) | One old language, so there's nothing to route between. No distillation. Only the fixed probe is reused. Routing returns only with a third language (Phase 7) |
 | CSReL reference and subset model training | [csrel.md](/design/csrel.md) | The English checkpoint is the reference. No helper models are trained |

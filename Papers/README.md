@@ -5,11 +5,14 @@ Source review: 2026-10-20; no training reproduction or released-code audit. Read
 | Paper | Detailed reference | Local source and duplicate copies | Project role |
 |---|---|---|---|
 | CSReL, ICLR 2025 | [CSReL-summary.md](/Papers/CSReL-summary.md) | [Conference PDF](/Papers/ICLR-2025-coreset-selection-via-reducible-loss-in-continual-learning-Paper-Conference.pdf); `CSReL` is identical | Task-end memory construction and reselection |
-| aL-SAR, ICLR 2025 | [aL-SAR-summary.md](/Papers/aL-SAR-summary.md) | [aL-SAR.pdf](/Papers/aL-SAR.pdf) | Conditional replay retrieval and adaptive layer freezing |
-| OASIS, ACL 2026 | [OASIS-summary.md](/Papers/OASIS-summary.md) | [OASIS.pdf](/Papers/OASIS.pdf); `2026.acl-long.158.pdf` is identical | Current-data admission in our hybrid; native experiments use an unbounded historical pool |
 | TSR, July 2026 preprint | [TSR-summary.md](/Papers/TSR-summary.md) | [TSR.pdf](/Papers/TSR.pdf); `Replay.pdf` is identical | Historical-task routing and era-matched distillation |
 
 Duplicates were verified by SHA-256; checksums are in the summaries.
+
+OASIS and aL-SAR local PDFs, summaries and dedicated designs were removed at the
+user's request. Mixed literature reviews retain their historical discussion and
+link to the published sources. CSReL and TSR baselines are implemented under
+`src/new/pipelines/`; this does not establish faithful paper reproduction.
 
 **Reading conventions:** Results and reference settings belong to the papers, not our future experiment configuration. Engineering optimizations preserve behavior; adaptations change it. “Same family” means a shared mechanism, not direct lineage. Project scope, resume, and storage rules live in `design/`; untested algorithmic ideas go in [optimizations.md](/optimizations.md).
 

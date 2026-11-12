@@ -32,8 +32,7 @@ def resolve_device(preferred="auto"):
         return torch.device("cpu")
     device = torch.device(preferred)
     if device.type == "cpu":
-        _notice_cpu("device was set to cpu. Pass device=\"cuda\" or device=\"xpu\" "
-                    "to run on an accelerator.")
+        _notice_cpu("device was set to cpu. Pass device=\"cuda\" or device=\"xpu\" " "to run on an accelerator.")
         return device
     backend = getattr(torch, device.type, None)
     if (device.type in {"cuda", "xpu"} and backend is not None
@@ -101,16 +100,6 @@ def cosine(a, b):
     return cosine_tensor(a, b).item()
 
 
-
-
-
-
-
-
-
-
-
-
 def _as_tokens(value):
     """Split a string on whitespace, and keep a sequence of token IDs as it is."""
     if isinstance(value, str):
@@ -127,8 +116,6 @@ def _pair_device(left, right, device):
         if isinstance(value, torch.Tensor):
             return value.device
     return torch.device("cpu")
-
-
 
 
 def rouge_l(prediction, reference, device=None):
@@ -161,6 +148,11 @@ def chrf(hyp, ref, n=6, beta=2):
         return 0.0
     if n < 1 or beta <= 0:
         raise ValueError('Positive n and beta required')
+    return _chrf_nonempty(hyp, ref, n, beta)
+
+
+def _chrf_nonempty(hyp, ref, n, beta):
+    """Shared arithmetic for nonempty, whitespace-stripped character sequences."""
     precision, recall = [], []
     for order in range(1, min(n, len(hyp), len(ref)) + 1):
         left = Counter(hyp[i:i + order] for i in range(len(hyp) - order + 1))

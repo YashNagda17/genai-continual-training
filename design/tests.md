@@ -22,4 +22,4 @@ Keep behavior tests small and tied to the [current plan](/Idea_Refined_2.md). Do
 
 Routine execution uses a tiny random Torch model on CPU, with no downloads. Report exactly which tests ran. Static compilation and mock/CPU checks do not establish accelerator behavior, native-paper reproduction, retention, quality or speedup.
 
-`test_cuda.py` runs the same gather/weighted-update/scoring/generation and checkpoint-resume paths on an actual NVIDIA CUDA device, using tiny local weights. It skips explicitly when NVIDIA CUDA is unavailable. Cloud validation must check CUDA availability first so a skipped suite cannot be mistaken for GPU evidence. Smoke runs default to CPU but honor an explicit `--device`, including `cuda:0`; all prior synchronization reductions use the shared native-Torch path on CUDA, XPU and CPU.
+Smoke runs default to CPU but honor an explicit `--device`, including `cuda:0`; all prior synchronization reductions use the shared native-Torch path on CUDA, XPU and CPU.

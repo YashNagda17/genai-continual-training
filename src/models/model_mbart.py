@@ -18,10 +18,7 @@ MODEL_ID = "ctu-aic/mbart25-multilingual-summarization-multilarge-cs"
 # facebook/mbart-large-cc25 language codes used by this checkpoint's tokenizer.
 LANG_CODES = {"english": "en_XX", "hindi": "en_XX"}
 
-_PROJECTION = {
-    "q_proj": "q", "k_proj": "k", "v_proj": "v", "out_proj": "o",
-    "fc1": "wi_0", "fc2": "wo",
-}
+_PROJECTION = { "q_proj": "q", "k_proj": "k", "v_proj": "v", "out_proj": "o", "fc1": "wi_0", "fc2": "wo", }
 _PART = {"self_attn": "self_attention", "encoder_attn": "cross_attention"}
 
 

@@ -46,26 +46,6 @@ are reported as "single seed, screening".
 
 ## Protocols
 
-### Exploratory Phase 2 handoff from completed training
-
-`python -m src.phase2_from_checkpoint --exploratory` verifies a pulled Phase 1
-English adapter, all three completed X arms, saved predictions, prepared subsets
-and the fixed pool without model execution. It writes `phase1/training-report`
-in Markdown/CSV/JSON and a portable handoff in a separate output root. This
-report marks training/evaluation complete and serving incomplete; it does not
-create a completed Phase 1 `report.json` or change the original progress record.
-Linux paths in source arm records are rebased in memory to the source root.
-
-The entry point recomputes the lead-1 gate and keeps its original result.
-`--exploratory --run` explicitly permits a pilot Phase 2 beyond a failed gate;
-all five Hindi arms use the source's screening seed and pass count, with the
-existing English adapter and prepared data. No English training, full-source
-preprocessing, Phase 1 serving, or later phase is launched. The Phase 2 report
-records this provenance and failed gate. These are exploratory results, not a
-passed scientific protocol. The handoff and normal arm identities prevent
-silently mixing different sources/settings on resume. Source weights, scores
-and source progress are never rewritten.
-
 | Protocol | Data | Purpose |
 |---|---|---|
 | `smoke` | A tiny local JSONL of a few English and Hindi rows | One batch trains and one summary generates. CPU is fine |
@@ -296,7 +276,7 @@ If no arm meets the Hindi condition, the winner is `random`, and that's reported
 
 | After | Condition | Then |
 |---|---|---|
-| Pilot | Most of 20 summaries readable; truncation keeps nearly all summary words | Continue. Otherwise change limits or steps, or switch to Qwen3-0.6B |
+| Pilot | Most of 20 summaries readable; truncation keeps nearly all summary words | Continue. Otherwise change limits or steps |
 | English checkpoint | English validation chrF at or below **lead-1** (the article's first sentence, split at `.`, `!`, `?`, or `।`) | `fix_english`: train English further before any Hindi arm. Checked before the X conditions |
 | X | English validation forgetting at least 1 point **and** Hindi validation gain at least 1 point | Continue |
 | X | English forgetting under 1 point | Stop the replay story. Report it. Run the reverse order |

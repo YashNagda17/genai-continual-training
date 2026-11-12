@@ -127,8 +127,7 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
                             models["swap"].load(checkpoint, kinds[checkpoint])
                             active_checkpoint = checkpoint
                         return models["swap"]
-                results[key] = measure(path, dataset, rows, settings, choose,
-                                       checkpoint_reuse=not merged)["summary"]
+                results[key] = measure(path, dataset, rows, settings, choose, checkpoint_reuse=not merged)["summary"]
             finally:
                 for model in models.values():
                     model.release()

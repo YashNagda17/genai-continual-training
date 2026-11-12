@@ -1,13 +1,13 @@
 """Device routing, JSON files, timing, and the summary metrics."""
 
-from collections import Counter
 from pathlib import Path
 import json
 import os
-import unicodedata
 
 import torch
 from torch.nn import functional as F
+
+from ...utils.numerics import _chrf_nonempty, script_share
 
 
 def resolve_device(preferred="auto"):
@@ -64,21 +64,7 @@ def chrf(hyp, ref, n=6, beta=2):
     hyp, ref = "".join(hyp.split()), "".join(ref.split())
     if not hyp or not ref:
         return 0.0
-    precision, recall = [], []
-    for order in range(1, min(n, len(hyp), len(ref)) + 1):
-        left = Counter(hyp[i:i + order] for i in range(len(hyp) - order + 1))
-        right = Counter(ref[i:i + order] for i in range(len(ref) - order + 1))
-        overlap = sum((left & right).values())
-        precision.append(overlap / sum(left.values()))
-        recall.append(overlap / sum(right.values()))
-    p, r = sum(precision) / len(precision), sum(recall) / len(recall)
-    return 100 * (1 + beta ** 2) * p * r / (beta ** 2 * p + r) if p + r else 0.0
-
-
-def script_share(text, script="devanagari"):
-    """dev(s): the fraction of letters in one Unicode script."""
-    letters = [c for c in text if c.isalpha()]
-    return sum(script.upper() in unicodedata.name(c, "") for c in letters) / len(letters) if letters else 0.0
+    return _chrf_nonempty(hyp, ref, n, beta)
 
 
 def right_language(text, language):

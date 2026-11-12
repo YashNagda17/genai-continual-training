@@ -1,9 +1,7 @@
 """Native Torch model execution obligations; architecture and weights are supplied."""
 
 from abc import ABC, abstractmethod
-
 from ..utils.numerics import move_to_device, resolve_device
-
 
 class ModelBase(ABC):
     def __init__(self, device="auto"):
