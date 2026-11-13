@@ -48,6 +48,10 @@ adapter_model*.bin
 
 # Experiment outputs and logs
 /results/*
+!/results/code/
+/results/code/**
+!/results/code/**/
+!/results/code/**/predictions/*.json
 !/results/README.md
 !/results/report.csv
 !/results/report.json
@@ -55,11 +59,11 @@ adapter_model*.bin
 !/results/manifest.json
 !/results/phases/
 /results/phases/*
-!/results/phases/phase[1-7]/
-/results/phases/phase[1-7]/*
-!/results/phases/phase[1-7]/report.csv
-!/results/phases/phase[1-7]/report.json
-!/results/phases/phase[1-7]/report.md
+!/results/phases/phase[1-5]/
+/results/phases/phase[1-5]/*
+!/results/phases/phase[1-5]/report.csv
+!/results/phases/phase[1-5]/report.json
+!/results/phases/phase[1-5]/report.md
 !/results/sources/
 /results/sources/*
 !/results/sources/drive-2026-11-13/

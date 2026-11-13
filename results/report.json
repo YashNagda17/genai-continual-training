@@ -48,7 +48,7 @@
   "phases": [
     {
       "phase": 1,
-      "title": "English checkpoint and Hindi-only",
+      "title": "Observation of Forgetting Problem",
       "report_status": "completed",
       "outcome": "continue",
       "reason": "English validation chrF exceeds lead-1; forgetting and Hindi gain pass the gate.",
@@ -73,7 +73,7 @@
     },
     {
       "phase": 2,
-      "title": "Replay revisions",
+      "title": "Replay Methods",
       "report_status": "completed",
       "outcome": "completed",
       "reason": "Random, loss, drift, past-summary, and repair-stop reports imported; repair-stop parent is drift and zero rows retired.",
@@ -113,10 +113,10 @@
     },
     {
       "phase": 3,
-      "title": "Maps, block placement, and combination",
+      "title": "Block Selection",
       "report_status": "completed",
       "outcome": "completed",
-      "reason": "Source selects repair_stop and early_late; maps are unstable. The report contains maps, late, early_late, and combined.",
+      "reason": "Selected repair_stop and early_late; the combined model has confirmation on seeds 1, 2, and 3.",
       "report": "results/phases/phase3/report.json",
       "time": {
         "arms": {
@@ -144,16 +144,8 @@
         "phase_seconds": 4415.721670438008
       },
       "ranks": null,
-      "screening_delta_vs_random": null
-    },
-    {
-      "phase": 4,
-      "title": "New adapter room and winner confirmation",
-      "report_status": "completed",
-      "outcome": "skipped",
-      "reason": "New-room training skipped: unstable_map. The combined arm was still confirmed on seeds 1, 2, and 3.",
-      "report": "results/phases/phase4/report.json",
-      "time": {
+      "screening_delta_vs_random": null,
+      "confirmation_time": {
         "arms": {
           "combined": {
             "gpu_hours": 1.2994815604494456,
@@ -162,17 +154,15 @@
           }
         },
         "phase_seconds": 3134.478130559997
-      },
-      "ranks": null,
-      "screening_delta_vs_random": null
+      }
     },
     {
-      "phase": 5,
-      "title": "Adapter shrinking and serving",
+      "phase": 4,
+      "title": "Adapter Compression",
       "report_status": "completed",
       "outcome": "completed",
       "reason": "Random: energy rank 11, generation rank 8. Combined: energy rank 10, generation rank 8.",
-      "report": "results/phases/phase5/report.json",
+      "report": "results/phases/phase4/report.json",
       "time": {
         "arms": {
           "combined-seed-1": {
@@ -205,26 +195,12 @@
       "screening_delta_vs_random": null
     },
     {
-      "phase": 6,
-      "title": "Language prefix",
-      "report_status": "completed",
-      "outcome": "skipped",
-      "reason": "Validation script-recovery share 0.014674644376430226 is below 0.25; no prefix training ran.",
-      "report": "results/phases/phase6/report.json",
-      "time": {
-        "arms": {},
-        "phase_seconds": 0.014482372000202304
-      },
-      "ranks": null,
-      "screening_delta_vs_random": null
-    },
-    {
-      "phase": 7,
-      "title": "Cached knowledge distillation",
+      "phase": 5,
+      "title": "Knowledge Distillation Replay",
       "report_status": "completed",
       "outcome": "screening_failed",
       "reason": "Drive phase8 mapped to phase7. Strengths 0.25 and 1.0 were screened on seed 1; neither passed the declared rule, so no confirmation seeds ran.",
-      "report": "results/phases/phase7/report.json",
+      "report": "results/phases/phase5/report.json",
       "time": {
         "arms": {
           "kd_0_25": {
@@ -3405,7 +3381,7 @@
       "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3419,10 +3395,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3436,10 +3412,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3453,10 +3429,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3470,10 +3446,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3487,10 +3463,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3504,10 +3480,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3521,10 +3497,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined",
       "level": "aggregate",
       "seed": null,
@@ -3538,10 +3514,10 @@
       "epochs": 4.0,
       "steps": 1500,
       "wall_clock_seconds": 4678.133617618005,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3555,10 +3531,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3572,10 +3548,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3589,10 +3565,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3606,10 +3582,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3623,10 +3599,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3640,10 +3616,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3657,10 +3633,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-1",
       "level": "seed",
       "seed": 1,
@@ -3674,10 +3650,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.4786008180017,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3691,10 +3667,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3708,10 +3684,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3725,10 +3701,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3742,10 +3718,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3759,10 +3735,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3776,10 +3752,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3793,10 +3769,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-2",
       "level": "seed",
       "seed": 2,
@@ -3810,10 +3786,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1556.267307824004,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3827,10 +3803,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3844,10 +3820,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3861,10 +3837,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3878,10 +3854,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3895,10 +3871,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3912,10 +3888,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3929,10 +3905,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 4,
+      "phase": 3,
       "arm": "combined-seed-3",
       "level": "seed",
       "seed": 3,
@@ -3946,10 +3922,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1565.387708975999,
-      "source_report": "results/phases/phase4/report.json"
+      "source_report": "results/phases/phase3/report.json"
     },
     {
-      "phase": 5,
+      "phase": 4,
       "arm": "random-seed-1",
       "level": "aggregate",
       "seed": 1,
@@ -3963,10 +3939,10 @@
       "epochs": 0,
       "steps": 0,
       "wall_clock_seconds": 531.6990732339982,
-      "source_report": "results/phases/phase5/report.json"
+      "source_report": "results/phases/phase4/report.json"
     },
     {
-      "phase": 5,
+      "phase": 4,
       "arm": "random-seed-1",
       "level": "aggregate",
       "seed": 1,
@@ -3980,10 +3956,10 @@
       "epochs": 0,
       "steps": 0,
       "wall_clock_seconds": 531.6990732339982,
-      "source_report": "results/phases/phase5/report.json"
+      "source_report": "results/phases/phase4/report.json"
     },
     {
-      "phase": 5,
+      "phase": 4,
       "arm": "combined-seed-1",
       "level": "aggregate",
       "seed": 1,
@@ -3997,10 +3973,10 @@
       "epochs": 0,
       "steps": 0,
       "wall_clock_seconds": 526.0794221830001,
-      "source_report": "results/phases/phase5/report.json"
+      "source_report": "results/phases/phase4/report.json"
     },
     {
-      "phase": 5,
+      "phase": 4,
       "arm": "combined-seed-1",
       "level": "aggregate",
       "seed": 1,
@@ -4014,27 +3990,27 @@
       "epochs": 0,
       "steps": 0,
       "wall_clock_seconds": 526.0794221830001,
+      "source_report": "results/phases/phase4/report.json"
+    },
+    {
+      "phase": 5,
+      "arm": "kd_0_25",
+      "level": "aggregate",
+      "seed": null,
+      "seeds": "1",
+      "language": "english",
+      "split": "test",
+      "decoding": "guarded",
+      "chrf": 28.67494708665778,
+      "right_language": 100.0,
+      "rouge_l": 20.909546707570552,
+      "epochs": 4.0,
+      "steps": 500,
+      "wall_clock_seconds": 1577.6139869960025,
       "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
-      "arm": "kd_0_25",
-      "level": "aggregate",
-      "seed": null,
-      "seeds": "1",
-      "language": "english",
-      "split": "test",
-      "decoding": "guarded",
-      "chrf": 28.67494708665778,
-      "right_language": 100.0,
-      "rouge_l": 20.909546707570552,
-      "epochs": 4.0,
-      "steps": 500,
-      "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
-    },
-    {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4048,10 +4024,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4065,10 +4041,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4082,10 +4058,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4099,10 +4075,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4116,10 +4092,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4133,10 +4109,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25",
       "level": "aggregate",
       "seed": null,
@@ -4150,10 +4126,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4167,10 +4143,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4184,10 +4160,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4201,10 +4177,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4218,10 +4194,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4235,10 +4211,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4252,10 +4228,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4269,10 +4245,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_0_25-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4286,10 +4262,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1577.6139869960025,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4303,10 +4279,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4320,10 +4296,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4337,10 +4313,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4354,10 +4330,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4371,10 +4347,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4388,10 +4364,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4405,10 +4381,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1",
       "level": "aggregate",
       "seed": null,
@@ -4422,10 +4398,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4439,10 +4415,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4456,10 +4432,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4473,10 +4449,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4490,10 +4466,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4507,10 +4483,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4524,10 +4500,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4541,10 +4517,10 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     },
     {
-      "phase": 7,
+      "phase": 5,
       "arm": "kd_1-seed-1",
       "level": "seed",
       "seed": 1,
@@ -4558,7 +4534,8 @@
       "epochs": 4.0,
       "steps": 500,
       "wall_clock_seconds": 1583.6943525409952,
-      "source_report": "results/phases/phase7/report.json"
+      "source_report": "results/phases/phase5/report.json"
     }
-  ]
+  ],
+  "phase_layout": "report-five-phase-v1"
 }

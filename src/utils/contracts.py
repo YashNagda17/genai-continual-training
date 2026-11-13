@@ -101,14 +101,8 @@ class TokenTargets:
 
 @dataclass(frozen=True)
 class AdapterPlan:
-    """Which shared adapters can change, where extra rank goes, and the per-block learning rate.
-
-    Block keys are ``encoder.7`` strings. ``new_rank`` and ``lr_scale`` map those keys to a
-    rank and a multiplier in ``(0, 1]``. The experiment runner builds the plan.
-    """
+    """Which adapters can change in Phase 3; block keys are ``encoder.7`` strings."""
     trainable: tuple[str, ...]
-    new_rank: dict = field(default_factory=dict)
-    lr_scale: dict = field(default_factory=dict)
     identity: dict = field(default_factory=dict)
 
 

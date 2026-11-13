@@ -8,7 +8,7 @@ import re
 import time
 
 from ..pipelines.revision import RevisionConfig, RevisionPipeline
-from ..pipelines.adapter_room import AdapterRoomConfig, AdapterRoomPipeline
+from ..pipelines.block_selection import BlockSelectionConfig, BlockSelectionPipeline
 from ..utils.numerics import summary_metrics
 from ..utils.contracts import ReplayBudget, ResourceBudget, RunContext, RunSpec, fingerprint
 from ..utils.state import read_json, write_json
@@ -134,12 +134,6 @@ def lower_forgetting(before, arms):
     return sorted(arms, key=key)[0]
 
 
-def beats(before, arm, others, margin=1.0):
-    """True when ``arm`` forgets at least ``margin`` points less English than every other arm, in the single run."""
-    mine = forgetting(before, arm)
-    return all(mine <= forgetting(before, other) - margin for other in others)
-
-
 def script_share_of_forgetting(before, plain, guarded):
     drop = before - plain
     if drop <= 0:
@@ -215,7 +209,7 @@ def revision_pipeline(settings, pool, checkpoint, revision):
 
 def combined_pipeline(settings, pool, checkpoint, revision, blocks):
     pipeline = revision_pipeline(settings, pool, checkpoint, revision)
-    pipeline.adapter_plan = AdapterRoomPipeline(room_config(settings)).adapter_plan(BLOCK_PLANS[blocks])
+    pipeline.adapter_plan = BlockSelectionPipeline(block_config(settings)).adapter_plan(BLOCK_PLANS[blocks])
     return pipeline
 
 
@@ -230,24 +224,8 @@ def matched_extra_steps(random_arm, drift_arm):
     return max(0, math.ceil((total(drift_run) - total(random_run)) / per_step))
 
 
-def room_config(settings):
-    return AdapterRoomConfig(settings.stability_threshold, seed=settings.seed, sample_size=settings.sample_size,
+def block_config(settings):
+    return BlockSelectionConfig(settings.stability_threshold, seed=settings.seed, sample_size=settings.sample_size,
         analysis_batch=settings.analysis_batch, encoder_blocks=settings.encoder_blocks,
-        decoder_blocks=settings.decoder_blocks, new_room_budget=settings.new_room_budget,
+        decoder_blocks=settings.decoder_blocks,
         encoder_block_cost=settings.encoder_block_cost, decoder_block_cost=settings.decoder_block_cost)
-
-
-ROOM_ARMS = ("room_placed", "room_random", "room_spread")
-
-
-def room_plans(settings, context, names=ROOM_ARMS):
-    """Plans for the named E arms. E4 (``room_placed_slow``) and E5 are requested separately, when they run."""
-    room = AdapterRoomPipeline(room_config(settings))
-    shared = room.adapter_plan(BLOCK_PLANS[context["best_blocks"]])
-    plans = [room.adapter_plan(name, maps=context["maps"], shared=shared) for name in names]
-    if any(plan is None for plan in plans):
-        return (), room.policy.get("room_status", "skipped")
-    try:
-        return room.validate_room_plans(plans), None
-    except ValueError as error:
-        return (), str(error)

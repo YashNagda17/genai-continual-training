@@ -1,6 +1,16 @@
 from dataclasses import dataclass, replace
 
 
+PHASE_NAMES = {
+    1: "Observation of Forgetting Problem",
+    2: "Replay Methods",
+    3: "Block Selection",
+    4: "Adapter Compression",
+    5: "Knowledge Distillation Replay",
+}
+PHASE_LAYOUT = "report-five-phase-v1"
+
+
 @dataclass(frozen=True)
 class PhaseSettings:
     protocol: str = "smoke"
@@ -18,13 +28,11 @@ class PhaseSettings:
     sample_size: int = 1
     shrink_tolerance: float = 1.0
     shrink_grid: tuple = (12, 8, 6, 4)
-    new_room_budget: int = 1441792         # mBART: rank 16 on two encoder and two decoder blocks
     encoder_block_cost: int = 18432        # Adapter parameters per rank in one block; align_settings measures them
     decoder_block_cost: int = 26624
     learning_rate: float = 1e-3
     warmup_fraction: float = 0.01
     no_repeat_ngram: int = 3
-    g4_min_share: float = 0.25
     force_conditional: bool = False
 
 
@@ -34,14 +42,8 @@ def generation_spec(settings):
 
 
 def align_settings(settings, model):
-    """Block counts and per-block adapter sizes come from the model.
-
-    E's extra-room budget keeps its rule (rank 16 on two encoder and two decoder blocks),
-    so it scales with the measured block sizes; mBART-large uses 1,441,792."""
+    """Measure block counts and adapter costs for the Phase 3 block comparisons."""
     encoder_cost, decoder_cost = model.rank_costs()
-    budget = round(settings.new_room_budget * (encoder_cost + decoder_cost)
-                   / (settings.encoder_block_cost + settings.decoder_block_cost))
     return replace(settings, encoder_blocks=int(model.config.num_layers),
                    decoder_blocks=int(model.config.num_decoder_layers),
-                   encoder_block_cost=encoder_cost, decoder_block_cost=decoder_cost, new_room_budget=budget)
-
+                   encoder_block_cost=encoder_cost, decoder_block_cost=decoder_cost)
