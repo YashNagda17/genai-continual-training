@@ -1,5 +1,3 @@
-"""Torch policy arithmetic, device routing and shared metrics."""
-
 from collections import Counter
 import sys
 import unicodedata
@@ -66,15 +64,9 @@ def tensor(values, device=None):
     Use float32 so squared gradients stay in the same precision as the model.
     Python sequences default to CPU; callers with a model pass its resolved device.
     """
-    target = torch.device(device) if device is not None else (
-        values.device if isinstance(values, torch.Tensor) else torch.device("cpu"))
-    dtype = torch.float32
     if isinstance(values, torch.Tensor):
-        values = values.detach()
-        if values.dtype == dtype and values.device == target:
-            return values
-        return values.to(device=target, dtype=dtype)
-    return torch.as_tensor(values, dtype=dtype, device=target)
+        return values.detach().to(device=device, dtype=torch.float32)
+    return torch.as_tensor(values, dtype=torch.float32, device=device if device is not None else "cpu")
 
 
 def unit_vectors(values):
@@ -101,7 +93,6 @@ def cosine(a, b):
 
 
 def _as_tokens(value):
-    """Split a string on whitespace, and keep a sequence of token IDs as it is."""
     if isinstance(value, str):
         return value.split()
     if isinstance(value, torch.Tensor):

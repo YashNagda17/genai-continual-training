@@ -1,7 +1,7 @@
-"""Optional cached top-k-plus-tail distillation for the isolated mT5 pilot."""
+"""Optional cached top-k-plus-tail distillation for the isolated mBART pilot."""
 
 import torch
-from .model_mt5 import MT5SmallModel
+from .model_mbart import MBart25Summarizer
 
 
 def compress_probabilities(logits, top_k):
@@ -25,7 +25,7 @@ def bucket_kl(logits, indices, probabilities):
     return (torch.special.xlogy(q, q) - q * log_p).sum(-1)
 
 
-class DistillationMT5(MT5SmallModel):
+class CachedDistillation:
     """Base training API with an opt-in, ID-aligned cache; evaluation remains CE."""
 
     def __init__(self, *args, **kwargs):
@@ -84,3 +84,7 @@ class DistillationMT5(MT5SmallModel):
             penalties.append(torch.cat(terms).mean())
         means = sums / counts + self.distillation_strength * torch.stack(penalties)
         return means, sums, counts, position
+
+
+class DistillationMBart(CachedDistillation, MBart25Summarizer):
+    """mBART executor with opt-in cached teacher distillation."""

@@ -10,12 +10,6 @@ from ..utils.state import read_json, write_json
 from .settings import generation_spec
 
 
-def _finished(path, *, checkpoint_reuse=False):
-    saved = read_json(path)
-    return (saved.get("status") == "completed" and saved.get("resident") is True
-            and (not checkpoint_reuse or saved.get("checkpoint_reuse") is True))
-
-
 def load_model(factory, checkpoint, directory, merged=False):
     model = factory()
     try:
@@ -33,19 +27,13 @@ def load_model(factory, checkpoint, directory, merged=False):
 
 
 def measure(path, dataset, rows, settings, choose, *, checkpoint_reuse=False):
-    saved = read_json(path) if path.is_file() else {"requests": [], "status": "running", "resident": True}
-    reusable = not checkpoint_reuse or saved.get("checkpoint_reuse") is True
-    if saved.get("status") == "completed" and saved.get("resident") and reusable:
-        return saved
-    if not saved.get("resident") or not reusable:
-        saved = {"requests": [], "status": "running", "resident": True}
-    saved["checkpoint_reuse"] = checkpoint_reuse
+    saved = {"requests": [], "status": "running", "resident": True, "checkpoint_reuse": checkpoint_reuse}
     spec = generation_spec(settings)
     total = sum(len(records) for records in rows.values())
     print(f"serving {path.stem} {len(saved['requests'])}/{total} articles", flush=True)
     for language, records in rows.items():
         done = sum(row["language"] == language for row in saved["requests"])
-        for record in records[done:]:
+        for record in records:
             started = time.perf_counter()
             model = choose(language)
             model.activate()
@@ -53,7 +41,6 @@ def measure(path, dataset, rows, settings, choose, *, checkpoint_reuse=False):
             saved["requests"].append({"id": record.sample_id, "language": language,
                 "seconds": time.perf_counter() - started, "length": len(result["token_ids"][0]),
                 "peak_device_bytes": result["cost"].get("peak_device_allocated_bytes", 0)})
-            write_json(path, saved)
             done_now = len(saved["requests"])
             if total and (done_now == total or done_now * 20 // total != (done_now - 1) * 20 // total):
                 print(f"serving {path.stem} {done_now}/{total} articles", flush=True)
@@ -81,17 +68,12 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
                 "repeats": 1, "warmup": False,
                 "articles": {language: [row.sample_id for row in records] for language, records in rows.items()}}
     path = directory / "manifest.json"
-    if path.is_file() and read_json(path) != manifest:
-        raise ValueError("Serving inputs changed; use a new attempt")
     write_json(path, manifest)
     results = {}
     for name, checkpoint in checkpoints.items():
         for merged in ((True,) if checkpoint is None else (False, True)):
             key = name + ("/merged" if merged else "/unmerged")
             path = directory / (key.replace("/", "-") + ".json")
-            if path.is_file() and _finished(path):
-                results[key] = read_json(path)["summary"]
-                continue
             model = load_model(factory, checkpoint, directory, merged)
             model.activate()
             try:
@@ -102,9 +84,6 @@ def benchmark(directory, dataset, factory, settings, checkpoints, reference=None
         for merged in (False, True):
             key = "two_adapter/" + ("merged" if merged else "swap")
             path = directory / (key.replace("/", "-") + ".json")
-            if path.is_file() and _finished(path, checkpoint_reuse=not merged):
-                results[key] = read_json(path)["summary"]
-                continue
             models = {}
             try:
                 if merged:

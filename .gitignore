@@ -1,19 +1,89 @@
+# Local assistant and editor settings
 /.claude
 /CLAUDE.md
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python bytecode, environments, and tool caches
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+*.egg-info/
+/build/
+/dist/
+
+# Local datasets and downloaded model snapshots
 /data/*
-/src/models/model_weights/
 /src/datasets/data/
-hf_token.txt
-
-# Training outputs. Written reports in results/ stay tracked.
-/results/csrel-replay/
-/results/learning-sanity/
-/results/sample/
-
-**/.offload/
-.writer.lock
 /src/models/model_weights/
-/results/
+.cache/
+.offload/
 
+# Training checkpoints and exported model weights, wherever runs are saved
+checkpoint/
+checkpoints/
+checkpoint-*/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.onnx
+pytorch_model*.bin
+adapter_model*.bin
+
+# Experiment outputs and logs
+/results/*
+!/results/README.md
+!/results/report.csv
+!/results/report.json
+!/results/report.md
+!/results/manifest.json
+!/results/phases/
+/results/phases/*
+!/results/phases/phase[1-7]/
+/results/phases/phase[1-7]/*
+!/results/phases/phase[1-7]/report.csv
+!/results/phases/phase[1-7]/report.json
+!/results/phases/phase[1-7]/report.md
+!/results/sources/
+/results/sources/*
+!/results/sources/drive-2026-11-13/
+/results/sources/drive-2026-11-13/*
+!/results/sources/drive-2026-11-13/metadata.json
+/outputs/
+/runs/
+/logs/
+wandb/
+lightning_logs/
+*.log
+events.out.tfevents.*
+.writer.lock
+
+# Local credentials; keep example environment files available
+hf_token.txt
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
 

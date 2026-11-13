@@ -1,7 +1,6 @@
-"""Native Torch model execution obligations; architecture and weights are supplied."""
-
 from abc import ABC, abstractmethod
 from ..utils.numerics import move_to_device, resolve_device
+
 
 class ModelBase(ABC):
     def __init__(self, device="auto"):
@@ -107,15 +106,15 @@ class ModelBase(ABC):
     def save(self, path, state_kind):
         """Stream a self-contained state directory.
 
-        resume includes optimizer, scheduler, scaler, backend RNG and counters.
-        frozen contains exact immutable weights and compatibility metadata only.
+        Public exports contain weights and metadata with fresh training state on load.
+        Private offload retains optimizer/RNG state only for the current process.
         Files must fit info.checkpoint_bytes; shared immutable assets may be
         content-addressed references only when independently verified on load.
         """
 
     @abstractmethod
     def load(self, path, state_kind):
-        """Restore complete numerical state for resume, including optimizer and backend RNG.
-        For frozen snapshots, install the saved weights with fresh optimizer/scheduler/scaler/steps.
+        """Load exported weights with fresh optimizer, scheduler, scaler and step state.
+        Only private in-process offload restores live numerical training state.
         Preserve wrapper identity and verify metadata/assets before accepting the saved state.
         """

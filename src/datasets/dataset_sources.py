@@ -1,5 +1,3 @@
-"""Fetch English and Hindi XL-Sum into canonical JSONL."""
-
 from pathlib import Path
 import json
 import sys
@@ -24,8 +22,6 @@ def xlsum_archive_rows(archive_path, language):
             if member is None:
                 raise ValueError(f"{archive_path} is missing {name}")
             handle = archive.extractfile(member)
-            if handle is None:
-                raise ValueError(f"{archive_path} could not read {name}")
             for line in handle:
                 data = json.loads(line)
                 article_id = str(data.get("id", "")).strip()
@@ -134,7 +130,6 @@ SOURCES = {"xlsum": XLSumSource}
 
 
 def fetch_source(name, root, token=None, revision="main"):
-    """Fetch the current plan's source."""
     try:
         source = SOURCES[name]()
     except KeyError as error:

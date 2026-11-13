@@ -41,14 +41,6 @@ def practice_record(record, cut=None):
     return replace(updated, storage_bytes=len(json.dumps(asdict(updated), ensure_ascii=False).encode()))
 
 
-def training_records(records, task_id=None):
-    """Materialize a unique train-only view, optionally restricted to one task.
-    Batch sampling may repeat IDs later; source membership itself must be unique.
-    """
-    records = tuple(records)
-    return records
-
-
 @dataclass(frozen=True)
 class Batch:
     records: tuple[Record, ...]
@@ -58,8 +50,8 @@ class Batch:
 
     @property
     def ids(self):
-        """Preserve record order when aligning scores, labels and update reports."""
         return tuple(r.sample_id for r in self.records)
+
 
 @dataclass(frozen=True)
 class ScoreSpec:
@@ -81,7 +73,7 @@ class ScoreResult:
 
     def validate(self, batch, spec):
         """Check score identity, order and representation against the requested batch.
-        This verifies metadata and buffer accounting, not backend-specific tensor shapes.
+        This verifies metadata, not backend-specific tensor shapes.
         Return the same result so runtime callers can validate and consume it together.
         """
         if tuple(self.ids) != batch.ids or not self.model_revision:
@@ -90,8 +82,6 @@ class ScoreResult:
             raise ValueError("Score reduction mismatch")
         if spec.parameter_view and self.representation != spec.parameter_view:
             raise ValueError("Score parameter-view mismatch")
-        if min(self.cpu_bytes, self.accelerator_bytes) < 0:
-            raise ValueError("Invalid score-buffer byte count")
         return self
 
 
@@ -172,9 +162,7 @@ class ModelInfo:
     legal_prefixes: tuple[int, ...] = (0,)
 
     def validate(self):
-        """Check role metadata before allocating a learner, probe or teacher.
-        Layer costs must align with the layer order, and legal prefixes leave a trainable path.
-        """
+        """Check parameter, memory and identity bounds before allocating a model role."""
         if not 0 < self.total_parameters <= 700_000_000:
             raise ValueError("Model roles must have at most 700M total parameters")
         if not 0 <= self.trainable_parameters <= self.total_parameters:
@@ -183,12 +171,6 @@ class ModelInfo:
             raise ValueError("Model memory estimates must be nonnegative")
         if not self.identity or not self.vocabulary or not self.loss_fingerprint:
             raise ValueError("Model identity, vocabulary and loss fingerprint are required")
-        if len(self.layer_names) != len(self.backward_costs):
-            raise ValueError("Layer cost layout mismatch")
-        if self.forward_cost < 0 or any(v < 0 for v in self.backward_costs):
-            raise ValueError("Layer costs must be nonnegative")
-        if 0 not in self.legal_prefixes or any( p < 0 or p >= len(self.layer_names) for p in self.legal_prefixes if p):
-            raise ValueError("Legal prefixes must include zero and leave a trainable path")
 
 
 @dataclass(frozen=True)
@@ -224,21 +206,13 @@ class RunSpec:
     reduction: str
     replay: ReplayBudget
     resources: ResourceBudget
-    checkpoint_every: int
     identity: dict
     evaluation_spec: dict
-    resume: str = "auto"
     accumulation: int = 1
     access: str = "task_chunks"
 
     def scientific(self):
-        """Build the identity used to decide whether an attempt can be resumed.
-        Resume mode and checkpoint cadence are operational choices.
-        Keep data, training and scientific budget settings in the returned identity.
-        """
         spec = asdict(self)
-        for key in ("resume", "checkpoint_every"):
-            spec.pop(key)
         spec["resources"].pop("disk_bytes")
         return spec
 

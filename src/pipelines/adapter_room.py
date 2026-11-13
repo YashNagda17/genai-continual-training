@@ -1,5 +1,3 @@
-"""C1 location maps, C2 block plans, and E's matched extra-rank plans."""
-
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -17,16 +15,16 @@ class AdapterRoomConfig:
     seed: int = 0
     sample_size: int = 64
     analysis_batch: int = 8
-    encoder_blocks: int = 8
-    decoder_blocks: int = 8
+    encoder_blocks: int = 12
+    decoder_blocks: int = 12
     shared_rank: int = 16
-    new_room_budget: int = 638976
+    new_room_budget: int = 1441792
     gamma: float = 1.0
     floor: float = 0.25
     match_tolerance: float = 0.03
     generation: dict = field(default_factory=lambda: {'max_new_tokens': 64, 'do_sample': False})
-    encoder_block_cost: int = 8192    # Adapter parameters per rank in one encoder block (mT5-small)
-    decoder_block_cost: int = 11776   # ... and in one decoder block
+    encoder_block_cost: int = 18432    # Adapter parameters per rank in one encoder block (mBART)
+    decoder_block_cost: int = 26624   # ... and in one decoder block
 
     def __post_init__(self):
         if not -1 <= self.stability_threshold <= 1 or not 0 < self.floor <= 1 or self.gamma < 0:
@@ -47,11 +45,7 @@ def cell_of(name):
             'self_attn': 'self_attention', 'encoder_attn': 'cross_attention'}[pieces[-2]]
         band = block // 2 * 2 + 1
         return f'{stack}.{part}.{band}-{band + 1}'
-    stack, block = pieces[0], int(pieces[2])
-    part = {'SelfAttention': 'self_attention', 'EncDecAttention': 'cross_attention',
-            'DenseReluDense': 'feed_forward'}[pieces[-2]]
-    band = block // 2 * 2 + 1
-    return f'{stack}.{part}.{band}-{band + 1}'
+    raise ValueError(f'Not an mBART projection: {name}')
 
 
 def spearman(left, right):
@@ -123,7 +117,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
                     work['sum'][group] = packed[offset:offset + size]
                     offset += size
             work['cursor'] += len(part)
-            self._commit()
         groups = list(work['sum'])
         sizes = [len(work['sum'][group]) for group in groups]
         packed = torch.tensor([item for group in groups for item in work['sum'][group]], dtype=torch.float32)
@@ -148,16 +141,13 @@ class AdapterRoomPipeline(SummarizationPipeline):
         for label, path, kind in [('english', self.english_checkpoint, 'english'), ('hindi', self.hindi_checkpoint, 'hindi')]:
             if label not in self.policy['change']:
                 self.policy['change'][label] = self._change_map(path, kind)
-                self._commit()
         if self.policy['samples'] is None:
             self.policy['samples'] = {language: self.rng.sample([r.sample_id for r in rows], 2 * n)
                                        for language, rows in [('english', self.pool), ('hindi', self.hindi)]}
-            self._commit()
         fresh = self.auxiliary is None
         probe = self.acquire_auxiliary('probe', 'english-zero-B', checkpoint=self.english_checkpoint, state_kind='english')
         if fresh:
             probe.reset_probe()
-            self._commit()
         lookup = {r.sample_id: r for r in (*self.pool, *self.hindi)}
         while self.policy['sample_index'] < 2:
             index = self.policy['sample_index']
@@ -178,7 +168,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
             self.policy['maps'].append(result)
             self.policy['sample_index'] += 1
             self.policy['work'] = {}
-            self._commit()
         cells = sorted(self.policy['maps'][0]['cell'])
         correlation = spearman([self.policy['maps'][0]['cell'][key]['agreement'] for key in cells],
                                [self.policy['maps'][1]['cell'][key]['agreement'] for key in cells])
@@ -189,7 +178,6 @@ class AdapterRoomPipeline(SummarizationPipeline):
                                   'correlation': correlation,
                                   'stable': correlation is not None and correlation >= self.config.stability_threshold,
                                   'blocks': blocks}
-        self._commit()
         return self.policy['result']
 
     def adapter_plan(self, arm, *, maps=None, shared=None):

@@ -65,7 +65,6 @@ class GenerationShrinkPipeline(SummarizationPipeline):
                 part = rows[state['cursor']:state['cursor'] + self.config.analysis_batch]
                 state['texts'] += self._generate(part, 'shrink_generation', model, held_out=True)['texts']
                 state['cursor'] += len(part)
-                self._commit()
             scores[language] = summary_metrics(state['texts'], [r.target['text'] for r in rows], language)
         return scores
 
@@ -79,7 +78,6 @@ class GenerationShrinkPipeline(SummarizationPipeline):
         if fresh:
             # Every candidate starts at the original checkpoint, never the previous truncation.
             candidate.shrink_adapters(rank)
-            self._commit()
         return candidate
 
     def shrink_search(self):
@@ -97,12 +95,10 @@ class GenerationShrinkPipeline(SummarizationPipeline):
             self.policy['k_energy'] = energy_rank(spectra, self.config.energy_fraction)
             if self.policy['k_energy'] > self.config.full_rank:
                 raise ValueError('full_rank does not cover the effective adapter rank')
-            self._commit()
         if self.policy['baseline'] is None:
             self.policy['baseline'] = self._evaluate_rank(self.model)
             self.policy['work'] = {}
             self.policy['next_rank'] = self.policy['k_energy']
-            self._commit()
         while self.policy['next_rank'] is not None:
             rank = self.policy['next_rank']
             candidate = self._candidate(rank)
@@ -124,19 +120,17 @@ class GenerationShrinkPipeline(SummarizationPipeline):
                 self.policy['next_rank'] = remaining[0] if not passed and remaining else None
             if self.policy['next_rank'] is not None or not passed:
                 self.release_auxiliary(restore_learner=False)
-            self._commit()
         chosen = self.policy['k_generation']
         if chosen is None:
             raise ValueError('No candidate, including full rank, passed the generation test')
         candidate = self._candidate(chosen)
         output = Path(self.context.output) / 'shrunk-adapter'
         self.artifacts.pin_artifact(output, candidate.info.checkpoint_bytes,
-            lambda path: candidate.save_shrunk_adapter(path, k_energy=self.policy['k_energy'], k_generation=chosen,
-                                                       test_table=self.policy['table']))
+            lambda path: candidate.save(path, 'inference', record={'k_energy': self.policy['k_energy'],
+                'k_generation': chosen, 'test_table': self.policy['table']}))
         self.release_auxiliary(restore_learner=False)
         self.policy['result'] = {'k_E': self.policy['k_energy'], 'k_G': chosen, 'baseline': self.policy['baseline'],
                                   'table': self.policy['table'], 'adapter': 'shrunk-adapter'}
-        self._commit()
         return self.policy['result']
 
     def next_update(self):

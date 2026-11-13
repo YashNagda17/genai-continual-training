@@ -1,5 +1,3 @@
-"""English checkpoint preparation and fixed-pool Hindi revision (X, A, B, G1–G3)."""
-
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 import csv
@@ -55,7 +53,6 @@ class RevisionConfig:
 
 
 def _plain(value):
-    """JSON values for run identity. Tuples in an adapter plan are lists."""
     if isinstance(value, dict):
         return {key: _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -201,7 +198,6 @@ class RevisionPipeline(SummarizationPipeline):
                 work['records'].append(asdict(row))
             work['cursor'] += len(rows)
             self.log_sample_progress("write english pool", work['cursor'], len(pool))
-            self._commit()
         return tuple(Record(**row) for row in work['records'])
 
     def rank_pool(self, pool=None):
@@ -211,7 +207,6 @@ class RevisionPipeline(SummarizationPipeline):
             raise ValueError('Ranking may access only the declared fixed pool')
         if self.config.selector not in {'loss', 'drift'}:
             self.policy.update(ranking=sorted(r.sample_id for r in pool), warmup_done=True)
-            self._commit()
             return tuple(self.policy['ranking'])
         work = self.policy['work'].setdefault('rank', {'cursor': 0, 'scores': {}})
         while work['cursor'] < len(pool):
@@ -227,12 +222,10 @@ class RevisionPipeline(SummarizationPipeline):
                 scores = [0.0] * len(rows)
             work['scores'].update(zip((r.sample_id for r in rows), scores))
             work['cursor'] += len(rows)
-            self._commit()
         self.policy['scores'] = dict(work['scores'])
         self.policy['ranking'] = sorted(work['scores'], key=lambda i: (-work['scores'][i], i))
         self.policy['warmup_done'] = True
         self.policy['work'].pop('rank', None)
-        self._commit()
         return tuple(self.policy['ranking'])
 
     def replay_slots(self, count=None):
@@ -271,10 +264,8 @@ class RevisionPipeline(SummarizationPipeline):
                     if self.context:
                         self.record_event('retirement', sample_id=row.sample_id, step=self.progress['steps'])
             work['cursor'] += len(rows)
-            self._commit()
         self.policy['refresh_at'] = self.progress['steps']
         self.policy['work'].pop('refresh', None)
-        self._commit()
         return tuple(self.policy['retired'])
 
     def token_targets(self, batch, surprise):
@@ -302,14 +293,13 @@ class RevisionPipeline(SummarizationPipeline):
         return TokenTargets(torch.zeros_like(weights), weights.detach(), all_positive=True)
 
     def _generate_held_out(self, rows, work, text_key, category, label, **options):
-        """Collect held-out predictions using the existing recovery state and boundaries."""
+        """Collect held-out predictions in batches using the current in-memory work state."""
         print(f"{label} {work['cursor']}/{len(rows)} samples", flush=True)
         while work['cursor'] < len(rows):
             part = rows[work['cursor']:work['cursor'] + self.config.analysis_batch]
             work[text_key] += self._generate(part, category, held_out=True, **options)['texts']
             work['cursor'] += len(part)
             self.log_sample_progress(label, work['cursor'], len(rows))
-            self._commit()
 
     def _validation_pass(self):
         if self.policy['completed_passes'] < self.spec.passes:
@@ -324,7 +314,6 @@ class RevisionPipeline(SummarizationPipeline):
         self.policy['final_validation'] = {'scores': scores, 'texts': work['predictions']}
         self.policy['validated_passes'] = self.policy['completed_passes']
         self.policy['work'].pop('validation', None)
-        self._commit()
         self.model.release_evaluation_memory()
         return scores
 
@@ -356,7 +345,6 @@ class RevisionPipeline(SummarizationPipeline):
             elif self.config.selector != 'none':
                 replay = self.replay_slots()
         self.policy['pending'] = {'current': [r.sample_id for r in current], 'replay': [r.sample_id for r in replay]}
-        self._commit()
         return self._pending_update()
 
     def _pending_update(self):
@@ -385,7 +373,7 @@ class RevisionPipeline(SummarizationPipeline):
     def finish_task(self):
         if self.config.stage == 'hindi':
             self.artifacts.pin_artifact(Path(self.context.output) / 'hindi', self.model.info.checkpoint_bytes,
-                                        self.model.save_hindi_checkpoint)
+                                        lambda path: self.model.save(path, 'hindi'))
             return self.pool
         scores = self._validation_pass()
         if not self.policy['english_ready']:
@@ -393,7 +381,6 @@ class RevisionPipeline(SummarizationPipeline):
                 'prefix': self.config.prefix, 'passes': self.policy['completed_passes'],
                 'selection': 'final_epoch', 'validation': scores})
             self.policy.update(english_ready=True, english_checkpoint=reference)
-            self._commit()
         written = self.write_past(self.pool)
         self.artifacts.pin_pool([{'id': r.sample_id, 'summary': r.practice['answer_text'],
             'baseline': r.practice['baseline'], 'loss_before': r.practice['loss_before'], 'record': asdict(r)} for r in written],
@@ -402,7 +389,6 @@ class RevisionPipeline(SummarizationPipeline):
 
     def after_memory_commit(self):
         self.policy['work'].pop('write', None)
-        self.policy.pop('pool_rows', None)  # Older recovery snapshots may contain this unused field.
 
     def _evaluate_seen(self):
         for split in ('validation', 'test'):
@@ -434,11 +420,9 @@ class RevisionPipeline(SummarizationPipeline):
                     self.policy['work'].pop('evaluation', None)
                     if cached is not None:
                         self.policy.pop('final_validation', None)
-                    self._commit()
                 self.model.release_evaluation_memory()
 
     def _save_scores(self, pass_number, task, scores):
-        """Keep every chrF, ROUGE-L, and right-language score for the run report."""
         fields = ('pass', 'task', 'rouge_l', 'chrf', 'right_language')
         row = {'pass': pass_number, 'task': task, **{key: scores[key] for key in fields[2:]}}
         saved = [item for item in self.policy.get('score_history') or []

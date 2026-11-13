@@ -1,5 +1,3 @@
-"""Protocol settings for smoke, pilot, and scientific runs."""
-
 from dataclasses import dataclass, replace
 
 
@@ -7,7 +5,6 @@ from dataclasses import dataclass, replace
 class PhaseSettings:
     protocol: str = "smoke"
     seed: int = 0
-    hindi_seeds: tuple = (1, 2, 3)
     batch_size: int = 16
     replay_per_batch: int = 2
     english_passes: int = 4
@@ -21,13 +18,12 @@ class PhaseSettings:
     sample_size: int = 1
     shrink_tolerance: float = 1.0
     shrink_grid: tuple = (12, 8, 6, 4)
-    new_room_budget: int = 638976         # mT5-small: rank 16 on two encoder and two decoder blocks
-    encoder_block_cost: int = 8192        # Adapter parameters per rank in one block; align_settings measures them
-    decoder_block_cost: int = 11776
+    new_room_budget: int = 1441792         # mBART: rank 16 on two encoder and two decoder blocks
+    encoder_block_cost: int = 18432        # Adapter parameters per rank in one block; align_settings measures them
+    decoder_block_cost: int = 26624
     learning_rate: float = 1e-3
     warmup_fraction: float = 0.01
     no_repeat_ngram: int = 3
-    max_seed_spread: float = 1.0
     g4_min_share: float = 0.25
     force_conditional: bool = False
 
@@ -41,7 +37,7 @@ def align_settings(settings, model):
     """Block counts and per-block adapter sizes come from the model.
 
     E's extra-room budget keeps its rule (rank 16 on two encoder and two decoder blocks),
-    so it scales with the measured block sizes: 638,976 for mT5-small, 1,441,792 for mBART-large."""
+    so it scales with the measured block sizes; mBART-large uses 1,441,792."""
     encoder_cost, decoder_cost = model.rank_costs()
     budget = round(settings.new_room_budget * (encoder_cost + decoder_cost)
                    / (settings.encoder_block_cost + settings.decoder_block_cost))

@@ -1,5 +1,3 @@
-"""Replay membership, weight snapshots, and checksummed checkpoint storage."""
-
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -16,11 +14,9 @@ if os.name == "nt":
 else:
     import fcntl
 
-from .contracts import Record, training_records
-
 
 def is_folder_metadata(path):
-    """Windows Explorer files are not model or recovery payloads."""
+    """Windows Explorer files are not model payloads."""
     return Path(path).name.casefold() in {"desktop.ini", "thumbs.db"}
 
 
@@ -37,10 +33,7 @@ def replace_artifact(source, destination):
 
 
 def write_json(path, value):
-    """Write and flush a temporary JSON file before atomically replacing the destination.
-    Flush the parent directory after replacement so the new filename is durable.
-    Readers therefore see a complete old or new file, rather than a partial write.
-    """
+    """Atomically replace JSON after flushing the temporary file, then flush the parent directory."""
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w") as stream:
@@ -52,7 +45,6 @@ def write_json(path, value):
 
 
 def read_json(path):
-    """Read one persisted JSON value; callers decide its schema and compatibility."""
     with Path(path).open() as stream:
         return json.load(stream)
 
@@ -107,7 +99,6 @@ def _lock_handle(handle):
 
 
 def _unlock_handle(handle):
-    """Release the lock taken by _lock_handle."""
     if os.name == "nt":
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
@@ -141,22 +132,18 @@ def synchronize(path):
     _fsync_directory(path)
 
 
-class Checkpoints:
+class Artifacts:
     def __init__(self, root, identity, disk_bytes=10_000_000_000, external_bytes=0):
         """Keep attempt identity; create files only when operations need them."""
         self.root = Path(root)
         self.identity = identity
         self.disk_bytes = disk_bytes
         self.external_bytes = external_bytes
-        self.recovery = None
         self._locked = False
 
     @contextmanager
     def lock(self):
-        """Allow one process to publish or restore this attempt at a time.
-        Nested calls on this same manager reuse its lock, as run invokes save/load internally.
-        Always release the OS lock when the outer operation exits.
-        """
+        """Lock publication to one writer; nested operations reuse the same lock."""
         if self._locked:
             yield
             return
@@ -171,7 +158,7 @@ class Checkpoints:
                 _unlock_handle(lock)
 
     def reserve(self, additional):
-        """Charge retained artifacts and offload files before allocating a staging checkpoint."""
+        """Charge retained artifacts and offload files before staging a final artifact."""
         used, pending = 0, [self.root]
         while pending:
             with os.scandir(pending.pop()) as entries:
@@ -182,9 +169,9 @@ class Checkpoints:
                         used += entry.stat().st_size
         external = self.external_bytes() if callable(self.external_bytes) else self.external_bytes
         if used + external + additional > self.disk_bytes:
-            raise OSError("Run storage budget cannot hold checkpoint staging")
+            raise OSError("Run storage budget cannot hold artifact staging")
         if shutil.disk_usage(self.root).free < additional:
-            raise OSError("Insufficient free disk space for checkpoint staging")
+            raise OSError("Insufficient free disk space for artifact staging")
 
     def pin(self, model, record):
         """Publish a complete immutable English checkpoint for one prefix variant."""
@@ -212,16 +199,9 @@ class Checkpoints:
         if destination.resolve() == self.root.resolve() or not destination.resolve().is_relative_to(self.root.resolve()):
             raise ValueError('Pinned artifacts must stay inside their attempt')
         with self.lock():
-            complete = destination / "complete.json"
-            if complete.is_file():
-                if checksums(destination) != read_json(complete)["files"]:
-                    raise ValueError("Pinned artifact is corrupt")
-                return destination.relative_to(self.root).as_posix()
             if destination.exists():
-                raise ValueError("Pinned artifact is incomplete; preserve it for recovery inspection")
+                raise FileExistsError(f"Artifact already exists: {destination}")
             destination.parent.mkdir(parents=True, exist_ok=True)
-            for abandoned in destination.parent.glob(f".stage-pin-{destination.name}-*"):
-                self._remove_owned(abandoned)
             self.reserve(estimate)
             stage = destination.with_name(f".stage-pin-{destination.name}-{uuid.uuid4().hex}")
             stage.mkdir()
@@ -237,55 +217,6 @@ class Checkpoints:
                     self._remove_owned(stage)
                 raise
             return destination.relative_to(self.root).as_posix()
-
-    def publish(self, state, learner, auxiliary, dependencies, *, completed=False):
-        """Stage policy state, learner state and any active auxiliary as one recovery unit.
-        Replace the latest pointer after the staged unit is flushed.
-        Retain the new checkpoint plus one fallback while running, or only the final checkpoint.
-        Prune obsolete payloads only after the new recovery unit has been published.
-        """
-        encoded_size = len(json.dumps(state, allow_nan=False).encode())
-        estimate = learner.info.checkpoint_bytes + encoded_size + 65536
-        if auxiliary is not None:
-            estimate += auxiliary.info.checkpoint_bytes
-        self.reserve(estimate)
-        folder = self.root / "checkpoints"
-        folder.mkdir(exist_ok=True)
-        name = uuid.uuid4().hex
-        stage = folder / (".stage-" + name)
-        stage.mkdir()
-        try:
-            learner_path = stage / "learner"
-            learner_path.mkdir()
-            learner.save(learner_path, "resume")
-            if auxiliary is not None:
-                aux_path = stage / "auxiliary"
-                aux_path.mkdir()
-                auxiliary.save(aux_path, "resume")
-            write_json(stage / "state.json", state)
-            synchronize(stage)
-            manifest = {"identity": self.identity, "dependencies": sorted(set(dependencies)),
-                        "files": checksums(stage), "event": state["event"]}
-            write_json(stage / "complete.json", manifest)
-            if checksums(stage) != manifest["files"]:
-                raise ValueError("Checkpoint verification failed")
-            self.reserve(0)
-            replace_artifact(stage, folder / name)
-            _fsync_directory(folder)
-            latest_path = self.root / "latest.json"
-            previous = read_json(latest_path)["checkpoints"] if latest_path.exists() else []
-            # A fallback recovery must never retain the corrupt newer checkpoint.
-            if self.recovery:
-                previous = [self.recovery["restored"]]
-            retained = [name] if completed else [name, *previous[:1]]
-            write_json(latest_path, {"checkpoints": retained})
-            self.recovery = None
-        except BaseException:
-            if stage.exists():
-                shutil.rmtree(stage)
-            raise
-        self.prune(retained)
-        return str(folder / name)
 
     def _remove_owned(self, path):
         """Remove obsolete run-owned trees, handling Windows read-only attributes and locks."""
@@ -320,77 +251,15 @@ class Checkpoints:
                     raise
                 time.sleep(.1 * (attempt + 1))
 
-    def prune(self, retained):
-        """Find teacher blobs referenced by every retained recovery checkpoint.
-        Remove other model/replay payloads and abandoned staging directories.
-        Keep small audit manifests; teachers survive until neither retained checkpoint needs them.
-        Pinned English checkpoints and pools live under pinned/ and are never removed here.
-        """
-        live_blobs = set()
-        folder = self.root / "checkpoints"
-        if folder.exists():
-            for name in retained:
-                live_blobs.update(read_json(folder / name / "complete.json")["dependencies"])
-        for path in folder.iterdir() if folder.exists() else ():
-            if path.is_dir() and path.name not in retained:
-                # Keep small manifests for audit; remove only owned numerical state.
-                for name in ("learner", "auxiliary"):
-                    if (path / name).exists():
-                        self._remove_owned(path / name)
-                # state.json contains replay payload, not merely audit metadata.
-                if (path / "state.json").exists():
-                    (path / "state.json").unlink()
-                if path.name.startswith(".stage-"):
-                    self._remove_owned(path)
-        teacher_root = self.root / "teachers"
-        if teacher_root.exists():
-            for path in teacher_root.iterdir():
-                if path.relative_to(self.root).as_posix() not in live_blobs:
-                    self._remove_owned(path)
-
-    def latest(self, *, verify=True):
-        """Try the latest checkpoint, then its retained fallback, as complete recovery units.
-        By default require matching run identity and file checksums; verify=False loads the newest directly.
-        Record a fallback in recovery.json so discarded progress is visible to the caller.
-        """
-        pointer = self.root / "latest.json"
-        if not pointer.exists():
-            raise FileNotFoundError("This attempt has no complete recovery checkpoint")
-        if not verify:
-            checkpoints = read_json(pointer)["checkpoints"]
-            if not checkpoints:
-                raise FileNotFoundError("This attempt has no recovery checkpoint")
-            path = self.root / "checkpoints" / checkpoints[0]
-            self.recovery = None
-            return path, read_json(path / "state.json")
-        failures = []
-        for name in read_json(pointer)["checkpoints"]:
-            try:
-                path = self.root / "checkpoints" / name
-                manifest = read_json(path / "complete.json")
-                if manifest["identity"] != self.identity:
-                    raise ValueError("Scientific configuration or implementation changed")
-                if checksums(path) != manifest["files"]:
-                    raise ValueError("Checkpoint checksum mismatch")
-                if failures:
-                    self.recovery = {"restored": name, "invalid": failures,
-                                     "lost_work": "Uncheckpointed work is unmeasured"}
-                    write_json(self.root / "recovery.json", self.recovery)
-                return path, read_json(path / "state.json")
-            except (OSError, ValueError, KeyError) as error:
-                failures.append({"checkpoint": name, "reason": str(error)})
-        raise ValueError(f"No compatible, complete recovery checkpoint: {failures}")
-
 
 class ReplayStore:
     """Materialized active membership. Only the lifecycle owner replaces it."""
 
     def __init__(self, records=(), *, budget):
-        """Materialize the active, unique train-only replay membership.
-        Count examples and tokens, and use the larger of declared or serialized payload bytes.
-        Check every budget independently; selection and eviction remain pipeline decisions.
+        """Materialize replay and check each budget using declared or serialized bytes.
+        Selection and eviction remain pipeline decisions.
         """
-        self.records = training_records(records)
+        self.records = tuple(records)
         self.budget = budget
         declared_bytes = sum(r.storage_bytes for r in self.records)
         serialized_bytes = len(json.dumps(self.state_dict(), allow_nan=False).encode()) if self.records else 0
@@ -404,30 +273,9 @@ class ReplayStore:
         if self.usage["bytes"] > budget.bytes:
             raise ValueError("Replay payload byte budget exceeded")
 
-    def task(self, task_id):
-        """Return only the retained records belonging to the requested task."""
-        return tuple(r for r in self.records if r.task_id == task_id)
-
-    @property
-    def tasks(self):
-        """Expose sorted task IDs with nonempty retained membership for replay routing."""
-        return tuple(sorted({r.task_id for r in self.records}))
-
     def proposal(self, records):
         """Build a budget-checked replacement without mutating the currently active store."""
         return ReplayStore(records, budget=self.budget)
 
     def state_dict(self):
-        """Serialize retained record payloads as plain data for full-run checkpoints."""
         return [asdict(r) for r in self.records]
-
-    @classmethod
-    def restore(cls, state, budget):
-        """Rebuild replay records from saved state and reapply the supplied storage limits."""
-        return cls((Record(**r) for r in state), budget=budget)
-
-
-def tuple_tree(value):
-    """Undo JSON list conversion for the nested tuple structure required by Random.setstate."""
-    return tuple(tuple_tree(v) for v in value) if isinstance(value, list) else value
-

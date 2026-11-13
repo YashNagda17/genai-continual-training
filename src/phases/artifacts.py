@@ -1,14 +1,9 @@
-"""Phase records, atomic model exports, and JSON/CSV/Markdown reports."""
-
 from pathlib import Path
 from dataclasses import asdict, is_dataclass
 import csv
-import json
-import shutil
-import statistics
 import time
 
-from ..utils.state import Checkpoints, checksums, read_json, write_json
+from ..utils.state import read_json, write_json
 
 
 def accuracies_of(metrics):
@@ -61,88 +56,35 @@ def arm_record(name, output, checkpoint, result, manifest, pipeline, **fields):
     return record
 
 
-def finished_arm(directory, signature=None):
-    """Reuse only a completed, matching arm; incomplete attempts resume numerically."""
-    directory = Path(directory)
-    record = directory / "arm.json"
-    manifest = directory / "run.json"
-    if record.is_file() and manifest.is_file() and read_json(manifest).get("status") == "completed":
-        value = read_json(record)
-        if signature is not None and value.get("signature") != signature:
-            raise ValueError(f"Arm settings changed: {directory}; choose a new attempt")
-        return value
-    return None
-
-
 def remember_arm(directory, record):
     write_json(Path(directory) / "arm.json", record)
     return record
 
 
-def publish_final(phase_dir, name, source):
-    """Publish an independently loadable adapter through the shared atomic artifact writer."""
-    source = Path(source)
-    if not (source / "metadata.json").is_file():
-        return None
-    if not name or name in {".", ".."} or "/" in name or "\\" in name:
-        raise ValueError("Final model name must be one path component")
-    destination = Path(phase_dir) / "final" / name
-    source_files = checksums(source)
-    marker = destination / "complete.json"
-    if marker.is_file() and read_json(marker)["files"] != source_files:
-        raise ValueError(f"Final model {name} does not match its source")
-    manager = Checkpoints(phase_dir, "phase-exports")
-    size = sum(file.stat().st_size for file in source.rglob("*") if file.is_file())
-    manager.pin_artifact(destination, size + 65536, lambda stage: shutil.copytree(source, stage, dirs_exist_ok=True))
-    return str(destination)
-
-
-def ensure_final(phase_dir, record):
-    copied = publish_final(phase_dir, record["name"], record.get("checkpoint", ""))
-    if copied and record.get("final_model") != copied:
-        record = {**record, "final_model": copied}
-        remember_arm(record["attempt"], record)
-    return record
-
-
-def finish_arm(phase_dir, directory, record):
-    copied = publish_final(phase_dir, record["name"], record.get("checkpoint", ""))
-    if copied:
-        record["final_model"] = copied
+def finish_arm(directory, record):
+    record["final_model"] = record["checkpoint"] or None
     return remember_arm(directory, record)
 
 
 class PhaseClock:
-    """Accumulate the phase driver's wall time across resumes."""
-
-    def __init__(self, directory):
-        self.path = Path(directory) / "progress.json"
+    def __init__(self):
         self.started = time.perf_counter()
-        self.body = read_json(self.path) if self.path.is_file() else {}
-        self.stored = float(self.body.get("phase_seconds") or 0)
 
     def seconds(self):
-        return self.stored + (time.perf_counter() - self.started)
+        return time.perf_counter() - self.started
 
-    def update(self, **fields):
-        self.body.update(fields)
-        self.body["phase_seconds"] = self.seconds()
-        write_json(self.path, self.body)
 
 def run_summary(record):
     summary = {key: record.get(key) for key in (
         "name", "seed", "status", "steps", "epochs", "accuracies", "scores", "time", "costs", "storage_bytes",
-        "trainable_parameters", "retired_share", "adapter_plan", "checkpoint", "final_model", "final_models", "metric_std")}
+        "trainable_parameters", "retired_share", "adapter_plan", "checkpoint", "final_model")}
     for key in ("k_E", "k_G"):
         if key in record:
             summary[key] = record[key]
-    if record.get("seed_runs"):
-        summary["seeds"] = [run_summary(run) for run in record["seed_runs"]]
     return summary
 
 
 def annotate(details, clock, runs, final_model):
-    """Add the phase clock, per-arm epochs and scores, and the comparison model."""
     details = dict(details)
     details["time"] = {"phase_seconds": clock.seconds(), "arms": {run["name"]: run.get("time") for run in runs}}
     details["runs"] = [run_summary(run) for run in runs]
@@ -155,9 +97,6 @@ def save_report(directory, phase, details, context):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "report.json"
-    saved = read_json(path) if path.is_file() else None
-    if saved:
-        details, context = saved["details"], saved["context"]
     def flat(value, key=""):
         if isinstance(value, dict):
             for name, child in value.items():
@@ -168,12 +107,8 @@ def save_report(directory, phase, details, context):
         else:
             yield key, value
     rows = [("phase", key, value) for key, value in flat({key: value for key, value in details.items() if key != "runs"})]
-    reported = []
     for run in details.get("runs", ()):
-        reported.append(run)
-        reported.extend(run.get("seeds", ()))
-    for run in reported:
-        rows.extend((run["name"], key, value) for key, value in flat({key: value for key, value in run.items() if key != "seeds"}))
+        rows.extend((run["name"], key, value) for key, value in flat(run))
     with (directory / "report.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(("run", "metric", "value"))
@@ -183,48 +118,29 @@ def save_report(directory, phase, details, context):
     if details.get("reason"):
         lines += ["", str(details["reason"])]
     (directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    if saved is None:
-        progress = read_json(directory / "progress.json")
-        write_json(path, {"phase": phase, "status": "completed", "identity": progress["identity"],
-                          "details": details, "context": context})
+    write_json(path, {"phase": phase, "status": "completed", "details": details, "context": context})
     return context
 
 
 def compare_arms(left, right, split="test"):
-    """Paired article bootstrap after averaging the seeds both arms ran, never selecting on test.
-
-    Screening arms have one seed, so a screening arm meets a confirmed arm on the screening seed."""
+    """Compare matched articles from each arm's single run."""
     from ..utils.numerics import chrf, paired_bootstrap, rouge_l
     def values(arm, language, metric):
-        runs = arm.get("seed_runs", [arm])
-        by_seed = {}
-        for run in runs:
-            path = Path(run["attempt"]) / "predictions" / f"{language}-{split}-plain.json"
-            rows = read_json(path)
-            by_seed[run["seed"]] = {row["id"]: metric(row["prediction"], row["target"]) for row in rows}
-        identifiers = set(next(iter(by_seed.values())))
-        if any(set(rows) != identifiers for rows in by_seed.values()):
-            raise ValueError("Paired seed predictions have different article IDs")
-        return by_seed, sorted(identifiers)
-    shared = sorted({run["seed"] for run in left.get("seed_runs", [left])} &
-                    {run["seed"] for run in right.get("seed_runs", [right])}, key=str)
-    if not shared:
-        raise ValueError("Comparisons require at least one shared seed")
+        path = Path(arm["attempt"]) / "predictions" / f"{language}-{split}-plain.json"
+        rows = read_json(path)
+        scores = {row["id"]: metric(row["prediction"], row["target"]) for row in rows}
+        if len(scores) != len(rows):
+            raise ValueError("Comparisons require unique article IDs")
+        return scores
     result = {}
     for language in ("english", "hindi"):
         for name, metric in (("chrf", chrf), ("rouge_l", lambda a, b: 100 * rouge_l(a, b))):
-            a, ids = values(left, language, metric)
-            b, other = values(right, language, metric)
-            a = {seed: a[seed] for seed in shared}
-            b = {seed: b[seed] for seed in shared}
-            if ids != other:
-                raise ValueError("Comparisons require matched article IDs")
-            averaged_a = [statistics.mean(seed[i] for seed in a.values()) for i in ids]
-            averaged_b = [statistics.mean(seed[i] for seed in b.values()) for i in ids]
-            summary = paired_bootstrap(averaged_a, averaged_b, 1000, 0)
+            a, b = values(left, language, metric), values(right, language, metric)
+            if not a or set(a) != set(b):
+                raise ValueError("Comparisons require matched, nonempty article IDs")
+            ids = sorted(a)
+            summary = paired_bootstrap([a[i] for i in ids], [b[i] for i in ids], 1000, 0)
             summary["counts"] = abs(summary["delta"]) >= 1 and (summary["low"] > 0 or summary["high"] < 0)
-            summary["per_seed"] = {str(seed): statistics.mean(a[seed][i] - b[seed][i] for i in ids) for seed in a}
-            deltas = list(summary["per_seed"].values())
-            summary["seed_std"] = statistics.stdev(deltas) if len(deltas) > 1 else None
             result[f"{language}/{name}"] = summary
-    return {"left": left["name"], "right": right["name"], "split": split, "seeds": shared, "metrics": result}
+    return {"left": left["name"], "right": right["name"], "split": split,
+            "uncertainty": "article_bootstrap", "metrics": result}

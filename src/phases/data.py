@@ -1,15 +1,14 @@
-"""Prepare only the selected XL-Sum views; tiny local fixtures support smoke runs."""
-
 from pathlib import Path
 import json
 import random
 import tempfile
 
-from transformers import MT5Config, MT5ForConditionalGeneration
+from transformers import MBartConfig, MBartForConditionalGeneration
 
 from ..datasets.dataset_instruction import Seq2SeqPreprocessing, SummarizationDataset
 from ..datasets.dataset_sources import load_source
-from ..models.model_seq2seq import Seq2SeqLMModel, Seq2SeqSettings
+from ..models.model_baselines import PaperMBart
+from ..models.model_seq2seq import Seq2SeqSettings
 
 
 class SmokeTokenizer:
@@ -19,6 +18,9 @@ class SmokeTokenizer:
     eos_token_id = 1
     unk_token_id = 3
     words = ("the", "ruling", "party", "won", "state", "vote", "today", "capital")
+
+    def convert_tokens_to_ids(self, token):
+        return 0 if token == 'en_XX' else self.unk_token_id
 
     def __len__(self):
         return 32
@@ -38,10 +40,8 @@ class SmokeTokenizer:
         return [self.decode(row, skip_special_tokens=skip_special_tokens) for row in rows]
 
 
-class SmokeModel(Seq2SeqLMModel):
-    model_id = "phase0-smoke"
-    model_type = "mt5"
-    untie_head = True
+class SmokeModel(PaperMBart):
+    model_id = "summarization-smoke"
 
 
 def _seeded_smoke_module(config):
@@ -50,16 +50,16 @@ def _seeded_smoke_module(config):
     import torch
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(0)
-        return MT5ForConditionalGeneration(config)
+        return MBartForConditionalGeneration(config)
 
 
 def build_smoke_model(device="cpu"):
     settings = Seq2SeqSettings(rank=4, alpha=8.0, learning_rate=0.05, max_source_length=16,
                                max_target_length=8, max_batch_size=4, seed=3)
-    config = MT5Config(vocab_size=32, d_model=32, d_ff=64, d_kv=8, num_heads=4, num_layers=2,
-                       num_decoder_layers=2, dropout_rate=0.0, feed_forward_proj="gated-gelu",
-                       tie_word_embeddings=False, decoder_start_token_id=0, eos_token_id=1,
-                       pad_token_id=0, initializer_factor=0.5)
+    config = MBartConfig(vocab_size=32, d_model=32, encoder_ffn_dim=64, decoder_ffn_dim=64,
+                         encoder_attention_heads=4, decoder_attention_heads=4, encoder_layers=2,
+                         decoder_layers=2, dropout=0., attention_dropout=0., activation_dropout=0.,
+                         decoder_start_token_id=0, eos_token_id=1, pad_token_id=2)
     role = SmokeModel(settings, device=device, pretrained=False, config=config,
                       tokenizer=SmokeTokenizer(), model_factory=_seeded_smoke_module)
     role.runtime_root = Path(tempfile.mkdtemp())
@@ -108,8 +108,6 @@ def with_prefix(dataset, model, prefix):
 def choose_ids(records, count, seed):
     """Draw a stable subset and return it in arrival order."""
     ordered = sorted(records, key=lambda record: (record.arrival, record.sample_id))
-    if count > len(ordered):
-        raise ValueError(f"Need {count} records and found {len(ordered)}")
     picked = set(random.Random(seed).sample([record.sample_id for record in ordered], count))
     return [record.sample_id for record in ordered if record.sample_id in picked]
 

@@ -1,5 +1,3 @@
-"""Instruction/SFT records from canonical JSONL; the tokenizer and prompt template are injected."""
-
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -16,10 +14,8 @@ IGNORE_INDEX = -100
 
 
 def padded(sequences, value=0):
-    """Pad token lists on CPU, including an empty batch."""
+    """Pad a nonempty batch of token lists on CPU."""
     tensors = [torch.tensor(seq, dtype=torch.long, device="cpu") for seq in sequences]
-    if not tensors:
-        return torch.empty((0, 0), dtype=torch.long, device="cpu")
     return pad_sequence(tensors, batch_first=True, padding_value=value)
 
 
@@ -29,7 +25,6 @@ def storage_bytes(record):
 
 @dataclass(frozen=True)
 class Seq2SeqPreprocessing:
-    """Pinned tokenizer and length limits for an encoder-decoder summary."""
 
     encode: Callable[[str], list]
     eos_id: int
@@ -95,8 +90,7 @@ class SummarizationDataset(DatasetBase):
             self.manifest = {"dataset_id": source_spec["dataset_id"],
                              "revision": str(source_spec.get("revision") or source_spec["dataset_id"]),
                              "source_path": str(path)}
-        if hasattr(self, "schema"):
-            self.manifest["schema"] = self.schema
+        self.manifest["schema"] = self.schema
         records = []
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -122,7 +116,6 @@ class SummarizationDataset(DatasetBase):
             r for r in self.views.get(self.evaluation_split, ()) if r.task_id == task_id)
 
     def save(self, path):
-        """Stream prepared records and their settings to disk."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         with (path / "records.jsonl").open("w", encoding="utf-8") as handle:

@@ -1,14 +1,11 @@
-"""Shared encoder-decoder execution for mT5. Transformers supplies the architecture."""
-
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import copy
 import gc
 import math
 import os
 import random
-import re
 try:
     import resource
 except ImportError:
@@ -26,17 +23,18 @@ from safetensors.torch import load_file
 from torch import nn
 from torch.nn import functional as F
 from torch.autograd.function import once_differentiable
-from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer, LogitsProcessor
+from torch.utils._pytree import tree_map_only
+from transformers import (AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer, GenerationConfig,
+                          LogitsProcessorList, SequenceBiasLogitsProcessor, SuppressTokensLogitsProcessor)
 
 from .model_base import ModelBase
 from ..utils.contracts import ( AdapterPlan, ModelInfo, ScoreResult, StepReport, model_boundary, )
-from ..utils.state import Checkpoints, read_json, write_json
+from ..utils.state import Artifacts, read_json, write_json
 
 
 @dataclass(frozen=True)
 class Seq2SeqSettings:
     """Numerical choices for one encoder-decoder role. Full fine-tuning is rejected."""
-    mode: str = "lora"
     rank: int = 16
     alpha: float = 32
     learning_rate: float = 2e-4
@@ -51,15 +49,10 @@ class Seq2SeqSettings:
     logit_chunk_size: int = 32  # Target positions per cross-entropy call over the full vocabulary
     max_score_bytes: int = 2 * 1024 ** 3
     working_bytes: int = 1024 ** 3
-    optimizer_dtype: str = "float32"
-
-
-_PROJECTIONS = {"q", "k", "v", "o", "wi_0", "wi_1", "wo"}
-_PARTS = {"SelfAttention": "self_attention", "EncDecAttention": "cross_attention", "DenseReluDense": "feed_forward"}
 
 
 def _band(block_index):
-    """Two-block band of a zero-based block index: 0 and 1 give "1-2". Works for any depth."""
+    """Map zero-based blocks 0 and 1 to the band "1-2"."""
     first = block_index // 2 * 2 + 1
     return f"{first}-{first + 1}"
 
@@ -100,25 +93,12 @@ class _ChunkedPositionNLL(torch.autograd.Function):
 
 
 def cpu_tree(value):
-    """Copy optimizer tensors to CPU without changing the container shape."""
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu()
-    if isinstance(value, dict):
-        return {key: cpu_tree(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        items = [cpu_tree(item) for item in value]
-        return type(value)(items)
-    return value
+    return tree_map_only(torch.Tensor, lambda item: item.detach().cpu(), value)
 
 
 def _adapter_parameter_names(module):
     return {name for name, _parameter in module.named_parameters()
             if name.endswith((".A", ".B", ".extra_A", ".extra_B"))}
-
-
-def _count(module, *, trainable_only=False):
-    """Torch parameters() already removes tied aliases."""
-    return sum(p.numel() for p in module.parameters() if not trainable_only or p.requires_grad)
 
 
 def _seed_for(seed, name):
@@ -196,49 +176,22 @@ class Seq2SeqLoRA(nn.Module):
         return squared.clamp_min(0).sqrt() * abs(self.scale)
 
 
-def _adapter_identity(name):
-    """Map ``encoder.block.0.layer.0.SelfAttention.q`` to the contract names."""
-    pieces = name.split(".")
-    if len(pieces) < 7 or pieces[1] != "block" or pieces[-1] not in _PROJECTIONS:
-        return None
-    part = _PARTS.get(pieces[-2])
-    if part is None or pieces[0] not in {"encoder", "decoder"}:
-        return None
-    block = int(pieces[2]) + 1
-    return pieces[0], block, part, pieces[-1]
-
-
-def _detach_value(*values):
-    """Stop the backward pass at this output. Values are unchanged."""
-    value = values[-1]
-    if torch.is_tensor(value):
-        return value.detach()
-    if isinstance(value, tuple):
-        return tuple(_detach_value(item) for item in value)
-    items = getattr(value, "items", None)
-    if callable(items):
-        for key, item in list(value.items()):
-            if torch.is_tensor(item):
-                value[key] = item.detach()
-    return value
+def _detach_value(_module, _inputs, value):
+    """Stop backward through a frozen block while preserving its structured output."""
+    return tree_map_only(torch.Tensor, lambda item: item.detach(), value)
 
 
 class Seq2SeqLMModel(ModelBase):
-    """Encoder reads the article. Decoder writes the summary one token at a time."""
 
     model_id = ""
-    model_type = ""
-    untie_head = False
-    expected_parameters = None
-    stack_paths = {"encoder": "encoder", "decoder": "decoder"}  # Where each stack lives in the module
-    blocks_attribute = "block"                                  # The stack's list of blocks
+    stack_paths = {"encoder": "model.encoder", "decoder": "model.decoder"}
+    blocks_attribute = "layers"
 
     def __init__(self, settings=None, *, device="auto", revision="main", cache_dir=None,
                  collate=None, collate_sources=None, role="learner", initialization="base",
                  config=None, tokenizer=None, model_factory=None, pretrained=True):
         super().__init__(device)
         self.settings = settings or Seq2SeqSettings()
-        model_boundary(self.settings.mode == "lora", "Seq2seq training is LoRA only")
         self.revision = revision
         self.cache_dir = Path(cache_dir or Path(__file__).parent / "model_weights")
         self.collate, self.collate_sources = collate, collate_sources
@@ -260,32 +213,20 @@ class Seq2SeqLMModel(ModelBase):
         self._plan = None
         self._cut_hooks = []
         self._plan_fingerprint = None
-        self._merge_deltas = None
         self._merge_state = None
         self._script_ids = None
-        self._sentinel_ids = None
         self.artifact = None
-
-    def _load_dtype(self):
-        """Weights, activations, and optimizer math stay in fp32."""
-        return torch.float32
 
     def _prepare(self):
         if self._prepared:
             return
-        if self.config is None or self._tokenizer is None or self.model_factory is None:
-            if self.config is None:
-                self.config = AutoConfig.from_pretrained(
-                    self.model_id, revision=self.revision, cache_dir=self.cache_dir)
-            if self._tokenizer is None:
-                try:
-                    self._tokenizer = AutoTokenizer.from_pretrained(
-                        self.model_id, revision=self.revision, cache_dir=self.cache_dir)
-                except ImportError as error:
-                    raise ImportError( "mT5's SentencePiece tokenizer requires the sentencepiece package" ) from error
-            self.model_factory = self.model_factory or (
-                lambda config: AutoModelForSeq2SeqLM.from_config(config, attn_implementation="eager"))
-        self._vocabulary = self.model_id
+        source = {"revision": self.revision, "cache_dir": self.cache_dir}
+        if self.config is None:
+            self.config = AutoConfig.from_pretrained(self.model_id, **source)
+        if self._tokenizer is None:
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_id, **source)
+        self.model_factory = self.model_factory or (
+            lambda config: AutoModelForSeq2SeqLM.from_config(config, attn_implementation="eager"))
         self._prepared = True
 
     @property
@@ -293,12 +234,7 @@ class Seq2SeqLMModel(ModelBase):
         self._prepare()
         return self._tokenizer
 
-    def encode(self, text):
-        """Encode plain text. mT5 has no chat template."""
-        return self.tokenizer.encode(text, add_special_tokens=True)
-
     def preprocessing_kwargs(self, *, max_source=None, max_target=None):
-        """Arguments for Seq2SeqPreprocessing. This class does not import the dataset."""
         tok = self.tokenizer
         return {"encode": self.encode,
                 "eos_id": tok.eos_token_id,
@@ -306,89 +242,62 @@ class Seq2SeqLMModel(ModelBase):
                 "max_source": max_source or self.settings.max_source_length,
                 "max_target": max_target or self.settings.max_target_length,
                 "identity": {"model": self.model_id, "revision": self.revision,
-                             "vocabulary": self._vocabulary}}
+                             "vocabulary": self.model_id}}
 
     def bind_dataset(self, dataset):
         super().bind_dataset(dataset)
         self.collate_sources = getattr(dataset, "collate_sources", self.collate_sources)
 
-    def _untie_lm_head(self, module):
-        """Keep a separate output head when the Hub checkpoint says it is not tied."""
-        if not self.untie_head:
-            return
-        if module.lm_head.weight is module.shared.weight:
-            module.lm_head.weight = nn.Parameter(module.shared.weight.detach().clone())
-        tied = getattr(module, "_tied_weights_keys", None)
-        if isinstance(tied, dict) and "lm_head.weight" in tied:
-            module._tied_weights_keys = {key: value for key, value in tied.items() if key != "lm_head.weight"}
-
     def _attach_lora(self, module, *, deterministic):
-        for name, child in list(module.named_modules()):
-            identity = _adapter_identity(name)
-            if identity is None or not isinstance(child, nn.Linear):
-                continue
-            stack, block, part, projection = identity
-            parent, attribute = name.rsplit(".", 1)
-            seed = _seed_for(self.settings.seed, name)
-            setattr(module.get_submodule(parent), attribute, Seq2SeqLoRA(
-                child, self.settings.rank, self.settings.alpha, block_key=f"{stack}.{block}",
-                block_index=block - 1, part=part, projection=projection,
-                deterministic=deterministic, seed=seed))
-        self._mark_adapters(module)
+        raise NotImplementedError('The mBART adapter supplies projection names')
 
     def _mark_adapters(self, module):
         """Train adapter factors only. The base weights, embeddings, and output head stay frozen."""
         for name, parameter in module.named_parameters():
             parameter.requires_grad_(name.endswith((".A", ".B", ".extra_A", ".extra_B")))
 
+    def _adapters(self, module=None):
+        return ((name, layer) for name, layer in (self.module if module is None else module).named_modules()
+                if isinstance(layer, Seq2SeqLoRA))
+
     def _apply_mask(self, module):
         """Freeze shared adapters outside the installed plan. Extra rank stays trainable."""
         if self._trainable is None:
             return
-        for child in module.modules():
-            if not isinstance(child, Seq2SeqLoRA):
-                continue
+        for _, child in self._adapters(module):
             shared = child.block_key in self._trainable
             child.A.requires_grad_(shared)
             child.B.requires_grad_(shared)
 
     def _add_new_rank(self, module, new_rank):
-        for name, child in module.named_modules():
-            if not isinstance(child, Seq2SeqLoRA) or child.block_key not in new_rank:
-                continue
-            rank = int(new_rank[child.block_key])
-            child.add_extra(rank, _seed_for(self.settings.seed, "extra:" + name))
+        for name, child in self._adapters(module):
+            if child.block_key in new_rank:
+                child.add_extra(int(new_rank[child.block_key]), _seed_for(self.settings.seed, "extra:" + name))
 
     def _build(self, config):
-        module = self.model_factory(copy.deepcopy(config))
-        self._untie_lm_head(module)
-        return module
+        return self.model_factory(copy.deepcopy(config))
 
     def _profile(self):
         self._prepare()
         key = (self.role != "serving", self.settings.rank, self.settings.alpha,
-               tuple(sorted(self._new_rank.items())), self.untie_head,
+               tuple(sorted(self._new_rank.items())),
                None if self._trainable is None else tuple(sorted(self._trainable)))
         if key not in self._profiles:
             with torch.device("meta"):
                 module = self._build(self.config)
-                base = _count(module)
                 if self.role != "serving":
                     self._attach_lora(module, deterministic=self.role == "probe")
                     self._add_new_rank(module, self._new_rank)
                     self._apply_mask(module)
-            if self.expected_parameters is not None and self.untie_head:
-                model_boundary(base == self.expected_parameters,
-                               f"{self.model_id} has {base} base parameters, expected {self.expected_parameters}")
             adapter_names = _adapter_parameter_names(module)
             adapters = sum(p.numel() for name, p in module.named_parameters() if name in adapter_names)
-            self._profiles[key] = (_count(module), _count(module, trainable_only=True), base, adapters)
+            self._profiles[key] = (module.num_parameters(), module.num_parameters(only_trainable=True), adapters)
         return self._profiles[key]
 
     def describe_role(self, role, initialization):
         saved_role, self.role = self.role, role
         try:
-            total, trainable, _base, adapters = self._profile()
+            total, trainable, adapters = self._profile()
         finally:
             self.role = saved_role
         identity = f"{self.model_id}:{role}:{initialization}"
@@ -401,7 +310,7 @@ class Seq2SeqLMModel(ModelBase):
         return ModelInfo(identity, total, trainable, capabilities=capabilities,
                          cpu_bytes=peak, accelerator_bytes=peak if self.device.type != "cpu" else 0,
                          checkpoint_bytes=saved * 4 + trainable * 12 + 1024 ** 2,
-                         vocabulary=self._vocabulary, loss_fingerprint="seq2seq-summary-ce-v1",
+                         vocabulary=self.model_id, loss_fingerprint="seq2seq-summary-ce-v1",
                          parameter_views=("cell", "block"),
                          layer_names=tuple(f"block.{index}" for index in range(blocks)),
                          forward_cost=float(total), backward_costs=tuple(2.0 for _ in range(blocks)),
@@ -412,9 +321,7 @@ class Seq2SeqLMModel(ModelBase):
         return self.describe_role(self.role, self.initialization)
 
     def rank_costs(self):
-        """Adapter parameters per unit of rank in one encoder block and one decoder block.
-
-        Counted on a meta-device build, so nothing is loaded. mT5-small gives 8,192 and 11,776."""
+        """Adapter parameters per encoder/decoder block rank, measured on meta without loading weights."""
         self._prepare()
         # Building a module can draw from the global random generator; keep that state unchanged,
         # so measuring sizes never changes how a later randomly initialized model starts.
@@ -422,8 +329,8 @@ class Seq2SeqLMModel(ModelBase):
             module = self._build(self.config)
             self._attach_lora(module, deterministic=True)
         costs = {}
-        for child in module.modules():
-            if isinstance(child, Seq2SeqLoRA) and child.block_index == 0:
+        for _, child in self._adapters(module):
+            if child.block_index == 0:
                 stack = child.block_key.split(".")[0]
                 costs[stack] = costs.get(stack, 0) + child.A.shape[1] + child.B.shape[0]
         return costs["encoder"], costs["decoder"]
@@ -452,21 +359,14 @@ class Seq2SeqLMModel(ModelBase):
         return self._base_bytes
 
     def _optimizer_parameters(self):
-        groups, new_params = [], []
-        by_block = {}
-        for name, parameter in self.module.named_parameters():
-            if not parameter.requires_grad or not name.endswith((".A", ".B", ".extra_A", ".extra_B")):
-                continue
-            if ".extra_" in name:
-                new_params.append(parameter)
-                continue
-            owner = name.rsplit(".", 1)[0]
-            module = self.module.get_submodule(owner)
-            by_block.setdefault(module.block_key, []).append(parameter)
-        scales = getattr(self, "_lr_scale", {})
-        for block_key in sorted(by_block):
-            groups.append({"params": by_block[block_key],
-                           "lr": self.settings.learning_rate * float(scales.get(block_key, 1.0))})
+        by_block, new_params = {}, []
+        for _, adapter in self._adapters():
+            for name, parameter in adapter.named_parameters(recurse=False):
+                if parameter.requires_grad:
+                    target = new_params if name.startswith("extra_") else by_block.setdefault(adapter.block_key, [])
+                    target.append(parameter)
+        groups = [{"params": by_block[key], "lr": self.settings.learning_rate * float(self._lr_scale.get(key, 1.0))}
+                  for key in sorted(by_block)]
         if new_params:
             groups.append({"params": new_params, "lr": self.settings.learning_rate})
         return groups
@@ -511,7 +411,6 @@ class Seq2SeqLMModel(ModelBase):
         if self.resources is not None:
             self.resources.validate_role(self.info)
         self._assets()
-        load_dtype = self._load_dtype()
         devices = [] if self.device.type == "cpu" else [self.device]
         with torch.random.fork_rng(devices=devices, device_type=self.device.type), torch.device(self.device):
             self._restore_rng(self._new_rng(self.settings.seed))
@@ -522,22 +421,11 @@ class Seq2SeqLMModel(ModelBase):
                 self._restore_rng(self._new_rng())
                 self._attach_lora(module, deterministic=self.role == "probe")
                 self._add_new_rank(module, self._new_rank)
-                self._mark_adapters(module)
                 self._apply_mask(module)
             elif self._merge_state is not None:
-                with torch.no_grad():
-                    for name, value in self._merge_state.items():
-                        try:
-                            parameter = module.get_parameter(name)
-                        except AttributeError:
-                            parameter = module.get_buffer(name)
-                        parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
-                    for name, delta in self._merge_deltas.items():
-                        weight = module.get_parameter(name + ".weight")
-                        weight.add_(delta.to(device=weight.device, dtype=weight.dtype))
-                for parameter in module.parameters():
-                    parameter.requires_grad_(False)
-        self.module = module.to(device=self.device, dtype=load_dtype)
+                module.load_state_dict(self._merge_state, strict=False, assign=False)
+                module.requires_grad_(False)
+        self.module = module.to(device=self.device, dtype=torch.float32)
         if self.device.type != "cpu":
             getattr(torch, self.device.type).empty_cache()
         self.module.config.use_cache = False
@@ -550,11 +438,8 @@ class Seq2SeqLMModel(ModelBase):
         if self._offload is not None:
             self._read_state(Path(self._offload.name))
 
-    def _seed(self):
-        return _seed_for(self.settings.seed, self.initialization)
-
     def parameter_counts(self):
-        return _count(self.module), _count(self.module, trainable_only=True)
+        return self.module.num_parameters(), self.module.num_parameters(only_trainable=True)
 
     def _clear_cuts(self):
         for handle in self._cut_hooks:
@@ -562,8 +447,8 @@ class Seq2SeqLMModel(ModelBase):
         self._cut_hooks = []
 
     def _lowest_trainable(self, stack):
-        indexes = [module.block_index for module in self.module.modules()
-                   if isinstance(module, Seq2SeqLoRA) and module.block_key.startswith(stack + ".")
+        indexes = [module.block_index for _, module in self._adapters()
+                   if module.block_key.startswith(stack + ".")
                    and any(parameter.requires_grad for parameter in module.parameters())]
         return min(indexes) if indexes else None
 
@@ -575,22 +460,16 @@ class Seq2SeqLMModel(ModelBase):
             if lowest == 0:
                 continue
             path = self.stack_paths[stack]
-            if lowest is None:
-                module = self.module.get_submodule(path)
-            else:
-                module = self.module.get_submodule(f"{path}.{self.blocks_attribute}")[lowest - 1]
-            self._cut_hooks.append(module.register_forward_hook(_detach_value))
+            if lowest is not None:
+                path += f".{self.blocks_attribute}.{lowest - 1}"
+            self._cut_hooks.append(self.module.get_submodule(path).register_forward_hook(_detach_value))
 
     def apply_plan(self, plan):
         """Install adapter trainability before the first update and build a fresh optimizer."""
         self.activate()
-        if not isinstance(plan, AdapterPlan):
-            plan = AdapterPlan(tuple(plan["trainable"]), dict(plan.get("new_rank") or {}),
-                               dict(plan.get("lr_scale") or {}), dict(plan.get("identity") or {}))
         trainable, new_rank, scales = set(plan.trainable), dict(plan.new_rank), dict(plan.lr_scale)
-        for module in self.module.modules():
-            if isinstance(module, Seq2SeqLoRA):
-                module.clear_extra()
+        for _, module in self._adapters():
+            module.clear_extra()
         self._new_rank = new_rank
         self._trainable = set(trainable)
         self._lr_scale = scales
@@ -599,9 +478,8 @@ class Seq2SeqLMModel(ModelBase):
         self._apply_mask(self.module)
         self._profiles.clear()
         self._cut_backward()
-        self.optimizer = None
         self._reset_optimizer()
-        trainable_count = _count(self.module, trainable_only=True)
+        trainable_count = self.module.num_parameters(only_trainable=True)
         new_count = sum(parameter.numel() for name, parameter in self.module.named_parameters()
                         if parameter.requires_grad and ".extra_" in name)
         self._plan_fingerprint = {"identity": plan.identity, "trainable": sorted(trainable),
@@ -623,7 +501,7 @@ class Seq2SeqLMModel(ModelBase):
             getattr(torch, self.device.type).set_rng_state(states["device"], self.device)
 
     def _new_rng(self, seed=None):
-        seed = self._seed() if seed is None else seed
+        seed = _seed_for(self.settings.seed, self.initialization) if seed is None else seed
         states = {"cpu": torch.Generator(device="cpu").manual_seed(seed).get_state()}
         if self.device.type != "cpu":
             states["device"] = torch.Generator(device=self.device).manual_seed(seed).get_state().cpu()
@@ -634,23 +512,24 @@ class Seq2SeqLMModel(ModelBase):
             getattr(torch, self.device.type).synchronize(self.device)
 
     def release_evaluation_memory(self):
-        """Release unused evaluation allocations; retain the live model and optimizer."""
         if self.device.type != "cpu":
             gc.collect()
             getattr(torch, self.device.type).empty_cache()
 
     def _begin_timed_block(self):
         self._synchronize()
-        backend = getattr(torch, self.device.type, None)
-        if self.device.type != "cpu" and hasattr(backend, "reset_peak_memory_stats"):
-            backend.reset_peak_memory_stats(self.device)
+        self._reset_peak_memory()
         return time.perf_counter()
 
-    def _timing_cost(self, start, **fields):
-        self._synchronize()
-        cost = {"device": str(self.device), "synchronized_wall_seconds": time.perf_counter() - start,
+    def _timing_cost(self, start, *, synchronize=True, **fields):
+        if synchronize:
+            self._synchronize()
+        cost = {"device": str(self.device),
+                "synchronized_wall_seconds" if synchronize else "wall_seconds": time.perf_counter() - start,
                 "process_peak_cpu_bytes": None if resource is None else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
                 **fields}
+        if not synchronize:
+            cost["synchronized"] = False
         backend = getattr(torch, self.device.type, None)
         if self.device.type != "cpu" and hasattr(backend, "max_memory_allocated"):
             cost["peak_device_allocated_bytes"] = backend.max_memory_allocated(self.device)
@@ -658,8 +537,6 @@ class Seq2SeqLMModel(ModelBase):
 
     @contextmanager
     def _execution(self, *, mode="inference", advance=False):
-        if mode not in {"training", "inference"}:
-            raise ValueError("Execution mode must be training or inference")
         active = self.module is not None
         self.activate()
         caller = self._capture_rng()
@@ -690,21 +567,13 @@ class Seq2SeqLMModel(ModelBase):
 
     def _payload(self, batch):
         payload = batch.payload if hasattr(batch, "payload") else batch
-        if "labels" in payload and "supervised_indices" not in payload:
-            # Compatibility for custom batches: derive indices before transferring CPU labels.
-            payload = dict(payload)
-            payload["supervised_indices"] = (payload["labels"].reshape(-1) != -100).nonzero().flatten()
         return self.to_device(payload)
 
     def _sdpa_masks(self):
         return getattr(self.module.config, "_attn_implementation", None) == "sdpa"
 
     def _source_mask(self, attention_mask):
-        """SDPA source mask as a prebuilt 4D boolean (batch, 1, 1, source), True where a token is read.
-
-        Transformers returns a 4D mask unchanged. From a 2D mask it reads ``mask.all()`` on the host to
-        decide whether the mask can be skipped, which makes the host wait for the device in the encoder
-        and in every decoder call's cross-attention. Eager attention never reads it, so mT5 keeps 2D."""
+        """Prebuild SDPA's 4D source mask to avoid the library's host scalar read."""
         if attention_mask is None or not self._sdpa_masks():
             return attention_mask
         return attention_mask.bool()[:, None, None, :]
@@ -716,27 +585,15 @@ class Seq2SeqLMModel(ModelBase):
         return torch.ones((length, length), dtype=torch.bool, device=device).tril_()[None, None]
 
     def _forward(self, payload):
-        """One eager call into the built-in seq2seq model. Labels are shifted here so the library does not allocate a second full-vocabulary loss."""
-        labels = payload.get("labels")
-        if labels is None:
-            decoder_input_ids = None
-        elif hasattr(self.module, "_shift_right"):
-            decoder_input_ids = self.module._shift_right(labels)
-        else:
-            # mBART moves the trailing language id to the front. It has no _shift_right.
-            decoder_input_ids = self.module.prepare_decoder_input_ids_from_labels(labels)
-        causal = None if decoder_input_ids is None else self._causal_mask(
-            decoder_input_ids.shape[1], decoder_input_ids.device)
+        """Teacher-forced logits without allocating the library's second vocabulary loss."""
+        decoder_input_ids = self.module.prepare_decoder_input_ids_from_labels(payload["labels"])
+        causal = self._causal_mask(decoder_input_ids.shape[1], decoder_input_ids.device)
         return self.module(input_ids=payload["input_ids"], attention_mask=self._source_mask(payload.get("attention_mask")),
                            decoder_input_ids=decoder_input_ids, decoder_attention_mask=causal,
                            use_cache=False, return_dict=True)
 
     def _position_nll(self, logits, labels):
-        """Per-position NLL with bounded scratch space and one backward gradient buffer.
-
-        The configured chunk is a floor. A 250k vocabulary at 32 rows leaves the device
-        launching many short reductions, so the chunk grows until the fp32 scratch is 256 MiB.
-        """
+        """Bound per-position CE scratch to 256 MiB, with the configured chunk as a floor."""
         if self.settings.logit_chunk_size < 1:
             raise ValueError("logit_chunk_size must be positive")
         vocab = logits.shape[-1]
@@ -756,9 +613,7 @@ class Seq2SeqLMModel(ModelBase):
         return sums / counts, sums, counts, position
 
     def _reduce(self, means, sums, counts, reduction):
-        if reduction == "per_example_mean":
-            return means.mean()
-        return sums.sum() / counts.sum()
+        return means.mean() if reduction == "per_example_mean" else sums.sum() / counts.sum()
 
     def score(self, batch, score_spec):
         with self._execution():
@@ -803,12 +658,7 @@ class Seq2SeqLMModel(ModelBase):
         return {"groups": keys, "gradients": tuple(torch.cat(grouped[key]) for key in keys)}
 
     def _optimizer_update(self, loss):
-        """Backward, clip, and AdamW step, all on the device. The host never reads a value here.
-
-        There is no finite-loss or finite-norm check: reading either would make the host wait for
-        the device every step, and fp32 LoRA training on this protocol does not overflow. A NaN
-        loss would still stop the run when the step's loss is written to JSON (allow_nan=False).
-        The gradient scaler is disabled in fp32, so it is not called."""
+        """Backward, clipping and AdamW in fp32 without host finite checks or gradient scaling."""
         loss.backward()
         parameters = [parameter for group in self.optimizer.param_groups for parameter in group['params']
                       if parameter.grad is not None]
@@ -844,27 +694,6 @@ class Seq2SeqLMModel(ModelBase):
         denominator = flat.numel() if targets.all_positive else active.sum()
         return terms.sum() / denominator, terms.detach().sum(), denominator
 
-    @staticmethod
-    def _finish_reports(reports):
-        """Step losses stay as detached device scalars. Reading them here would make the host wait
-        for the device after every step; the runtime copies them all at once when it saves."""
-        return reports
-
-    def _step_cost(self, start, **fields):
-        """Host time and peak device memory for one update, without waiting for the device.
-
-        The host queues kernels ahead of the device, so one step's time is approximate; summed over
-        a run it matches device time, because the host blocks once the queue is full. Peak memory is
-        the allocator's record and needs no wait."""
-        cost = {"device": str(self.device), "wall_seconds": time.perf_counter() - start,
-                "synchronized": False,
-                "process_peak_cpu_bytes": None if resource is None else resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
-                **fields}
-        backend = getattr(torch, self.device.type, None)
-        if self.device.type != "cpu" and hasattr(backend, "max_memory_allocated"):
-            cost["peak_device_allocated_bytes"] = backend.max_memory_allocated(self.device)
-        return cost
-
     def _reset_peak_memory(self):
         backend = getattr(torch, self.device.type, None)
         if self.device.type != "cpu" and hasattr(backend, "reset_peak_memory_stats"):
@@ -878,7 +707,7 @@ class Seq2SeqLMModel(ModelBase):
             for _ in range(k):
                 for training in batch_factory():
                     if attempts >= limits.max_attempts or updates >= limits.max_steps or tokens + training.batch.valid_tokens > limits.max_tokens:
-                        return self._finish_reports(reports)
+                        return reports
                     self._reset_peak_memory()
                     start = time.perf_counter()
                     payload = self._payload(training.batch)
@@ -900,16 +729,14 @@ class Seq2SeqLMModel(ModelBase):
                     success = loss is not None and self._optimizer_update(loss)
                     if numer is None:
                         numer = sums.detach().sum()
-                        denom = getattr(training.batch, "supervised_tokens", None)
-                        if denom is None:
-                            denom = counts.detach().sum()
+                        denom = training.batch.supervised_tokens
                     reason = None if success else ("no_active_tokens" if loss is None else "nonfinite_loss_or_gradients")
                     attempts, updates, tokens = attempts + 1, updates + int(success), tokens + training.batch.valid_tokens
                     reports.append(StepReport(training.batch.ids, success, self.steps, training.batch.valid_tokens,
                                               {"supervised": numer}, {"supervised": denom}, diagnostics,
-                                              self._step_cost(start), reason))
+                                              self._timing_cost(start, synchronize=False), reason))
                     del means, sums, counts, position, loss
-        return self._finish_reports(reports)
+        return reports
 
     def evaluate(self, view, evaluation_spec, progress=None):
         try:
@@ -971,89 +798,30 @@ class Seq2SeqLMModel(ModelBase):
         if not guard:
             return None
         masks = self._script_masks()
-        blocked = masks[guard["block"]] if "block" in guard else None
-        penalized = masks[guard["penalize"]] if "penalize" in guard else None
-        penalty = float(guard.get("penalty", 2.0))
-
-        class _Guard(LogitsProcessor):
-            def __call__(self, input_ids, scores):
-                if blocked is not None and blocked.numel():
-                    scores.index_fill_(1, blocked.to(scores.device), float("-inf"))
-                if penalized is not None and penalized.numel():
-                    scores[:, penalized.to(scores.device)] -= penalty
-                return scores
-        return _Guard()
-
-    def _sentinels(self):
-        """mT5's pretraining placeholders (``<extra_id_N>``). A summary never contains them."""
-        if self._sentinel_ids is None:
-            # SentencePiece stores them with a word-start marker: "▁<extra_id_0>".
-            pattern = re.compile(r"▁?<extra_id_\d+>")
-            tokenizer = self.tokenizer
-            if hasattr(tokenizer, "convert_ids_to_tokens"):
-                pieces = enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer)))))
-            else:
-                pieces = ((index, piece) for piece, index in tokenizer.get_vocab().items())
-            ids = sorted(index for index, piece in pieces if piece and pattern.fullmatch(piece))
-            self._sentinel_ids = torch.tensor(ids, dtype=torch.long, device=self.device)
-        return self._sentinel_ids
-
-    @staticmethod
-    def _block_repeats(generated, scores, size):
-        """Forbid any token that would repeat an n-gram already in the summary. Stays on the device."""
-        if size < 1 or generated.shape[1] < size:
-            return scores
-        windows = generated.unfold(1, size, 1)
-        prefix = generated[:, generated.shape[1] - size + 1:]
-        matched = (windows[:, :, :-1] == prefix[:, None, :]).all(dim=-1)
-        penalty = torch.zeros(matched.shape, dtype=scores.dtype, device=scores.device).masked_fill_(matched, float("-inf"))
-        return scores.scatter_add_(1, windows[:, :, -1], penalty)
+        processors = LogitsProcessorList()
+        if "block" in guard and masks[guard["block"]].numel():
+            processors.append(SuppressTokensLogitsProcessor(masks[guard["block"]].tolist(), device=self.device))
+        if "penalize" in guard and masks[guard["penalize"]].numel():
+            processors.append(SequenceBiasLogitsProcessor(
+                [[[token], -float(guard.get("penalty", 2.0))] for token in masks[guard["penalize"]].tolist()]))
+        return processors
 
     def _greedy_ids(self, input_ids, attention_mask, max_new, guard, no_repeat=0, *, stop_on_eos=True):
-        """Cached greedy tokens; check all-row completion once every eight steps."""
-        sentinels = self._sentinels()
-        # T5 exposes .encoder. mBART keeps it on the inner model; get_encoder() covers both.
-        encoder = self.module.get_encoder() if hasattr(self.module, "get_encoder") else self.module.encoder
-        attention_mask = self._source_mask(attention_mask)
-        encoder_outputs = encoder( input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        """Use explicit greedy defaults instead of inheriting checkpoint decoding policies."""
         start_id = int(getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id))
-        device = input_ids.device
-        # One query per step reads every earlier token, so the cached self-attention mask is all True.
-        seen = (torch.ones((1, 1, 1, max(0, max_new) + 1), dtype=torch.bool, device=device)
-                if self._sdpa_masks() else None)
-        generated = torch.empty((input_ids.shape[0], max(0, max_new) + 1), dtype=torch.long, device=device)
-        generated[:, 0].fill_(start_id)
-        eos_id = int(self.tokenizer.eos_token_id)
+        if max_new <= 0:
+            return input_ids.new_full((input_ids.shape[0], 1), start_id)
         pad_id = self.tokenizer.pad_token_id
-        pad_id = eos_id if pad_id is None else int(pad_id)
-        unfinished = torch.ones(input_ids.shape[0], dtype=torch.bool, device=device)
-        past = None
-        for step in range(max_new):
-            prefix = generated[:, :step + 1]
-            outputs = self.module(
-                attention_mask=attention_mask,
-                decoder_input_ids=prefix if past is None else generated[:, step:step + 1],
-                decoder_attention_mask=None if seen is None else seen[..., :step + 1],
-                encoder_outputs=encoder_outputs,
-                past_key_values=past,
-                use_cache=True,
-                return_dict=True)
-            scores = outputs.logits[:, -1].float()
-            past = outputs.past_key_values
-            del outputs
-            if sentinels.numel():
-                scores.index_fill_(1, sentinels, float("-inf"))
-            scores = self._block_repeats(prefix, scores, no_repeat)
-            if guard is not None:
-                scores = guard(prefix, scores)
-            chosen = scores.argmax(dim=-1)
-            chosen = torch.where(unfinished, chosen, pad_id)
-            generated[:, step + 1].copy_(chosen)
-            unfinished.logical_and_(chosen.ne(eos_id))
-            # Reading `unfinished` waits for the device, so it is checked only every 8 steps.
-            if stop_on_eos and (step + 1) % 8 == 0 and not bool(unfinished.any()):
-                return generated[:, :step + 2]
-        return generated
+        config = GenerationConfig(max_new_tokens=max_new, do_sample=False, num_beams=1, use_cache=True,
+            decoder_start_token_id=start_id, eos_token_id=int(self.tokenizer.eos_token_id) if stop_on_eos else None,
+            pad_token_id=int(self.tokenizer.eos_token_id) if pad_id is None else int(pad_id),
+            no_repeat_ngram_size=max(0, no_repeat))
+        previous, self.module.generation_config = self.module.generation_config, config
+        try:
+            return self.module.generate(input_ids=input_ids, attention_mask=attention_mask,
+                                        generation_config=config, logits_processor=guard)
+        finally:
+            self.module.generation_config = previous
 
     def predict(self, inputs, generation_spec):
         """Greedy summary. ``token_ids`` keep the first EOS and drop padding."""
@@ -1066,11 +834,7 @@ class Seq2SeqLMModel(ModelBase):
                 payload["input_ids"], payload.get("attention_mask"), max_new, guard,
                 int(generation_spec.get("no_repeat_ngram_size", 0)),
                 stop_on_eos=bool(generation_spec.get("stop_on_eos", True)))
-            rows = output.tolist()
-            start_id = getattr(self.config, "decoder_start_token_id", self.tokenizer.pad_token_id)
-            if rows and rows[0] and rows[0][0] == start_id:
-                rows = [row[1:] for row in rows]
-            token_ids = self._trim_generated(rows)
+            token_ids = self._trim_generated(output[:, 1:].tolist())
             texts = self.tokenizer.batch_decode(token_ids, skip_special_tokens=True)
             ids = inputs.ids if hasattr(inputs, "ids") else ()
             return {"ids": ids, "texts": texts, "token_ids": token_ids,
@@ -1080,28 +844,20 @@ class Seq2SeqLMModel(ModelBase):
         eos, pad = self.tokenizer.eos_token_id, self.tokenizer.pad_token_id
         trimmed = []
         for row in rows:
-            kept = []
-            for token in row:
-                if token == pad and token != eos:
-                    break
-                kept.append(int(token))
-                if token == eos:
-                    break
-            trimmed.append(kept)
+            stop = next((i + int(token == eos) for i, token in enumerate(row) if token in (eos, pad)), len(row))
+            trimmed.append([int(token) for token in row[:stop]])
         return trimmed
 
     def effective_updates(self):
         """Per-projection ``(alpha / rank) B A``, plus extra rank, in float32."""
         self.activate()
-        return {name: module.delta().detach() for name, module in self.module.named_modules()
-                if isinstance(module, Seq2SeqLoRA)}
+        return {name: module.delta().detach() for name, module in self._adapters()}
 
     def effective_update_norms(self):
         """Per-projection norms for location maps without full shared-update matrices."""
         self.activate()
         with torch.no_grad():
-            return {name: module.delta_norm() for name, module in self.module.named_modules()
-                    if isinstance(module, Seq2SeqLoRA)}
+            return {name: module.delta_norm() for name, module in self._adapters()}
 
     def reset_probe(self):
         """Freeze the loaded checkpoint's function beneath a fresh zero-B probe."""
@@ -1109,18 +865,16 @@ class Seq2SeqLMModel(ModelBase):
         self.activate()
         self._clear_cuts()
         with torch.no_grad():
-            for name, child in self.module.named_modules():
-                if isinstance(child, Seq2SeqLoRA):
-                    child.base.weight.add_(child.delta().to(child.base.weight.dtype))
-                    child.clear_extra()
-                    _init_A(child.A, _seed_for(self.settings.seed, name))
-                    child.B.zero_()
+            for name, child in self._adapters():
+                child.base.weight.add_(child.delta().to(child.base.weight.dtype))
+                child.clear_extra()
+                _init_A(child.A, _seed_for(self.settings.seed, name))
+                child.B.zero_()
         self._new_rank, self._lr_scale, self._trainable = {}, {}, None
         self._plan = self._plan_fingerprint = None
         self._save_full_weights = True
         self._mark_adapters(self.module)
         self._profiles.clear()
-        self.optimizer = None
         self._reset_optimizer()
         self.steps = 0
         self.rng_state = self._new_rng()
@@ -1129,9 +883,7 @@ class Seq2SeqLMModel(ModelBase):
         """Replace every adapter by the top-k SVD factors of its effective update, at scale 1."""
         self.activate()
         with torch.no_grad():
-            for module in self.module.modules():
-                if not isinstance(module, Seq2SeqLoRA):
-                    continue
+            for _, module in self._adapters():
                 delta = module.delta()
                 _U, singular, _Vh = torch.linalg.svd(delta, full_matrices=False)
                 keep = min(k, singular.numel())
@@ -1149,7 +901,6 @@ class Seq2SeqLMModel(ModelBase):
         self.weight_revision += 1
         self._weights_identity = "0"
         self.rng_state = self._new_rng()
-        self.optimizer = None
         self._reset_optimizer()
         return self.get_weights()
 
@@ -1165,13 +916,11 @@ class Seq2SeqLMModel(ModelBase):
         for name, buffer in self.module.named_buffers():
             state[name] = buffer.detach().to(device="cpu", copy=True)
         with torch.no_grad():
-            for name, module in self.module.named_modules():
-                if isinstance(module, Seq2SeqLoRA):
-                    state[name + ".weight"].add_(module.delta().detach().cpu())
+            for name, module in self._adapters():
+                state[name + ".weight"].add_(module.delta().detach().cpu())
         child = self.fork("serving", "merged")
         child.pretrained = False
         child._merge_state = state
-        child._merge_deltas = {}
         return child
 
     def _weights(self, *, changed_only=False):
@@ -1190,11 +939,8 @@ class Seq2SeqLMModel(ModelBase):
             expected = eligible if kind == "parameters" and changed_only else set(tensors)
             model_boundary(set(incoming) == expected and all(value.shape == tensors[name].shape
                            for name, value in incoming.items()), "Checkpoint tensor names or shapes differ")
-        with torch.no_grad():
-            for kind, tensors in live.items():
-                for name, value in weights.get(kind, {}).items():
-                    target = tensors[name]
-                    target.copy_(value.to(device=target.device, dtype=target.dtype))
+        state = {name: value for kind in live for name, value in weights.get(kind, {}).items()}
+        self.module.load_state_dict(state, strict=False, assign=False)
 
     def get_weights(self):
         with self._execution():
@@ -1206,30 +952,19 @@ class Seq2SeqLMModel(ModelBase):
         return f"{self.model_id}:{self.revision}:{self.settings.rank}:{self.settings.alpha}"
 
     def set_weights(self, weights):
-        """Install a snapshot in this wrapper and start a fresh optimizer."""
         self.activate()
-        names = set(weights["parameters"])
-        adapter = _adapter_parameter_names(self.module)
-        if names == set(dict(self.module.named_parameters())):
-            self._save_full_weights = True
-            changed_only = False
-        else:
-            model_boundary(names == adapter, "Checkpoint tensor names or shapes differ")
-            changed_only = True
-        self._install(weights, changed_only=changed_only)
+        full = set(weights["parameters"]) == set(dict(self.module.named_parameters()))
+        self._save_full_weights = self._save_full_weights or full
+        self._install(weights, changed_only=not full)
         self._weights_identity = "0"
         self.initialization = "weights"
         self.steps = 0
         self.weight_revision += 1
         self.rng_state = self._new_rng()
-        self.optimizer = None
         self._reset_optimizer()
 
     def _plan_record(self):
-        if self._plan is None:
-            return None
-        return {"trainable": list(self._plan.trainable), "new_rank": dict(self._plan.new_rank),
-                "lr_scale": dict(self._plan.lr_scale), "identity": dict(self._plan.identity)}
+        return None if self._plan is None else {**asdict(self._plan), "trainable": list(self._plan.trainable)}
 
     def _restore_layout(self, metadata):
         self._new_rank = {key: int(value) for key, value in dict(metadata.get("new_rank") or {}).items()}
@@ -1267,33 +1002,24 @@ class Seq2SeqLMModel(ModelBase):
         path = Path(path)
         if self.role == "serving":
             raise ValueError("A merged copy is built in memory and is not saved")
-        if self.module is None and self._offload is not None and state_kind in {"resume", "frozen"}:
+        if self.module is None and self._offload is not None and state_kind in {"offload", "frozen"}:
             source = Path(self._offload.name)
             saved = read_json(source / "metadata.json")
-            if state_kind == "resume" and saved["state_kind"] != "resume":
+            if state_kind == "offload" and saved["state_kind"] != "offload":
                 self.activate()
             else:
                 path.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source / "weights.pt", path / "weights.pt")
-                if state_kind == "resume":
+                if state_kind == "offload":
                     shutil.copyfile(source / "training.pt", path / "training.pt")
                 write_json(path / "metadata.json", {**saved, "state_kind": state_kind})
                 return
         self.activate()
         path.mkdir(parents=True, exist_ok=True)
         torch.save(cpu_tree(self._weights(changed_only=not self._save_full_weights)), path / "weights.pt")
-        if state_kind == "resume":
+        if state_kind == "offload":
             torch.save(self._training_state(), path / "training.pt")
         write_json(path / "metadata.json", self._metadata(state_kind, record))
-
-    def save_hindi_checkpoint(self, path):
-        """Final Hindi adapter and the plan that produced it."""
-        self.save(path, "hindi")
-
-    def save_shrunk_adapter(self, path, *, k_energy, k_generation, test_table):
-        """Inference export at scale 1. This is not an exact-resume checkpoint."""
-        self.save(path, "inference", record={"k_energy": k_energy, "k_generation": k_generation,
-                                             "test_table": test_table})
 
     def _frozen_identity(self, metadata):
         self._weights_identity = metadata["weights_identity"]
@@ -1306,7 +1032,7 @@ class Seq2SeqLMModel(ModelBase):
         metadata = read_json(path / "metadata.json")
         self._prepare()
         self._restore_layout(metadata)
-        if state_kind == "resume":
+        if state_kind == "offload":
             self.initialization = metadata["initialization"]
         else:
             self._frozen_identity(metadata)
@@ -1316,17 +1042,17 @@ class Seq2SeqLMModel(ModelBase):
             self._read_state(path)
             return
         target = self._offload_directory()
-        names = ["weights.pt", "metadata.json", *(("training.pt",) if state_kind == "resume" else ())]
+        names = ["weights.pt", "metadata.json", *(("training.pt",) if state_kind == "offload" else ())]
         for name in names:
             shutil.copyfile(path / name, Path(target.name) / name)
         previous, self._offload = self._offload, target
         if previous is not None:
             previous.cleanup()
-        self.steps = metadata["steps"] if state_kind == "resume" else 0
+        self.steps = metadata["steps"] if state_kind == "offload" else 0
         self.weight_revision = metadata["weight_revision"]
 
     def _read_state(self, path):
-        """Install a saved snapshot. Resume restores the optimizer; every other kind starts fresh."""
+        """Install a saved snapshot. Private offload restores live optimizer state; public exports start fresh."""
         path = Path(path)
         metadata = read_json(path / "metadata.json")
         self._restore_layout(metadata)
@@ -1335,9 +1061,8 @@ class Seq2SeqLMModel(ModelBase):
         self._cut_backward()
         self._install(torch.load(path / "weights.pt", map_location="cpu", weights_only=True),
                       changed_only=not self._save_full_weights)
-        self.optimizer = None
         self._reset_optimizer()
-        if metadata["state_kind"] == "resume":
+        if metadata["state_kind"] == "offload":
             training = torch.load(path / "training.pt", map_location="cpu", weights_only=True)
             self.optimizer.load_state_dict(training["optimizer"])
             self.scheduler.load_state_dict(training["scheduler"])
@@ -1350,17 +1075,12 @@ class Seq2SeqLMModel(ModelBase):
             self._frozen_identity(metadata)
             self.rng_state = self._new_rng()
 
-    def _reserve_storage(self, additional):
-        root = Path(self.runtime_root or self.cache_dir / "standalone")
-        root.mkdir(parents=True, exist_ok=True)
-        if self.resources is not None:
-            Checkpoints(root, self.info.identity, self.resources.disk_bytes,
-                        external_bytes=self.base_storage_bytes).reserve(additional)
-
     def _offload_directory(self):
         root = Path(self.runtime_root or self.cache_dir / "standalone")
         root.mkdir(parents=True, exist_ok=True)
-        self._reserve_storage(self.info.checkpoint_bytes)
+        if self.resources is not None:
+            Artifacts(root, self.info.identity, self.resources.disk_bytes,
+                        external_bytes=self.base_storage_bytes).reserve(self.info.checkpoint_bytes)
         folder = root / ".offload"
         folder.mkdir(exist_ok=True)
         return tempfile.TemporaryDirectory(dir=folder, prefix=self.role + "-")
@@ -1374,7 +1094,7 @@ class Seq2SeqLMModel(ModelBase):
             return
         self._clear_cuts()
         target = self._offload_directory()
-        self.save(target.name, "resume" if self.optimizer is not None else "frozen")
+        self.save(target.name, "offload" if self.optimizer is not None else "frozen")
         previous, self._offload = self._offload, target
         self.module = self.optimizer = self.scheduler = self.scaler = None
         if previous is not None:
@@ -1386,7 +1106,7 @@ class Seq2SeqLMModel(ModelBase):
     def release(self):
         self._clear_cuts()
         self.module = self.optimizer = self.scheduler = self.scaler = None
-        self._script_ids = self._sentinel_ids = None
+        self._script_ids = None
         if self._offload is not None:
             self._offload.cleanup()
             self._offload = None

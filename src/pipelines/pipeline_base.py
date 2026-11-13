@@ -1,7 +1,4 @@
-"""Common lifecycle and guarded access for the summarization pipelines."""
-
 from abc import ABC, abstractmethod
-import copy
 import random
 import time
 from dataclasses import asdict
@@ -11,15 +8,13 @@ import torch
 
 from ..utils.contracts import fingerprint
 from ..utils.runtime import PipelineRuntime
-from ..utils.state import read_json, tuple_tree, write_json
+from ..utils.state import read_json, write_json
 from ..utils.numerics import resolve_device
 
 
 class PipelineBase(PipelineRuntime, ABC):
     def __init__(self, config, model=None, dataset=None):
-        """Store injected adapters, policy RNG and the optional active auxiliary reference.
-        Run-specific cursors, replay and checkpoint storage are initialized by the runtime.
-        """
+        """The runtime initializes in-memory work cursors and replay when a run is bound."""
         self.config = config
         self.policy = {}
         self.rng = random.Random()
@@ -38,11 +33,10 @@ class PipelineBase(PipelineRuntime, ABC):
         """Follow the shared learner's Torch device; unbound numerical steps use CPU."""
         return self.model.device if self.model is not None else resolve_device("cpu")
 
-
     def set_model(self, model):
-        """Share the exact learner wrapper across this owner and all registered components.
-        Update any bound context as well, so later lifecycle calls use the replacement.
-        No weights or optimizer state are copied; callers switch between completed operations.
+        """Replace the shared wrapper in every component and bound context between operations.
+
+        Offload the previous learner; do not copy its weights or optimizer state.
         """
         if self.context is not None and self.model is not None and self.model is not model:
             self.model.offload()
@@ -55,25 +49,6 @@ class PipelineBase(PipelineRuntime, ABC):
             model.bind_dataset(self.context.dataset)
         return self
 
-
-    def get_policy_state(self):
-        """Copy every registered component's policy and RNG without copying model tensors.
-        Deep copies prevent later policy mutations from changing the saved snapshot.
-        Lifecycle cursors and replay belong to full checkpoints, not this composition helper.
-        """
-        return {name: {"policy": copy.deepcopy(component.policy), "rng": component.rng.getstate()}
-                for name, component in self.components().items()}
-
-    def set_policy_state(self, state):
-        """Restore matching component policies and RNG streams from an independent snapshot.
-        Convert JSON-restored RNG lists back to tuples before passing them to Random.setstate.
-        Leave the shared model, replay membership and lifecycle progress unchanged.
-        """
-        for name, component in self.components().items():
-            component.policy = copy.deepcopy(state[name]["policy"])
-            component.rng.setstate(tuple_tree(state[name]["rng"]))
-        return self
-
     def required_capabilities(self):
         """Let paper components declare the learner operations they require; the base requires none."""
         return set()
@@ -81,11 +56,6 @@ class PipelineBase(PipelineRuntime, ABC):
     def auxiliary_roles(self):
         """Let components declare isolated roles and initializations needed by the run."""
         return ()
-
-    def dependencies(self):
-        """Let components name frozen artifacts that a full checkpoint must retain."""
-        return ()
-
 
     def observe(self, report, records):
         """Methods with update-clock policies override this hook."""
@@ -162,7 +132,7 @@ class PipelineBase(PipelineRuntime, ABC):
 
 
 class SummarizationPipeline(PipelineBase):
-    """Shared checkpoint/cost plumbing for the three independent summarization jobs."""
+    """Shared execution and cost reporting for the summarization jobs."""
 
     def input_identity(self):
         return {}
@@ -170,11 +140,12 @@ class SummarizationPipeline(PipelineBase):
     def run(self, context):
         started = time.perf_counter()
         path = Path(context.output) / "run.json"
-        started_complete = path.is_file() and read_json(path).get("status") == "completed"
+        if path.exists():
+            raise FileExistsError(f"Run output already exists: {context.output}; choose a fresh directory")
         try:
             return super().run(context)
         finally:
-            if path.is_file() and hasattr(self, "artifacts") and not started_complete:
+            if path.is_file() and hasattr(self, "artifacts"):
                 with self.artifacts.lock():
                     manifest = read_json(path)
                     if manifest["identity"] == self.artifacts.identity:
@@ -183,8 +154,8 @@ class SummarizationPipeline(PipelineBase):
                         peaks = [cost.get("peak_device_allocated_bytes") or cost.get("process_peak_cpu_bytes")
                                  for cost in costs]
                         measured = [value for value in peaks if value is not None]
-                        manifest.update(wall_clock_seconds=manifest.get("wall_clock_seconds", 0) + elapsed,
-                                        gpu_hours=manifest.get("gpu_hours", 0) + (elapsed / 3600 if self.device.type != "cpu" else 0),
+                        manifest.update(wall_clock_seconds=elapsed,
+                                        gpu_hours=elapsed / 3600 if self.device.type != "cpu" else 0,
                                         peak_memory_mb=max(measured) / 1024 ** 2 if measured else None,
                                         model_params=self.model.info.total_parameters, inference_latency_ms=None,
                                         result_type="null", result_reason="No scientific comparison assessed")
@@ -202,10 +173,6 @@ class SummarizationPipeline(PipelineBase):
             self.resolved['gradient_checkpointing'] = True
         # Once per bind; numerical forwards never hash tokens or parameters.
         self.artifacts.identity = fingerprint(self.resolved)
-
-    def _commit(self):
-        if self.context is not None:
-            self.boundary()
 
     def _cost(self, category, records, measured, generated=()):
         details = {"category": category, "rows": len(records),

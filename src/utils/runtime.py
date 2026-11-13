@@ -1,5 +1,3 @@
-"""Generic lifecycle execution; the owner supplies all paper policies."""
-
 from dataclasses import asdict, replace
 from pathlib import Path
 import torch
@@ -9,8 +7,8 @@ import random
 import time
 
 
-from .state import Checkpoints, ReplayStore, read_json, write_json
-from .contracts import RunResult, TrainLimits, TrainingBatch, UpdateHooks, training_records
+from .state import Artifacts, ReplayStore, write_json
+from .contracts import RunResult, TrainLimits, TrainingBatch, UpdateHooks
 
 
 class PipelineRuntime:
@@ -43,7 +41,7 @@ class PipelineRuntime:
             "model": self.model.info.identity, "dataset": type(self.dataset).__name__,
             "device": str(self.model.device),
         }
-        self.artifacts = Checkpoints(context.output, type(self).__name__, self.spec.resources.disk_bytes,
+        self.artifacts = Artifacts(context.output, type(self).__name__, self.spec.resources.disk_bytes,
                                      external_bytes=lambda: self.model.base_storage_bytes)
 
     def _activate(self, model):
@@ -87,7 +85,6 @@ class PipelineRuntime:
             if restore_learner:
                 self._activate(self.model)
 
-
     def record_event(self, kind, **details):
         """Advance the audit watermark and attach task identity to one completed observation."""
         self.event += 1
@@ -105,16 +102,11 @@ class PipelineRuntime:
         def collect(container, key, value):
             if isinstance(value, torch.Tensor):
                 found.append((container, key, value))
-            elif isinstance(value, dict):
-                for inner_key, inner in value.items():
+            elif isinstance(value, (dict, list)):
+                for inner_key, inner in (value.items() if isinstance(value, dict) else enumerate(value)):
                     collect(value, inner_key, inner)
-            elif isinstance(value, list):
-                for index, inner in enumerate(value):
-                    collect(value, index, inner)
 
-        for event in self.events[start:]:
-            for key, value in event.items():
-                collect(event, key, value)
+        collect(None, None, self.events[start:])
         for integral in (False, True):
             group = [(c, k, t) for c, k, t in found if t.numel() == 1 and (t.dtype.is_floating_point is not integral)]
             if group:
@@ -127,76 +119,9 @@ class PipelineRuntime:
                 container[key] = tensor.detach().cpu().tolist()
         self._materialized = len(self.events)
 
-    def boundary(self, *, force=False):
-        """Checkpoint at the event cadence, or immediately for a forced phase transition."""
-        if force or self.event - self.saved_event >= self.spec.checkpoint_every:
-            self.save(self.context.output)
-
     @property
     def task_id(self):
-        """Return the active task ID, or None once all configured tasks are complete."""
         return self.spec.task_ids[self.task_index] if self.task_index < len(self.spec.task_ids) else None
-
-    def state_dict(self):
-        """Collect replay, cursors, counters, metrics and component policies as plain checkpoint data.
-        Model numerical state is saved separately in the same checkpoint transaction.
-        """
-        self._materialize_events()
-        return {
-            "schema": 1, "event": self.event, "task_index": self.task_index, "phase": self.phase,
-            "progress": self.progress, "counters": self.counters, "metrics": self.metrics,
-            "events": self.events, "replay": self.replay.state_dict(),
-            "components": self.get_policy_state(),
-            "auxiliary_key": self.auxiliary_key,
-        }
-
-    def save(self, path):
-        """Publish policy and numerical state together under the attempt writer lock.
-        Teacher dependencies and the active auxiliary travel with this recovery unit.
-        Advance the saved event watermark only after publication succeeds.
-        """
-        if self.context is None or Path(path).resolve() != Path(self.context.output).resolve():
-            raise ValueError("Bind a context; save only inside its attempt directory")
-        with self.artifacts.lock():
-            self._checkpoint = self.artifacts.publish(
-                self.state_dict(), self.model, self.auxiliary, self.dependencies(),
-                completed=self.phase == "completed")
-        self.saved_event = self.event
-        return self._checkpoint
-
-    def load(self, path):
-        """Restore the matching bound attempt under its writer lock."""
-        if self.context is None or Path(path).resolve() != Path(self.context.output).resolve():
-            raise ValueError("Bind the matching context before loading")
-        with self.artifacts.lock():
-            self._load()
-
-    def _load(self):
-        """Restore the newest checkpoint directly: policies, replay and learner numerical state.
-        If interrupted auxiliary work exists, restore that role and keep the learner offloaded.
-        Prune payloads only after loading the selected checkpoint's state.
-        """
-        checkpoint, state = self.artifacts.latest(verify=False)
-        if state["schema"] != 1:
-            raise ValueError("Unsupported recovery schema")
-        for name in ("event", "task_index", "phase", "progress", "counters", "metrics", "events"):
-            setattr(self, name, state[name])
-        self.replay = ReplayStore.restore(state["replay"], self.spec.replay)
-        self.set_policy_state(state["components"])
-        self.model.load(checkpoint / "learner", "resume")
-        self.auxiliary_key = state["auxiliary_key"]
-        if self.auxiliary_key is not None:
-            self.model.offload()
-            self.auxiliary = self.model.fork(*self.auxiliary_key)
-            self.auxiliary.load(checkpoint / "auxiliary", "resume")
-            self._activate(self.auxiliary)
-        else:
-            self._activate(self.model)
-        self.saved_event = self.event
-        self._checkpoint = str(checkpoint)
-        retained = (self.artifacts.recovery and [checkpoint.name]
-                    or read_json(self.artifacts.root / "latest.json")["checkpoints"])
-        self.artifacts.prune(retained)
 
     def _initialize(self):
         """Reset lifecycle state and replay for a new attempt using the captured initial policies.
@@ -204,7 +129,7 @@ class PipelineRuntime:
         Activate the supplied learner without replacing its initial weights.
         """
         self.auxiliary, self.auxiliary_key = None, None
-        self.task_index, self.event, self.saved_event = 0, 0, 0
+        self.task_index, self.event = 0, 0
         self.phase, self.progress, self.metrics, self.events = "open", {}, [], []
         self.counters = {"attempts": 0, "steps": 0, "tokens": 0}
         self.replay = ReplayStore(budget=self.spec.replay)
@@ -214,67 +139,37 @@ class PipelineRuntime:
         self._activate(self.model)
 
     def run(self, context):
-        """Resume or initialize an attempt, then advance explicit task lifecycle phases.
-        Delegate paper decisions through hooks and numerical updates through the model adapter.
-        Commit replay before evaluation, checkpointing phase progress to avoid repeated committed work.
-        On failure, preserve the last complete checkpoint and release resident numerical roles.
-        """
         self.bind(context)
         with self.artifacts.lock():
             manifest_path = Path(context.output) / "run.json"
-            existing = manifest_path.exists()
-            if self.spec.resume == "never" and existing:
-                raise FileExistsError("never requires a new attempt output directory")
-            if existing:
-                manifest = read_json(manifest_path)
-                self.load(context.output)
-            elif self.spec.resume == "required":
-                raise FileNotFoundError("No matching attempt to resume")
-            else:
-                self._initialize()
-                write_json(manifest_path, {"identity": self.artifacts.identity, "status": "running",
-                                          "resolved": self.resolved,
-                                          "spec": asdict(self.spec),
-                                          "config": {k: asdict(c.config)
-                                                     for k, c in self.components().items()}})
-                self.save(context.output)
+            if manifest_path.exists():
+                raise FileExistsError(f"Run output already exists: {context.output}; choose a fresh directory")
+            self._initialize()
+            manifest = {"identity": self.artifacts.identity, "status": "running", "resolved": self.resolved,
+                        "spec": asdict(self.spec), "config": {k: asdict(c.config) for k, c in self.components().items()}}
+            write_json(manifest_path, manifest)
             try:
-                while self.phase != "completed":
-                    if self.phase == "open":
-                        self.current = self._open_view()
-                        self.progress = {"cursor": 0, "queue": [], "admitted": [],
-                                         "repeat_cursor": 0, "pass": 1,
-                                         "attempts": 0, "steps": 0, "tokens": 0}
-                        self.phase = "opening"
-                        self.boundary(force=True)
-                    elif self.phase == "opening":
-                        self.current = self._open_view()
-                        self.open_task()
-                        self.phase = "training"
-                        self.record_event("task_open")
-                        self.boundary(force=True)
-                    elif self.phase == "training":
-                        self.current = self._open_view()
+                for self.task_index, _task in enumerate(self.spec.task_ids):
+                    self.current = self._open_view()
+                    self.progress = {"cursor": 0, "queue": [], "admitted": [], "repeat_cursor": 0, "pass": 1,
+                                     "attempts": 0, "steps": 0, "tokens": 0}
+                    self.open_task()
+                    self.phase = "training"
+                    self.record_event("task_open")
+                    while True:
                         limited = self._limit_reached()
-                        if limited:
-                            update = None
-                        else:
-                            update = self.next_update()
+                        update = None if limited else self.next_update()
                         if update is None:
-                            self.phase = "memory"
                             self.record_event("training_complete", reason=(
                                 "limits" if limited else self.progress.get("stop_reason", "exhausted")),
                                 attempts=self.progress["attempts"], steps=self.progress["steps"])
-                            self.boundary(force=True)
-                            continue
+                            break
                         records, origins, objective, hooks = update
                         batch = self.collate(records)
                         if self.progress["tokens"] + batch.valid_tokens > self.spec.max_tokens:
-                            self.phase = "memory"
                             self.record_event("token_limit")
-                            self.boundary(force=True)
-                            continue
-                        report = self.execute(self.model, TrainingBatch( batch, tuple(origins)), objective, hooks)
+                            break
+                        report = self.execute(self.model, TrainingBatch(batch, tuple(origins)), objective, hooks)
                         for key, amount in (("attempts", 1), ("steps", int(report.success)), ("tokens", report.tokens)):
                             self.counters[key] += amount
                             self.progress[key] += amount
@@ -282,36 +177,21 @@ class PipelineRuntime:
                         self.progress.pop("branch", None)
                         self.record_event("learner_update", ids=list(batch.ids), origins=list(origins),
                                           report=self.report_summary(report))
-                        self.boundary()
-                    elif self.phase == "memory":
-                        self.current = self._open_view()
-                        proposal = self.finish_task()
-                        self.replay = self.replay.proposal(proposal)
-                        self.after_memory_commit()
-                        self.current = ()
-                        self.progress = {}
-                        self.phase = "evaluation_pending"
-                        self.record_event("memory_commit", ids=[r.sample_id for r in self.replay.records],
-                                          storage=self.replay.usage)
-                        self.boundary(force=True)
-                    elif self.phase == "evaluation_pending":
-                        self._evaluate_seen()
-                        self.task_index += 1
-                        self.phase = "completed" if self.task_index == len(self.spec.task_ids) else "open"
-                        self.record_event("evaluation_complete")
-                        self.boundary(force=True)
-                    else:
-                        raise ValueError(f"Unknown phase {self.phase}")
+                    self.phase = "memory"
+                    self.replay = self.replay.proposal(self.finish_task())
+                    self.after_memory_commit()
+                    self.current, self.progress = (), {}
+                    self.record_event("memory_commit", ids=[r.sample_id for r in self.replay.records], storage=self.replay.usage)
+                    self.phase = "evaluation"
+                    self._evaluate_seen()
+                    self.record_event("evaluation_complete")
+                self.task_index = len(self.spec.task_ids)
+                self.phase = "completed"
                 self._write_metrics()
-                manifest = read_json(manifest_path)
                 manifest["status"] = "completed"
-                manifest["checkpoint"] = str(Path(self._checkpoint).relative_to(context.output))
                 write_json(manifest_path, manifest)
-                return RunResult("completed", self._checkpoint, self.spec.task_ids,
-                                 tuple(self.metrics), dict(self.counters))
+                return RunResult("completed", "", self.spec.task_ids, tuple(self.metrics), dict(self.counters))
             except BaseException as error:
-                # Never overwrite a good checkpoint with a partially failed update.
-                manifest = read_json(manifest_path)
                 manifest.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
                                 error=f"{type(error).__name__}: {error}")
                 write_json(manifest_path, manifest)
@@ -321,14 +201,11 @@ class PipelineRuntime:
                     self.auxiliary.release()
                     self.auxiliary = None
                 self.auxiliary_key = None
-                self.model.offload()
+                self.model.release()
 
     def _open_view(self):
-        """Reopen only the current task's canonical training view.
-        Check identity separation from historical replay and verify deterministic arrival order.
-        Budget retained/current payload together with the largest sequentially resident model role.
-        """
-        records = training_records(self.dataset.training_view(self.task_id), self.task_id)
+        """Materialize the current training view without changing its order."""
+        records = tuple(self.dataset.training_view(self.task_id))
         if not records:
             raise ValueError("Required training partition is empty")
         if set(r.sample_id for r in records) & set(
@@ -400,10 +277,7 @@ class PipelineRuntime:
         return items
 
     def current_batch(self, selector=None, *, peek=False):
-        """Scan arrivals until admission produces a queued batch or the current view is exhausted.
-        Checkpoint cursor, admitted IDs and queue together so resume preserves each selection.
-        Repeat only admitted membership when configured; peek leaves the pending batch unconsumed.
-        """
+        """Queue admitted arrivals, repeating only admitted IDs; peek leaves the batch queued."""
         progress = self.progress
         by_id = {r.sample_id: r for r in self.current}
         ordered_current = self.learner_pass_order(self.current, 1)
@@ -417,7 +291,6 @@ class PipelineRuntime:
             progress["queue"] = list(selected)
             progress["admitted"].extend(selected)
             self.record_event("arrival", observed=[r.sample_id for r in records], admitted=list(selected))
-            self.boundary()
         if not progress["queue"]:
             if (self.spec.exhaustion == "repeat_admitted" and progress["admitted"]
                     and progress["pass"] < self.spec.passes):
@@ -445,9 +318,7 @@ class PipelineRuntime:
         return self.model.evaluate(view, evaluation_spec)
 
     def _evaluate_seen(self):
-        """Evaluate each seen task once for the current task-boundary checkpoint.
-        Skip already recorded rows after resume and checkpoint each newly completed evaluation.
-        """
+        """Evaluate each seen task once at the current task boundary."""
         for task in self.spec.task_ids[:self.task_index + 1]:
             if any(r["checkpoint_task"] == self.task_id and r["task"] == task for r in self.metrics):
                 continue
@@ -461,10 +332,8 @@ class PipelineRuntime:
                 write_json(prediction_dir / f"stage-{self.task_index + 1}-task-{stage + 1}.json", predictions)
             self.metrics.append({"checkpoint_task": self.task_id, "task": task, "metrics": metrics})
             self.record_event("evaluation", task_evaluated=task, metrics=metrics)
-            self.boundary()
 
     def _write_metrics(self):
-        """Export committed metric rows to CSV and the recorded event history to JSON."""
         with (Path(self.context.output) / "metrics.csv").open("w", newline="") as stream:
             writer = csv.writer(stream)
             writer.writerow(("checkpoint_task", "task", "metric", "value"))

@@ -1,102 +1,215 @@
-## PaperWriting Skills
+# Multilingual summarization experiments
 
-This repository stores reusable skills, shared instructions, and helper scripts for an AI-assisted industrial research workflow.
+mBART learns English summarization, then Hindi, with LoRA and English replay on XL-Sum.
 
-The research workflow is in [ARCHITECTURE.md](/ARCHITECTURE.md); the current implementation blueprint is [design/README.md](/design/README.md).
+## Main command to run
 
-The active experiment is [Cost-Efficient Incremental Fine-Tuning for Multilingual Summarization](/Idea_Refined_2.md). It teaches `google/mt5-small` to summarize English news, then updates the same frozen base with LoRA so it can summarize Hindi without a second model. XL-Sum supplies the articles. Decisions use validation. Test scores are saved for the report. Only a scientific run is a result. Smoke and pilot runs are development checks.
-
-## What the project does
-
-One shared LoRA adapter, rank 16 and alpha 32, trains on a frozen mT5-small (300,176,768 parameters). English is seed 0. Hindi arms use seeds 1, 2, and 3. Each language uses 2,000 training rows, 200 validation rows, and 500 test rows. The English replay pool is 500 rows taken from the English training split and written once. Replay is 2 English rows per 16 Hindi rows. Decoding is greedy, up to 64 new tokens.
-
-| Step | What happens |
-|---|---|
-| 0 | One English update, up to 20 summaries, truncation coverage, and tokens per character. A person still has to mark whether those summaries are readable. |
-| 1 | Train the English checkpoint and write the pool. Train Hindi with no replay (X). Record English forgetting, Hindi gain, the script-guard share (G5), and the gate: continue, stop the replay story, or fix the setup. Time base, English, and Hindi-only summaries, merged and unmerged. |
-| 2 | Replay English while learning Hindi. Compare random (A), loss (B), drift (G1), and past summaries (G2). Repair-and-stop (G3) continues from the parent with less English forgetting. |
-| 3 | Map where English and Hindi gradients clash (C1) and write that prediction before any block run. Train late blocks and early-plus-late blocks (C2). Combine the best revision with the best blocks (D), and train a full-English reference. |
-| 4 | Add new rank only where the maps clash (E1–E4), if the maps are stable and the new-parameter counts match within 3%. Otherwise record skipped or rejected and keep the combined arm. |
-| 5 | Shrink the random arm and the overall winner by an energy rule and a generation test (F). Time the winner, the shrunk adapter, and the block arms. |
-| 6 | Train a separate English checkpoint whose inputs start with `summarize in {language}:`, then run Hindi-only from it (G4). |
-| 7 | Run drift together with past summaries. Run the frozen-room arm (E5) when Phase 4 completed. Record reverse order, a third language, and past summaries without references as not run. |
-
-Each phase writes `report.json`, `report.csv`, and `report.md` under its directory, plus `final/<arm>/` so a later comparison can load that adapter. A finished phase report is reused. A finished arm is not retrained. An interrupted arm resumes from its checkpoint. Details are in [src/README.md](/src/README.md) and [the experiment contract](/design/summarization-experiments.md).
-
-## Commands
-
-Run these from the repository root after `source ~/venv/bin/activate`. The default command is a scientific run in the current directory. It continues from the last phase in `progress.json` through Phase 7. A directory with no progress runs Phase 0 through Phase 7.
+After completing the setup and downloads below, run this **from the repository root** (the folder containing `requirements.txt`):
 
 ```sh
-./download_datasets.sh xlsum
-./download_model_weights.sh mt5
-python -m src.summarization_experiment --device cuda
+python -u -m src.summarization_experiment --device cuda:0 --gradient-checkpointing --output results/code/summarization-run-01
 ```
 
-`--pilot` runs the pilot instead. `--output` chooses another directory. `--phase N` runs only that phase and reads the earlier reports from the same directory. `--device` is `cuda` or `xpu`.
+This starts the scientific experiment and runs **Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7** automatically. You do not need to run each phase separately. The scientific run continues beyond Phase 1 only if its gate is `continue`; some later comparisons can be skipped when their conditions are not met.
+
+Use a **fresh output folder for every run**, for example `summarization-run-02` next time. The runner refuses folders containing previous run artifacts and does not resume interrupted runs. `-u` shows Python output without buffering. Gradient checkpointing reduces activation memory use at the cost of extra computation.
+
+## Step-by-step setup
+
+### 1. Download the code
+
+Install Git and Python 3.11 or newer, then open a terminal and run:
 
 ```sh
-python -m src.summarization_experiment --pilot --device cuda
-python -m src.summarization_experiment --output results/code/summarization --device xpu
-python -m src.summarization_experiment --phase 3 --device cuda
+git clone https://github.com/YashNagda17/genai-continual-training.git
+cd genai-continual-training
 ```
 
-A scientific run stops after Phase 1 when the gate is not `continue`. Smoke, for a local check that is not a result:
+Alternatively, open the [GitHub repository](https://github.com/YashNagda17/genai-continual-training), select **Code -> Download ZIP**, extract it, and open a terminal inside the extracted folder. If you already have the code, open its folder and continue with Step 2.
+
+### 2. Create and activate a Python environment
+
+Choose the commands for your terminal.
+
+**Windows Command Prompt (CMD):**
+
+```bat
+py -3.11 -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+**Windows PowerShell:**
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+If Python 3.11 is not installed but you have a newer supported Python, use `python -m venv .venv` instead. If PowerShell blocks activation, use the CMD commands in a Command Prompt terminal.
+
+**Linux / WSL / cloud terminal:**
 
 ```sh
-python -m src.summarization_experiment --protocol smoke --output results/code/summarization-smoke
+python3 -m venv .venv
+source .venv/bin/activate
 ```
+
+Reactivate this environment whenever you open a new terminal. Run all remaining commands from the repository root with this environment active.
+
+### 3. Install dependencies and check the GPU
+
+```sh
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+For the NVIDIA GPU commands in this guide, verify that PyTorch can use CUDA:
+
+```sh
+nvidia-smi
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); assert torch.cuda.is_available(), 'CUDA is unavailable; check your PyTorch build and NVIDIA driver'; print('GPU:', torch.cuda.get_device_name(0))"
+```
+
+If CUDA is unavailable, install the appropriate CUDA-enabled PyTorch build using the [official PyTorch installer](https://pytorch.org/get-started/locally/) and repeat the check. `--device xpu` is available for supported Intel GPUs; omitting `--device` enables automatic device detection. Use the smoke check below for a small CPU run.
+
+### 4. Download the dataset and model weights
+
+These Python commands work in **Windows CMD, PowerShell, Linux, and WSL**. They download the English/Hindi XL-Sum splits and mBART summarizer into the locations used by the runner:
+
+```sh
+python -m src.datasets.dataset_sources xlsum src/datasets/data
+python -c "from huggingface_hub import snapshot_download; print(snapshot_download('ctu-aic/mbart25-multilingual-summarization-multilarge-cs', revision='main', cache_dir='src/models/model_weights', allow_patterns=['*.json', '*.safetensors', '*.model', '*.txt', 'pytorch_model.bin']))"
+```
+
+Allow both downloads to finish before training. Keep enough free disk space for the model, dataset, and run artifacts.
+
+On Linux / WSL, you can use the helper scripts **instead of** those two Python download commands:
+
+```sh
+bash download_datasets.sh xlsum
+bash download_model_weights.sh mbart
+```
+
+### 5. Check that the project runs
+
+**Smoke check without model or dataset downloads** (requires the dependencies from Step 3):
+
+```sh
+python -u -m src.summarization_experiment --protocol smoke --output results/code/summarization-smoke-01
+```
+
+This uses a tiny random model on CPU by default and saves artifacts in the specified folder. It checks execution, not scientific quality. You can run it before Step 4.
+
+To run the smoke check on NVIDIA CUDA instead, choose another fresh output folder:
+
+```sh
+python -u -m src.summarization_experiment --protocol smoke --device cuda:0 --output results/code/summarization-cuda-smoke-01
+```
+
+Smoke runs save their reports in the output folder. For a real-model development run after downloading the model and dataset, use the pilot in Step 6.
+
+### 6. Run the experiment
+
+**Full scientific run:**
+
+```sh
+python -u -m src.summarization_experiment --device cuda:0 --gradient-checkpointing --output results/code/summarization-run-01
+```
+
+The scientific defaults are four training passes per language, 2,000 training rows, 200 validation rows, and 500 test rows per language. The English replay pool contains 500 training rows. Replay uses two English rows per 16 Hindi rows. Decoding is greedy, with at most 256 new tokens. Every arm runs once with fixed shared randomness; the runner does not perform seed sweeps.
+
+**Pilot with saved outputs**, using the standard dataset sizes and one epoch:
+
+```sh
+python -u -m src.summarization_experiment --pilot --epochs 1 --device cuda:0 --gradient-checkpointing --output results/code/summarization-pilot-01
+```
+
+The pilot runs all seven phase jobs without the scientific Phase 1 stop gate; later conditional comparisons still use their eligibility rules. `--pilot` alone keeps the default dataset sizes and four passes. `--epochs 1` reduces training to one pass per language; it does not reduce the dataset sizes.
+
+For five passes on the default dataset sizes, use another fresh folder:
+
+```sh
+python -u -m src.summarization_experiment --pilot --epochs 5 --device cuda:0 --gradient-checkpointing --output results/code/summarization-pilot-5epochs
+```
+
+Nondefault epoch counts require a pilot or smoke run. The same pass count applies to English and Hindi training stages throughout that invocation.
+
+## Phases in execution order
+
+One shared LoRA adapter, rank 16 and alpha 32, trains on the frozen mBART summarizer. Each comparison below is an experiment arm. Validation decides gates, winners, and shrink ranks; test scores are report-only.
+
+| Order | Phase | What happens |
+|---|---|---|
+| 1 | English training and Hindi-only baseline | Train the English checkpoint and save the replay pool. Learn Hindi without replay (X), measure English forgetting, Hindi gain, and script-guard share (G5). Record the gate: continue, stop the replay story, or fix the setup. Time base, English, and Hindi-only summaries, merged and unmerged. |
+| 2 | English replay comparisons | Learn Hindi while replaying English. Compare random (A), loss (B), drift (G1), and past-summary replay (G2). Run repair-and-stop (G3) with the selector from the loss/drift parent that has less English forgetting. |
+| 3 | Gradient maps, block placement, and combination | Map where English/Hindi gradients clash (C1) and save the prediction before block runs. Compare late and early-plus-late blocks (C2), combine the best revision with the best blocks (D), and train a full-English replay reference. Run the compute-matched random control when drift wins or conditional comparisons are forced. |
+| 4 | Extra adapter capacity | Test new adapter room (E1-E4) if gradient maps are stable and new-parameter counts match within 3%. Otherwise record skipped or rejected and keep the combined arm. |
+| 5 | Adapter shrinking and serving | Shrink the random arm and overall winner using an energy rule and a generation test (F). Time the winner, shrunk adapter, and block arms. |
+| 6 | Language-prefix comparison | When validation script-recovery share meets the threshold, train a separate English checkpoint with `summarize in {language}:` inputs, then learn Hindi without replay (G4). Otherwise record skipped. |
+| 7 | Cached teacher knowledge distillation | Compare matched reference replay against cached English-teacher KD on mBART. Report English/Hindi validation chrF and ROUGE-L differences. |
+
+The scientific runner stops after Phase 1 when its gate is not `continue`. Read `run.json` and `phase1/report.md` in your output folder for the outcome. There is no separate phase-selection command; each invocation starts at Phase 1 and follows the order above.
+
+## Where to find your outputs
+
+For `--output results/code/summarization-run-01`, outputs are organized as follows. Later phase folders appear only if reached:
+
+```text
+results/code/summarization-run-01/
+  prepared/                 Prepared real-data views
+  phase1/                   English checkpoint, pool, Hindi-only arm, reports
+  phase2/                   Replay arms and reports
+  phase3/                   Maps, block/combined arms, reports
+  phase4/                   Extra-room results or skip/rejection reports
+  phase5/                   Shrinking and serving reports
+  phase6/                   Language-prefix results or skip report
+  phase7/                   KD comparison and reports
+    kd/report.md            Detailed paired KD report
+  run.json                  Final status and completed phase numbers
+```
+
+Each phase writes `report.md`, `report.csv`, and `report.json`. Each trained arm saves one final adapter, predictions, metrics, and measured costs; reports point directly to that adapter. Saved progress and completed reports never skip work on a new invocation.
+
+## Separate CSReL / TSR baseline comparisons
+
+After a real mBART run, run these additional comparisons independently of Phases 1-7:
+
+```sh
+python -u -m src.baseline_experiment --source results/code/summarization-run-01 --output results/code/mbart-baselines-01 --epochs 1 --device cuda:0 --gradient-checkpointing
+```
+
+`--source` must contain prepared data, its English adapter, and replay pool. Imported reports included in this repository do not contain these training inputs. Keep baseline output separate from the source run.
+
+This trains each baseline for one epoch and reports CSReL, its matched random-memory control, TSR, and ordinary random replay. Reports and final adapters are saved in the baseline output folder. These are summarization adaptations, not exact paper reproductions.
+
+## Recorded results
+
+[Experiment results](results/report.md) are available as [CSV](results/report.csv) and [JSON](results/report.json), with reports for Phases 1-7 under `results/phases/`. These recorded results are separate from new runs you launch with the commands above.
+
+The recorded scientific run passed the Phase 1 gate. Hindi-only, random replay, and the combined winner have results for seeds 1-3. New adapter room and language-prefix training were skipped; KD did not meet the selection criterion. The current runner runs each arm once without automatic seed sweeps.
 
 ## Tracking: what is left
 
 | Item | State |
 |---|---|
-| Phases 0–7, resume, per-arm scores, timings, and saved adapters | Implemented. Checked on the smoke model only. |
-| Pilot on real XL-Sum, including a human read of the 20 summaries | Not run. Phase 0 leaves `readability_review` as `pending`. |
-| Scientific run on the GPU, seeds 1–3 | Not started. This is the only run that can be reported. |
-| G1 compute-matched control | Not a phase. Tier 3 in the plan. |
-| Blind rating sheets, two raters, and Cohen's kappa | Not produced. The kappa function exists. The sheets and the rater loop do not. |
-| One report that marks P1–P10 and principles M, N, K, L, and P | Phase reports store the comparisons they compute. The single prediction and principle table is not assembled. |
-| Reverse order, a third language, and past summaries without references | Recorded as skipped in Phase 7. |
+| Phases 1-7, fresh runs, per-arm scores, timings, and saved adapters | Implemented; recorded CUDA results are linked above. |
+| Scientific run on the GPU, seeds 1-3 | CUDA results recorded for Hindi-only, random, and combined; see [results and phase outcomes](results/report.md). |
+| CSReL and TSR baseline experiments | Implemented in the separate baseline runner; measurements pending. |
+| G1 compute-matched control | Conditional comparison implemented in Phase 3. |
+| Blind rating sheets, two raters, and Cohen's kappa | Sheets and the rater loop are not produced; the kappa function exists. |
+| One report that marks P1-P10 and principles M, N, K, L, and P | Phase reports store their comparisons; the single prediction and principle table is not assembled. |
+| Phase 7 | Paired cached mBART teacher KD versus matched replay, with validation chrF/ROUGE-L reports. |
 
-## Implemented Markdown Files
+## Project layout and research workflow
 
-The repository currently contains these implemented workflow skill files under `skills/`:
+```text
+results/                    Recorded results and local experiment outputs
+src/                        Models, datasets, pipelines, and phase runner
+src/docs/                   Archived research notes and paper references
+requirements.txt            Python dependencies
+download_model_weights.sh   Bash model download helper
+download_datasets.sh        Bash dataset download helper
+README.md                   Setup, commands, and phase order
+```
 
-- [skills/literature-review.md](/skills/literature-review.md): literature search and review workflow
-- [skills/challenger.md](/skills/challenger.md): adversarial idea refinement from literature evidence
-- [skills/domain-generator.md](/skills/domain-generator.md): theory-backed domain grounding and assumption correction
-- [skills/experiment-generator.md](/skills/experiment-generator.md): high-impact experiment planning from grounded claims
-- [skills/code-generator.md](/skills/code-generator.md): minimal reproducible code generation for approved experiments
-- [skills/high-level-paper-writer.md](/skills/high-level-paper-writer.md): markdown-only paper flow from experiment plans and result artifacts
-- [skills/overleaf-paper-writer.md](/skills/overleaf-paper-writer.md): conference-guideline-driven LaTeX paper drafting
-- [skills/paper-reviewer.md](/skills/paper-reviewer.md): reviewer-style novelty, impact, and experiment-gap review
-
-The repository also contains these implemented support markdown files and utilities:
-
-- [skills/scripts.md](/skills/scripts.md): canonical script registry
-- [skills/general_guidelines.md](/skills/general_guidelines.md): shared repo conventions
-- [skills/karpathy-guidelines.md](/skills/karpathy-guidelines.md): execution rules for research tasks
-- [src/litreview/](/src/litreview/): helper modules for search, merging, ranking, scaffolding, and PDF extraction
-
-Current pipeline:
-
-`Literature Review -> Challenger -> Domain Generator -> Experiment Generator -> Code Generator -> High-Level Paper Writer -> Overleaf Paper Writer -> Paper Reviewer`
-
-## Output Convention
-
-The repo’s shared conventions in [skills/general_guidelines.md](/skills/general_guidelines.md) treat `results/` as the canonical research-output root; executable code follows [code-structure.md](/code-structure.md):
-
-- `results/literature-review/`
-- `results/challenger/`
-- `results/domain/`
-- `results/experiments/`
-- `results/paper/`
-- `results/review/`
-- `results/summary.md`
-
-There are still legacy sample artifacts under `resources/lit-review/`. Those are older examples, not the target architecture.
-
-## Planned Additions
-
-The summarization phases above are the active experiment. The remaining experiment work is in [Tracking: what is left](#tracking-what-is-left). The writing workflow still has no final LaTeX-draft preparation step.
+See [src/README.md](src/README.md) for implementation details, [SKILLS.md](src/docs/SKILLS.md) for the writing/research workflow, and [ARCHITECTURE.md](src/docs/ARCHITECTURE.md) for stages and artifacts. The writing workflow still has no final LaTeX-draft preparation step.

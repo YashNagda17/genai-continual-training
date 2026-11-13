@@ -1,10 +1,7 @@
-"""ctu-aic/mbart25-multilingual-summarization-multilarge-cs, the summarizer for every phase.
+"""mBART layer names and packing for the shared seq2seq executor.
 
-The shared executor owns the loss, the optimizer, and generation. This class teaches it
-mBART's layer names and packing. Both languages use ``en_XX``: articles and summaries are
-``tokens </s> en_XX``, and the decoder starts on ``en_XX``. No language id tells the model
-which language to write; the article's own script is the only cue (arm X). G4 adds a text
-instruction instead.
+Both languages use ``tokens </s> en_XX`` and start decoding on ``en_XX``.
+The article script is the only language cue in X; G4 adds a text instruction.
 """
 
 import torch
@@ -51,7 +48,7 @@ def encode_summary(tokenizer, text, lang_code, limit):
 
 
 def _sdpa_factory(config):
-    """Scaled-dot-product attention. The shared executor stays on eager attention for mT5."""
+    """Scaled-dot-product attention. Test fixtures can explicitly supply eager attention."""
     return AutoModelForSeq2SeqLM.from_config(config, attn_implementation="sdpa")
 
 
@@ -60,9 +57,6 @@ SHARED_CODE = LANG_CODES["english"]
 
 class MBart25Summarizer(Seq2SeqLMModel):
     model_id = MODEL_ID
-    model_type = "mbart"
-    stack_paths = {"encoder": "model.encoder", "decoder": "model.decoder"}
-    blocks_attribute = "layers"
 
     def __init__(self, settings=None, *, gradient_checkpointing=False, **kwargs):
         self.gradient_checkpointing = gradient_checkpointing

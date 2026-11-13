@@ -1,6 +1,0 @@
-# Local recovery state; reports, predictions and final adapters are shared.
-/phase2/*/checkpoints/
-/phase2/*/hindi/
-/phase2/*/run.json
-/phase2/*/events.json
-/phase2/*/latest.json
