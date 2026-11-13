@@ -1,7 +1,4 @@
 """mBART layer names and packing for the shared seq2seq executor.
-
-Both languages use ``tokens </s> en_XX`` and start decoding on ``en_XX``.
-The article script is the only language cue in X; G4 adds a text instruction.
 """
 
 import torch
@@ -13,7 +10,7 @@ from .model_seq2seq import Seq2SeqLMModel, Seq2SeqLoRA, _seed_for
 MODEL_ID = "ctu-aic/mbart25-multilingual-summarization-multilarge-cs"
 
 # facebook/mbart-large-cc25 language codes used by this checkpoint's tokenizer.
-LANG_CODES = {"english": "en_XX", "hindi": "en_XX"}
+LANG_CODES = {"english": "en_XX", "hindi": "hi_IN"}
 
 _PROJECTION = { "q_proj": "q", "k_proj": "k", "v_proj": "v", "out_proj": "o", "fc1": "wi_0", "fc2": "wo", }
 _PART = {"self_attn": "self_attention", "encoder_attn": "cross_attention"}

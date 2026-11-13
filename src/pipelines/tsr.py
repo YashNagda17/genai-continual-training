@@ -6,7 +6,7 @@ import random
 
 import torch
 
-from .adapter_room import AdapterRoomPipeline
+from .block_selection import BlockSelectionPipeline
 from .csrel import CSReLReplayPipeline
 from .revision import RevisionConfig
 from ..utils.numerics import cosine
@@ -58,7 +58,7 @@ class TSRPipeline(CSReLReplayPipeline):
             signatures = {}
             for language, source in (('english', tuple(self.dataset.training_view('english'))), ('hindi', self.current)):
                 rows = source[:self.config.probe_batches * self.config.hindi_batch]
-                values = AdapterRoomPipeline._mean_gradient(self, rows, 'block', f'tsr-{language}', probe)
+                values = BlockSelectionPipeline._mean_gradient(self, rows, 'block', f'tsr-{language}', probe)
                 signatures[language] = torch.cat(list(values.values())).cpu()
             if any(not torch.isfinite(v).all() or v.norm() == 0 for v in signatures.values()):
                 raise ValueError('TSR requires finite nonzero task signatures')

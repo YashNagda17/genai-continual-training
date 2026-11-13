@@ -8,7 +8,7 @@ The current plan is [Idea_Refined_2.md](/Idea_Refined_2.md). An English news sum
 
 The table below retains the CSReL and TSR foundations of the original framing.
 Their baseline adaptations are implemented under `src/pipelines/csrel.py` and `src/pipelines/tsr.py`.
-They run through `python -m src.baseline_experiment`, separately from Phases 1-7.
+They run through `python -m src.baseline_experiment`, separately from the five report phases.
 
 ## Retained paper foundations
 

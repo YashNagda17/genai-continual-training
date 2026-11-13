@@ -4,6 +4,7 @@ import csv
 import time
 
 from ..utils.state import read_json, write_json
+from .settings import PHASE_NAMES
 
 
 def accuracies_of(metrics):
@@ -113,12 +114,15 @@ def save_report(directory, phase, details, context):
         writer = csv.writer(handle)
         writer.writerow(("run", "metric", "value"))
         writer.writerows(rows)
-    lines = [f"# Phase {phase}", "", "| run | metric | value |", "|---|---|---:|"]
+    name = PHASE_NAMES[phase]
+    title = f"Phase {phase}: {name}"
+    lines = [f"# {title}", "", "| run | metric | value |", "|---|---|---:|"]
     lines.extend(f"| {name} | {key} | {str(value).replace('|', '/').replace(chr(10), ' ')} |" for name, key, value in rows)
     if details.get("reason"):
         lines += ["", str(details["reason"])]
     (directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    write_json(path, {"phase": phase, "status": "completed", "details": details, "context": context})
+    write_json(path, {"phase": phase, "phase_name": name,
+                      "status": "completed", "details": details, "context": context})
     return context
 
 

@@ -92,19 +92,6 @@ def build_smoke_dataset(model):
     return dataset
 
 
-def with_prefix(dataset, model, prefix):
-    """Prefix exactly the registered subsets, preserving all ordered protocol views."""
-    fresh = SummarizationDataset()
-    fresh.manifest = dict(dataset.manifest)
-    views = {split: tuple(row for language in ("english", "hindi") for row in
-                 dataset.views.get(f"{language}/{split}", tuple(r for r in dataset.views.get(split, ()) if r.task_id == language)))
-             for split in ("train", "validation", "test")}
-    fresh.preprocess(views, Seq2SeqPreprocessing(**model.preprocessing_kwargs(), prefix=prefix))
-    for name, ids in dataset.manifest.get("protocol", {}).items():
-        fresh.expose(name, ids)
-    return fresh
-
-
 def choose_ids(records, count, seed):
     """Draw a stable subset and return it in arrival order."""
     ordered = sorted(records, key=lambda record: (record.arrival, record.sample_id))

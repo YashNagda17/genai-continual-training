@@ -131,8 +131,6 @@ class RevisionPipeline(SummarizationPipeline):
                 raise ValueError('Hindi training must start from the English-stage artifact')
             self.model.load(self.english_checkpoint, 'english')
             if self.adapter_plan is not None:
-                if self.adapter_plan.identity.get('arm', '').startswith('room_') and not self.adapter_plan.identity.get('matched_parameters'):
-                    raise ValueError('Validate the complete extra-room family before training')
                 self.model.apply_plan(self.adapter_plan)
             if self.config.replay_text == 'past':
                 self.filter_past(self.pool)

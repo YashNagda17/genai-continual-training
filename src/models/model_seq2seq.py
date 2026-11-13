@@ -43,8 +43,8 @@ class Seq2SeqSettings:
     warmup_steps: int = 0
     total_steps: int | None = None
     seed: int = 0
-    max_source_length: int = 256
-    max_target_length: int = 64
+    max_source_length: int = 512
+    max_target_length: int = 256
     max_batch_size: int = 32
     logit_chunk_size: int = 32  # Target positions per cross-entropy call over the full vocabulary
     max_score_bytes: int = 2 * 1024 ** 3
@@ -98,7 +98,7 @@ def cpu_tree(value):
 
 def _adapter_parameter_names(module):
     return {name for name, _parameter in module.named_parameters()
-            if name.endswith((".A", ".B", ".extra_A", ".extra_B"))}
+            if name.endswith((".A", ".B"))}
 
 
 def _seed_for(seed, name):
@@ -137,40 +137,21 @@ class Seq2SeqLoRA(nn.Module):
         """The frozen projection. The built-in feed-forward reads this dtype."""
         return self.base.weight
 
-    def add_extra(self, rank, seed):
-        extra_A = nn.Parameter(self.base.weight.new_empty(rank, self.base.in_features))
-        _init_A(extra_A, seed)
-        self.extra_A = extra_A
-        self.extra_B = nn.Parameter(self.base.weight.new_zeros(self.base.out_features, rank))
-        self.extra_scale = 2.0
-
-    def clear_extra(self):
-        for name in ("extra_A", "extra_B"):
-            if name in self._parameters:
-                del self._parameters[name]
-        self.extra_scale = None
 
     def forward(self, inputs):
         result = self.base(inputs)
         shape = result.shape
         hidden = F.linear(inputs, self.A).reshape(-1, self.A.shape[0])
         result = torch.addmm(result.reshape(-1, shape[-1]), hidden, self.B.T, alpha=self.scale)
-        if getattr(self, "extra_scale", None):
-            hidden = F.linear(inputs, self.extra_A).reshape(-1, self.extra_A.shape[0])
-            result = torch.addmm(result, hidden, self.extra_B.T, alpha=self.extra_scale)
         return result.reshape(shape)
 
     def delta(self):
-        """Effective update in float32, including the LoRA scale and any extra rank."""
+        """Effective update in float32, including the LoRA scale."""
         value = (self.B.float() @ self.A.float()) * self.scale
-        if getattr(self, "extra_scale", None):
-            value = value + (self.extra_B.float() @ self.extra_A.float()) * self.extra_scale
         return value
 
     def delta_norm(self):
-        """Frobenius norm from rank-sized Gram matrices; preserve extra-rank cross terms."""
-        if getattr(self, "extra_scale", None):
-            return torch.linalg.vector_norm(self.delta())
+        """Frobenius norm from rank-sized Gram matrices."""
         A, B = self.A.float(), self.B.float()
         squared = ((B.T @ B) * (A @ A.T).T).sum()
         return squared.clamp_min(0).sqrt() * abs(self.scale)
@@ -207,9 +188,7 @@ class Seq2SeqLMModel(ModelBase):
         self._base_path, self._base_bytes = None, 0
         self.rng_state = None
         self.resources = None
-        self._new_rank = {}
         self._trainable = None
-        self._lr_scale = {}
         self._plan = None
         self._cut_hooks = []
         self._plan_fingerprint = None
@@ -254,14 +233,14 @@ class Seq2SeqLMModel(ModelBase):
     def _mark_adapters(self, module):
         """Train adapter factors only. The base weights, embeddings, and output head stay frozen."""
         for name, parameter in module.named_parameters():
-            parameter.requires_grad_(name.endswith((".A", ".B", ".extra_A", ".extra_B")))
+            parameter.requires_grad_(name.endswith((".A", ".B")))
 
     def _adapters(self, module=None):
         return ((name, layer) for name, layer in (self.module if module is None else module).named_modules()
                 if isinstance(layer, Seq2SeqLoRA))
 
     def _apply_mask(self, module):
-        """Freeze shared adapters outside the installed plan. Extra rank stays trainable."""
+        """Freeze adapters outside the installed block-selection plan."""
         if self._trainable is None:
             return
         for _, child in self._adapters(module):
@@ -269,10 +248,6 @@ class Seq2SeqLMModel(ModelBase):
             child.A.requires_grad_(shared)
             child.B.requires_grad_(shared)
 
-    def _add_new_rank(self, module, new_rank):
-        for name, child in self._adapters(module):
-            if child.block_key in new_rank:
-                child.add_extra(int(new_rank[child.block_key]), _seed_for(self.settings.seed, "extra:" + name))
 
     def _build(self, config):
         return self.model_factory(copy.deepcopy(config))
@@ -280,14 +255,12 @@ class Seq2SeqLMModel(ModelBase):
     def _profile(self):
         self._prepare()
         key = (self.role != "serving", self.settings.rank, self.settings.alpha,
-               tuple(sorted(self._new_rank.items())),
                None if self._trainable is None else tuple(sorted(self._trainable)))
         if key not in self._profiles:
             with torch.device("meta"):
                 module = self._build(self.config)
                 if self.role != "serving":
                     self._attach_lora(module, deterministic=self.role == "probe")
-                    self._add_new_rank(module, self._new_rank)
                     self._apply_mask(module)
             adapter_names = _adapter_parameter_names(module)
             adapters = sum(p.numel() for name, p in module.named_parameters() if name in adapter_names)
@@ -359,17 +332,12 @@ class Seq2SeqLMModel(ModelBase):
         return self._base_bytes
 
     def _optimizer_parameters(self):
-        by_block, new_params = {}, []
+        by_block = {}
         for _, adapter in self._adapters():
-            for name, parameter in adapter.named_parameters(recurse=False):
+            for parameter in adapter.parameters(recurse=False):
                 if parameter.requires_grad:
-                    target = new_params if name.startswith("extra_") else by_block.setdefault(adapter.block_key, [])
-                    target.append(parameter)
-        groups = [{"params": by_block[key], "lr": self.settings.learning_rate * float(self._lr_scale.get(key, 1.0))}
-                  for key in sorted(by_block)]
-        if new_params:
-            groups.append({"params": new_params, "lr": self.settings.learning_rate})
-        return groups
+                    by_block.setdefault(adapter.block_key, []).append(parameter)
+        return [{"params": by_block[key], "lr": self.settings.learning_rate} for key in sorted(by_block)]
 
     def _reset_optimizer(self):
         groups = self._optimizer_parameters()
@@ -420,7 +388,6 @@ class Seq2SeqLMModel(ModelBase):
             if self.role != "serving":
                 self._restore_rng(self._new_rng())
                 self._attach_lora(module, deterministic=self.role == "probe")
-                self._add_new_rank(module, self._new_rank)
                 self._apply_mask(module)
             elif self._merge_state is not None:
                 module.load_state_dict(self._merge_state, strict=False, assign=False)
@@ -467,27 +434,18 @@ class Seq2SeqLMModel(ModelBase):
     def apply_plan(self, plan):
         """Install adapter trainability before the first update and build a fresh optimizer."""
         self.activate()
-        trainable, new_rank, scales = set(plan.trainable), dict(plan.new_rank), dict(plan.lr_scale)
-        for _, module in self._adapters():
-            module.clear_extra()
-        self._new_rank = new_rank
-        self._trainable = set(trainable)
-        self._lr_scale = scales
+        trainable = set(plan.trainable)
+        self._trainable = trainable
         self._plan = plan
-        self._add_new_rank(self.module, new_rank)
         self._apply_mask(self.module)
         self._profiles.clear()
         self._cut_backward()
         self._reset_optimizer()
         trainable_count = self.module.num_parameters(only_trainable=True)
-        new_count = sum(parameter.numel() for name, parameter in self.module.named_parameters()
-                        if parameter.requires_grad and ".extra_" in name)
         self._plan_fingerprint = {"identity": plan.identity, "trainable": sorted(trainable),
-                                  "new_rank": new_rank, "lr_scale": scales,
-                                  "trainable_parameters": trainable_count, "new_parameters": new_count}
+                                  "trainable_parameters": trainable_count}
         self.weight_revision += 1
-        return {"trainable_parameters": trainable_count, "new_parameters": new_count,
-                "fingerprint": self._plan_fingerprint}
+        return {"trainable_parameters": trainable_count, "fingerprint": self._plan_fingerprint}
 
     def _capture_rng(self):
         states = {"cpu": torch.random.get_rng_state()}
@@ -849,7 +807,7 @@ class Seq2SeqLMModel(ModelBase):
         return trimmed
 
     def effective_updates(self):
-        """Per-projection ``(alpha / rank) B A``, plus extra rank, in float32."""
+        """Per-projection ``(alpha / rank) B A`` in float32."""
         self.activate()
         return {name: module.delta().detach() for name, module in self._adapters()}
 
@@ -867,10 +825,9 @@ class Seq2SeqLMModel(ModelBase):
         with torch.no_grad():
             for name, child in self._adapters():
                 child.base.weight.add_(child.delta().to(child.base.weight.dtype))
-                child.clear_extra()
                 _init_A(child.A, _seed_for(self.settings.seed, name))
                 child.B.zero_()
-        self._new_rank, self._lr_scale, self._trainable = {}, {}, None
+        self._trainable = None
         self._plan = self._plan_fingerprint = None
         self._save_full_weights = True
         self._mark_adapters(self.module)
@@ -892,9 +849,7 @@ class Seq2SeqLMModel(ModelBase):
                 module.A = nn.Parameter((sqrt.unsqueeze(1) * Vh).to(dtype=module.A.dtype))
                 module.B = nn.Parameter((U * sqrt.unsqueeze(0)).to(dtype=module.B.dtype))
                 module.scale = 1.0
-                module.clear_extra()
         self.settings = replace(self.settings, rank=k, alpha=float(k))
-        self._new_rank = {}
         self._profiles.clear()
         self._apply_mask(self.module)
         self.steps = 0
@@ -909,7 +864,7 @@ class Seq2SeqLMModel(ModelBase):
         self.activate()
         state = {}
         for name, parameter in self.module.named_parameters():
-            if name.endswith((".A", ".B", ".extra_A", ".extra_B")):
+            if name.endswith((".A", ".B")):
                 continue
             target = name.replace(".base.", ".")
             state[target] = parameter.detach().to(device="cpu", copy=True)
@@ -967,14 +922,11 @@ class Seq2SeqLMModel(ModelBase):
         return None if self._plan is None else {**asdict(self._plan), "trainable": list(self._plan.trainable)}
 
     def _restore_layout(self, metadata):
-        self._new_rank = {key: int(value) for key, value in dict(metadata.get("new_rank") or {}).items()}
         trainable = metadata.get("trainable")
         self._trainable = None if trainable is None else set(trainable)
-        self._lr_scale = {key: float(value) for key, value in dict(metadata.get("lr_scale") or {}).items()}
         plan = metadata.get("plan_record")
         self._plan = None if not plan else AdapterPlan(
-            tuple(plan["trainable"]), dict(plan.get("new_rank") or {}),
-            dict(plan.get("lr_scale") or {}), dict(plan.get("identity") or {}))
+            tuple(plan["trainable"]), identity=dict(plan.get("identity") or {}))
         self._plan_fingerprint = metadata.get("plan")
         rank, alpha = int(metadata["rank"]), float(metadata["alpha"])
         if self.settings.rank != rank or self.settings.alpha != alpha:
@@ -988,9 +940,9 @@ class Seq2SeqLMModel(ModelBase):
                 "weight_revision": self.weight_revision, "initialization": self.initialization,
                 "weights_identity": self._weights_identity or str(self.steps),
                 "plan": self._plan_fingerprint, "plan_record": self._plan_record(),
-                "rank": self.settings.rank, "alpha": self.settings.alpha, "new_rank": self._new_rank,
+                "rank": self.settings.rank, "alpha": self.settings.alpha,
                 "trainable": None if self._trainable is None else sorted(self._trainable),
-                "lr_scale": self._lr_scale, "full_weights": self._save_full_weights, "record": record}
+                "full_weights": self._save_full_weights, "record": record}
 
     def _training_state(self):
         return {"optimizer": cpu_tree(self.optimizer.state_dict()), "scheduler": self.scheduler.state_dict(),

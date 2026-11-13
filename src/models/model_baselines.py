@@ -39,6 +39,7 @@ class PaperMBart(MBart25Summarizer):
         super().__init__(*args, **kwargs)
         self.replay_weight = None
         self.teacher_checkpoint = None
+        self.teacher_device = None
         self.kd_weight, self.kd_temperature = 0.5, 2.0
         self._origins = None
         self._teacher = None
@@ -63,10 +64,13 @@ class PaperMBart(MBart25Summarizer):
         if self.teacher_checkpoint:
             if self._teacher is None:
                 self._teacher = self.fork('teacher', str(self.teacher_checkpoint))
+                if self.teacher_device is not None:
+                    self._teacher.device = torch.device(self.teacher_device)
                 self._teacher.load(self.teacher_checkpoint, 'english')
             with self._teacher._execution(), torch.no_grad():
                 start = self._teacher._begin_timed_block()
-                target = self._teacher._forward(payload).logits.detach()
+                teacher_payload = self._teacher.to_device(payload)
+                target = self._teacher._forward(teacher_payload).logits.detach().to(self.device)
                 self.teacher_cost = self._teacher._timing_cost(start)
         logits = self._forward(payload).logits
         position = self._position_nll(logits, payload['labels'])

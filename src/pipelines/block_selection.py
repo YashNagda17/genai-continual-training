@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -10,7 +10,7 @@ from ..utils.state import write_json
 
 
 @dataclass(frozen=True)
-class AdapterRoomConfig:
+class BlockSelectionConfig:
     stability_threshold: float
     seed: int = 0
     sample_size: int = 64
@@ -18,22 +18,15 @@ class AdapterRoomConfig:
     encoder_blocks: int = 12
     decoder_blocks: int = 12
     shared_rank: int = 16
-    new_room_budget: int = 1441792
-    gamma: float = 1.0
-    floor: float = 0.25
-    match_tolerance: float = 0.03
-    generation: dict = field(default_factory=lambda: {'max_new_tokens': 64, 'do_sample': False})
     encoder_block_cost: int = 18432    # Adapter parameters per rank in one encoder block (mBART)
     decoder_block_cost: int = 26624   # ... and in one decoder block
 
     def __post_init__(self):
-        if not -1 <= self.stability_threshold <= 1 or not 0 < self.floor <= 1 or self.gamma < 0:
-            raise ValueError('Invalid map threshold or learning-rate rule')
+        if not -1 <= self.stability_threshold <= 1:
+            raise ValueError('Invalid map threshold')
         if any(type(v) is not int or v < 1 for v in (self.sample_size, self.analysis_batch,
-                self.encoder_blocks, self.decoder_blocks, self.shared_rank, self.new_room_budget)):
-            raise ValueError('Positive sizes, ranks, and budget required')
-        if not 0 <= self.match_tolerance < 1:
-            raise ValueError('Invalid parameter-match tolerance')
+                self.encoder_blocks, self.decoder_blocks, self.shared_rank)):
+            raise ValueError('Positive sizes and ranks required')
 
 
 def cell_of(name):
@@ -65,7 +58,7 @@ def spearman(left, right):
     return cosine(a, b) if a.norm() > 0 and b.norm() > 0 else None
 
 
-class AdapterRoomPipeline(SummarizationPipeline):
+class BlockSelectionPipeline(SummarizationPipeline):
     def __init__(self, config, model=None, dataset=None, *, pool=(), hindi=(),
                  english_checkpoint=None, hindi_checkpoint=None):
         super().__init__(config, model, dataset)
@@ -180,7 +173,7 @@ class AdapterRoomPipeline(SummarizationPipeline):
                                   'blocks': blocks}
         return self.policy['result']
 
-    def adapter_plan(self, arm, *, maps=None, shared=None):
+    def adapter_plan(self, arm):
         blocks = {stack: [f'{stack}.{i}' for i in range(1, size + 1)] for stack, size in
                   [('encoder', self.config.encoder_blocks), ('decoder', self.config.decoder_blocks)]}
         all_blocks = blocks['encoder'] + blocks['decoder']
@@ -190,47 +183,11 @@ class AdapterRoomPipeline(SummarizationPipeline):
             trainable = blocks['encoder'][-2:] + blocks['decoder'][-2:]
         elif arm == 'early_late':
             trainable = sorted({ids[0] for ids in blocks.values()} | {ids[-1] for ids in blocks.values()})
-        elif arm.startswith('room_'):
-            if arm not in {'room_placed', 'room_random', 'room_spread', 'room_placed_slow', 'room_placed_frozen'}:
-                raise ValueError('Unknown extra-room arm')
-            if not maps or not maps['stable']:
-                self.policy['room_status'] = 'unstable_map'
-                return None
-            clashing = sorted(key for key, value in maps['blocks'].items() if value < 0)
-            if not set(maps['blocks']) == set(all_blocks):
-                raise ValueError('Clash map must describe every configured block')
-            if not clashing:
-                self.policy['room_status'] = 'no_clashing_blocks'
-                return None
-            chosen = list(clashing)
-            if arm == 'room_random':
-                chosen = [key for stack, ids in blocks.items() for key in
-                          self.rng.sample(ids, sum(key.startswith(stack + '.') for key in clashing))]
-            elif arm == 'room_spread':
-                chosen = all_blocks
-            cost = lambda key: self.config.encoder_block_cost if key.startswith('encoder.') else self.config.decoder_block_cost
-            rank = max(1, round(self.config.new_room_budget / sum(map(cost, chosen))))
-            trainable = list(shared.trainable) if shared is not None else all_blocks
-            if arm == 'room_placed_frozen':
-                trainable = [key for key in trainable if key not in chosen]
-            scales = dict(shared.lr_scale) if shared else {}
-            if arm == 'room_placed_slow':
-                scales.update({key: max(self.config.floor, min(1.0, 1 + self.config.gamma * maps['blocks'][key])) for key in chosen})
-            new = {key: rank for key in chosen}
-            identity = {'arm': arm, 'method_status': 'project', 'new_parameters': rank * sum(map(cost, chosen)),
-                        'overlap': len(set(chosen) & set(clashing)) / len(clashing)}
-            return AdapterPlan(tuple(trainable), new, scales, identity)
         else:
             raise ValueError('Unknown block-placement arm')
         count = self.config.shared_rank * sum(self.config.encoder_block_cost if key.startswith('encoder.') else self.config.decoder_block_cost for key in trainable)
         return AdapterPlan(tuple(trainable), identity={'arm': arm, 'trainable_parameters': count})
 
-    def validate_room_plans(self, plans):
-        counts = [plan.identity['new_parameters'] for plan in plans if plan is not None]
-        if not counts or (max(counts) - min(counts)) / min(counts) > self.config.match_tolerance:
-            raise ValueError('Extra-room arms exceed the pre-registered parameter-match tolerance')
-        return tuple(replace(plan, identity={**plan.identity, 'matched_parameters': True, 'matched_counts': counts})
-                     for plan in plans if plan is not None)
 
     def next_update(self):
         result = self.location_maps()

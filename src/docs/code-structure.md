@@ -17,12 +17,12 @@ src/
 ├── pipelines/
 │   ├── pipeline_base.py
 │   ├── revision.py
-│   ├── adapter_room.py
+│   ├── block_selection.py
 │   └── generation_shrink.py
 ├── phases/
-│   ├── phase.py                # Phase 1-7 experiment decisions
+│   ├── phase.py                # Phase 1-5 report experiment decisions
 │   ├── settings.py             # Protocol settings
-│   ├── data.py                 # Subsets, prefix preparation, smoke fixture
+│   ├── data.py                 # Subsets and smoke fixture
 │   ├── support.py              # Shared execution and model lifecycle
 │   ├── artifacts.py            # Model exports and reports
 │   └── serving.py              # One timing pass, no warm-up
@@ -46,3 +46,5 @@ Use namespace packages and direct module imports. Constructors and imports do no
 
 
 Separate paper comparisons: `src/baseline_experiment.py`, `src/pipelines/csrel.py`, `src/pipelines/tsr.py`, and `src/models/model_baselines.py`. The phase runner does not call them.
+
+The five phases match the course report and the saved result folder numbers.
