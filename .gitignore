@@ -47,24 +47,7 @@ pytorch_model*.bin
 adapter_model*.bin
 
 # Experiment outputs and logs
-/results/*
-!/results/README.md
-!/results/report.csv
-!/results/report.json
-!/results/report.md
-!/results/manifest.json
-!/results/phases/
-/results/phases/*
-!/results/phases/phase[1-7]/
-/results/phases/phase[1-7]/*
-!/results/phases/phase[1-7]/report.csv
-!/results/phases/phase[1-7]/report.json
-!/results/phases/phase[1-7]/report.md
-!/results/sources/
-/results/sources/*
-!/results/sources/drive-2026-11-13/
-/results/sources/drive-2026-11-13/*
-!/results/sources/drive-2026-11-13/metadata.json
+
 /outputs/
 /runs/
 /logs/
